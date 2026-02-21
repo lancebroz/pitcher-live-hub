@@ -248,17 +248,26 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
             if all(v is not None for v in [ax, ay, az, vy0]):
                 # Flight time T from y0 to front of plate (y ≈ 17/12 ft)
-                y_plate = 17.0 / 12.0  # front of home plate in feet
-                dy = y0 - y_plate  # distance to travel (positive, ~48.6 ft)
+                # Kinematic equation: y(t) = y0 + vy0*t + 0.5*ay*t^2
+                # Solve for y(t) = y_plate:
+                # 0.5*ay*t^2 + vy0*t + (y0 - y_plate) = 0
+                y_plate = 17.0 / 12.0
+                a_coeff = 0.5 * ay
+                b_coeff = vy0
+                c_coeff = y0 - y_plate
 
-                # Using kinematic equation: dy = -vy0*T + 0.5*ay*T^2
-                # (vy0 is negative since ball moves toward plate)
-                # Rearranging: 0.5*ay*T^2 - vy0*T - dy = 0
-                # Quadratic: T = (vy0 - sqrt(vy0^2 + 2*ay*dy)) / ay
-                discriminant = vy0 * vy0 + 2.0 * ay * dy
-                if discriminant >= 0 and ay != 0:
-                    T = (vy0 - (discriminant ** 0.5)) / ay
-                    if T > 0:
+                discriminant = b_coeff * b_coeff - 4.0 * a_coeff * c_coeff
+                if discriminant >= 0 and a_coeff != 0:
+                    sqrt_disc = discriminant ** 0.5
+                    # Two roots - pick the smaller positive one
+                    t1 = (-b_coeff - sqrt_disc) / (2.0 * a_coeff)
+                    t2 = (-b_coeff + sqrt_disc) / (2.0 * a_coeff)
+                    T = None
+                    for t_candidate in [t1, t2]:
+                        if t_candidate > 0:
+                            if T is None or t_candidate < T:
+                                T = t_candidate
+                    if T is not None and T > 0 and T < 1.0:
                         pfx_x_ft = (ax / 2.0) * T * T
                         pfx_z_ft = ((az + g) / 2.0) * T * T
 
