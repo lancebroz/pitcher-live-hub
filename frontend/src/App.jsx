@@ -375,8 +375,14 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
     setLoading(false);
   };
 
-  const liveGames = games.filter(g => g.status === "Live" || g.status === "In Progress");
-  const allGames = games.length > 0 ? games : [];
+  const isFinal = g => g.status === "Final" || (g.detailed_status || "").toLowerCase().includes("final") || (g.detailed_status || "").toLowerCase().includes("game over");
+  const isLive = g => (g.status === "Live" || g.status === "In Progress") && !isFinal(g);
+  const liveGames = games.filter(g => isLive(g));
+  const sortedGames = [...games].sort((a, b) => {
+    const order = g => isLive(g) ? 0 : isFinal(g) ? 2 : 1;
+    return order(a) - order(b);
+  });
+  const allGames = sortedGames.length > 0 ? sortedGames : [];
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -404,7 +410,7 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: "13px", fontWeight: 700, color: C.text }}>{g.away_score} - {g.home_score}</div>
-                    <div style={{ fontSize: "10px", color: g.status === "Live" ? "#22c55e" : C.accent }}>{g.inning || g.detailed_status}</div>
+                    <div style={{ fontSize: "10px", color: isFinal(g) ? "#ef4444" : isLive(g) ? "#22c55e" : C.accent, fontWeight: isFinal(g) ? 700 : 400 }}>{isFinal(g) ? "Final" : (g.inning || g.detailed_status)}</div>
                   </div>
                 </div>
               ))}
