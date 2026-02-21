@@ -255,10 +255,8 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                     vyf = -(disc ** 0.5)  # vyf is negative
                     T = (vyf - vy0) / ay
                     if T > 0 and T < 1.0:
-                        # Note: the MLB live feed API reports accelerations that are
-                        # already halved (a/2), so the movement formula is a*T^2, not a*T^2/2
-                        pfx_x_ft = ax * T * T
-                        pfx_z_ft = (az + g) * T * T
+                        pfx_x_ft = (ax / 2.0) * T * T
+                        pfx_z_ft = ((az + g) / 2.0) * T * T
 
             pitches.append({
                 "pitch_number": len(pitches) + 1,
