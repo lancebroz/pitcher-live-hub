@@ -176,10 +176,10 @@ const generateMockPitchData = () => {
 };
 
 const pct = (n, d) => d > 0 ? Math.round((n / d) * 100) + "%" : "—";
-const avg1 = (a) => a.length > 0 ? (a.reduce((s, v) => s + v, 0) / a.length).toFixed(1) : "—";
-const avgInt = (a) => a.length > 0 ? Math.round(a.reduce((s, v) => s + v, 0) / a.length) : "—";
-const avg3 = (a) => a.length > 0 ? (a.reduce((s, v) => s + v, 0) / a.length).toFixed(3) : "—";
-const avgNum = (a) => a.length > 0 ? a.reduce((s, v) => s + v, 0) / a.length : 0;
+const avg1 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(1) : "—"; };
+const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? Math.round(f.reduce((s, v) => s + v, 0) / f.length) : "—"; };
+const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
+const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
 
 const computeMetrics = (pitches, hf) => {
   if (!pitches?.length) return null;
@@ -200,7 +200,7 @@ const computeMetrics = (pitches, hf) => {
     return {
       name: n, code: pts[0].pitch_type, color: getPitchColor(n), count: c,
       avgVelo: avg1(pts.map(p => p.release_speed)),
-      maxVelo: Math.max(...pts.map(p => p.release_speed)).toFixed(1),
+      maxVelo: (() => { const v = pts.map(p => p.release_speed).filter(v => v != null); return v.length ? Math.max(...v).toFixed(1) : "—"; })(),
       avgSpin: avgInt(pts.map(p => p.release_spin_rate)),
       avgSpinEff: avgInt(pts.map(p => p.spin_efficiency)) + "%",
       avgIVB: avg1(pts.map(p => p.pfx_z)), avgHB: avg1(pts.map(p => p.pfx_x)),
@@ -214,7 +214,7 @@ const computeMetrics = (pitches, hf) => {
       xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-      expRunValue: pts.map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
+      expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
       rawPitches: pts,
       avgRelHNum: avgNum(pts.map(p => p.release_pos_z)),
       avgRelSNum: avgNum(pts.map(p => p.release_pos_x)),
@@ -236,7 +236,7 @@ const computeMetrics = (pitches, hf) => {
   const allRow = {
     name: "All", code: "", color: C => C.accent, isAllRow: true, count: ac,
     avgVelo: avg1(allPts.map(p => p.release_speed)),
-    maxVelo: Math.max(...allPts.map(p => p.release_speed)).toFixed(1),
+    maxVelo: (() => { const v = allPts.map(p => p.release_speed).filter(v => v != null); return v.length ? Math.max(...v).toFixed(1) : "—"; })(),
     avgSpin: avgInt(allPts.map(p => p.release_spin_rate)),
     avgIVB: avg1(allPts.map(p => p.pfx_z)), avgHB: avg1(allPts.map(p => p.pfx_x)),
     avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
@@ -249,7 +249,7 @@ const computeMetrics = (pitches, hf) => {
     xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
     xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-    expRunValue: allPts.map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
+    expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
     rawPitches: allPts,
   };
 
@@ -449,6 +449,7 @@ const SortIcon = ({ active, dir }) => (
 // ─── Movement Plot ───
 const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
   const grouped = {};
+  let maxAbs = 0;
   pitchTypeMetrics.forEach(pt => {
     pt.rawPitches.forEach(p => {
       if (!grouped[p.pitch_name]) grouped[p.pitch_name] = { name: p.pitch_name, abbrev: PITCH_ABBREV[p.pitch_name] || p.pitch_type, color: pt.color, data: [] };
@@ -456,8 +457,14 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
         x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color,
         velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
       });
+      if (Math.abs(p.pfx_x) > maxAbs) maxAbs = Math.abs(p.pfx_x);
+      if (Math.abs(p.pfx_z) > maxAbs) maxAbs = Math.abs(p.pfx_z);
     });
   });
+  const axisMax = maxAbs > 20 ? 25 : 20;
+  const ticks20 = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
+  const ticks25 = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
+  const ticks = axisMax === 25 ? ticks25 : ticks20;
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>Pitch Movement Profile</div>
@@ -465,8 +472,8 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 15 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-            <XAxis type="number" dataKey="x" domain={[-25, 25]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25]} label={{ value: "Horizontal Break (in)", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
-            <YAxis type="number" dataKey="y" domain={[-25, 25]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25]} label={{ value: "Induced Vertical Break (in)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
+            <XAxis type="number" dataKey="x" domain={[-axisMax, axisMax]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={ticks} label={{ value: "Horizontal Break (in)", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
+            <YAxis type="number" dataKey="y" domain={[-axisMax, axisMax]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={ticks} label={{ value: "Induced Vertical Break (in)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
             <ReferenceLine x={0} stroke={C.borderLight} />
             <ReferenceLine y={0} stroke={C.borderLight} />
             <Tooltip content={({ payload }) => {
@@ -487,7 +494,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                 </div>
               );
             }} />
-            {Object.values(grouped).map(g => <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} opacity={0.7} r={4} />)}
+            {Object.values(grouped).map(g => <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} opacity={0.7} r={5.5} />)}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
@@ -514,15 +521,12 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   const countKeys = Object.keys(COUNT_STATES);
   const currentIdx = countKeys.indexOf(countState);
 
-  const PillBar = ({ value, color, align, code }) => {
-    const widthPct = (value / maxUsage) * 100;
+  const PillBar = ({ value, color, align }) => {
+    const widthPct = value > 0 ? (value / maxUsage) * 100 : 0;
+    const barColor = value > 0 ? color : "transparent";
     return (
-      <div style={{ display: "flex", alignItems: "center", flexDirection: align === "right" ? "row-reverse" : "row", gap: "6px", width: "100%" }}>
-        <div style={{ flex: 1, height: "26px", borderRadius: "13px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "right" ? "flex-end" : "flex-start" }}>
-          <div style={{ width: `${Math.max(widthPct, 4)}%`, height: "100%", borderRadius: "13px", background: color, opacity: 0.85, transition: "width 0.4s ease" }} />
-        </div>
-        <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, minWidth: "32px", textAlign: "center" }}>{value}%</span>
-        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "4px", padding: "3px 8px", minWidth: "28px", textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>{code}</span>
+      <div style={{ flex: 1, height: "28px", borderRadius: "14px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "left" ? "flex-start" : "flex-end" }}>
+        <div style={{ width: `${Math.max(widthPct, value > 0 ? 6 : 0)}%`, height: "100%", borderRadius: "14px", background: barColor, opacity: 0.85, transition: "width 0.4s ease" }} />
       </div>
     );
   };
@@ -530,15 +534,23 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", display: "flex", flexDirection: "column" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "20px" }}>Pitch Usage by Batter Hand</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 36px 50px 36px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. LHH</div>
+        <div />
+        <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.textDim }}>Pitch</div>
+        <div />
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. RHH</div>
       </div>
       <div style={{ flex: 1 }}>
         {ordered.map(p => (
-          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", alignItems: "center", padding: "5px 0", gap: "12px" }}>
-            <PillBar value={p.vsL} color={p.color} align="right" code={p.code} />
-            <PillBar value={p.vsR} color={p.color} align="left" code={p.code} />
+          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 36px 50px 36px 1fr", alignItems: "center", padding: "5px 0", gap: "0" }}>
+            <PillBar value={p.vsL} color={p.color} align="right" />
+            <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "right", paddingRight: "4px" }}>{p.vsL}%</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "5px", padding: "4px 10px", minWidth: "32px", textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>{p.code}</span>
+            </div>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "left", paddingLeft: "4px" }}>{p.vsR}%</span>
+            <PillBar value={p.vsR} color={p.color} align="left" />
           </div>
         ))}
       </div>
@@ -883,17 +895,24 @@ const normalizeLivePitch = (p) => {
     is_whiff: isWhiff,
     is_called_strike: isCalledStrike,
     is_in_play: isInPlay,
-    is_ground_ball: false,
-    is_fly_ball: false,
-    is_barrel: false,
+    is_ground_ball: p.bb_type === "ground_ball" || (!p.bb_type && p.launch_angle != null && p.launch_angle < 10 && isInPlay),
+    is_fly_ball: p.bb_type === "fly_ball" || (!p.bb_type && p.launch_angle != null && p.launch_angle >= 25 && isInPlay),
+    is_line_drive: p.bb_type === "line_drive",
+    is_popup: p.bb_type === "popup",
+    is_barrel: (p.launch_speed != null && p.launch_angle != null && isInPlay &&
+      p.launch_speed >= 98 && p.launch_angle >= 26 && p.launch_angle <= 30) ||
+      (p.launch_speed != null && p.launch_angle != null && isInPlay &&
+      p.launch_speed >= 98 + (p.launch_angle - 26) * 0.5 && p.launch_angle > 30 && p.launch_angle <= 50),
     batter_hand: p.batter_hand || p.stand || "R",
     count: p.count || `${p.balls || 0}-${p.strikes || 0}`,
     batter_name: p.batter_name || "",
     inning: p.inning || 0,
     launch_speed: p.launch_speed,
-    estimated_slg_using_speedangle: null,
-    estimated_woba_using_speedangle: p.estimated_woba_using_speedangle,
-    woba_value: null,
+    launch_angle: p.launch_angle,
+    estimated_slg_using_speedangle: p.estimated_slg_using_speedangle || null,
+    estimated_woba_using_speedangle: p.estimated_woba_using_speedangle || null,
+    estimated_ba_using_speedangle: p.estimated_ba_using_speedangle || null,
+    woba_value: p.woba_value || null,
     delta_run_exp: p.delta_run_exp,
   };
 };
@@ -934,8 +953,8 @@ export default function PitcherTracker() {
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  const [startDate, setStartDate] = useState("2025-04-01");
-  const [endDate, setEndDate] = useState("2025-06-15");
+  const [startDate, setStartDate] = useState("2025-03-27");
+  const [endDate, setEndDate] = useState("2025-09-28");
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
   const [handFilter, setHandFilter] = useState("all");

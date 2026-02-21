@@ -364,7 +364,11 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "launch_angle": safe_float("launch_angle"),
             "estimated_ba_using_speedangle": safe_float("estimated_ba_using_speedangle"),
             "estimated_woba_using_speedangle": safe_float("estimated_woba_using_speedangle"),
-            "batter_name": row.get("player_name", ""),  # Note: this is actually pitcher in savant CSV
+            "estimated_slg_using_speedangle": safe_float("estimated_slg_using_speedangle"),
+            "woba_value": safe_float("woba_value"),
+            "bb_type": row.get("bb_type", ""),
+            "is_in_play": row.get("type", "") == "X",
+            "batter_name": row.get("player_name", ""),
             "stand": row.get("stand", ""),  # Batter handedness: L or R
             "p_throws": row.get("p_throws", ""),
             "balls": row.get("balls", ""),
