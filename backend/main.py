@@ -93,7 +93,7 @@ async def get_live_games():
             params={
                 "sportId": 1,
                 "date": today,
-                "hydrate": "linescore,probablePitcher,decisions",
+                "hydrate": "linescore,probablePitcher,decisions,team",
             },
             timeout=10,
         )
@@ -111,12 +111,15 @@ async def get_live_games():
             away = game.get("teams", {}).get("away", {})
             home = game.get("teams", {}).get("home", {})
 
+            away_abbr = away.get("team", {}).get("abbreviation") or away.get("team", {}).get("name", "?")
+            home_abbr = home.get("team", {}).get("abbreviation") or home.get("team", {}).get("name", "?")
+
             games.append({
                 "game_pk": game["gamePk"],
                 "status": status.get("abstractGameState", ""),  # Preview, Live, Final
                 "detailed_status": status.get("detailedState", ""),
-                "away_team": away.get("team", {}).get("abbreviation", ""),
-                "home_team": home.get("team", {}).get("abbreviation", ""),
+                "away_team": away_abbr,
+                "home_team": home_abbr,
                 "away_score": away.get("score", 0),
                 "home_score": home.get("score", 0),
                 "inning": inning_str,
@@ -236,6 +239,7 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "release_extension": pitch_data.get("extension"),
                 "pfx_x": breaks.get("breakHorizontal"),
                 "pfx_z": breaks.get("breakVertical"),
+                "movement_source": "live_feed",
                 "release_spin_rate": breaks.get("spinRate"),
                 "spin_direction": breaks.get("spinDirection"),
                 "zone": pitch_data.get("zone"),
@@ -340,6 +344,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "spin_axis": safe_float("spin_axis"),
             "pfx_x": safe_float("pfx_x"),
             "pfx_z": safe_float("pfx_z"),
+            "movement_source": "savant",
             "plate_x": safe_float("plate_x"),
             "plate_z": safe_float("plate_z"),
             "release_pos_x": safe_float("release_pos_x"),

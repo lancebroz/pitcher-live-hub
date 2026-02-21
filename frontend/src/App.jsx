@@ -25,18 +25,32 @@ const themes = {
 };
 
 const PITCH_COLORS = {
-  "4-Seam Fastball": "#dc2626", "FF": "#dc2626", "Sinker": "#ea580c", "SI": "#ea580c",
-  "Changeup": "#16a34a", "CH": "#16a34a", "Slider": "#ca8a04", "SL": "#ca8a04",
-  "Cutter": "#78350f", "FC": "#78350f", "Curveball": "#2563eb", "CU": "#2563eb",
-  "Splitter": "#0d9488", "FS": "#0d9488", "Sweeper": "#a16207", "ST": "#a16207",
-  "Knuckle Curve": "#7c3aed", "KC": "#7c3aed", "Knuckleball": "#78716c", "KN": "#78716c",
+  "4-Seam Fastball": "#dc2626", "Four-Seam Fastball": "#dc2626", "FF": "#dc2626",
+  "Sinker": "#ea580c", "SI": "#ea580c", "Two-Seam Fastball": "#ea580c",
+  "Changeup": "#16a34a", "CH": "#16a34a",
+  "Slider": "#ca8a04", "SL": "#ca8a04",
+  "Cutter": "#78350f", "FC": "#78350f",
+  "Curveball": "#2563eb", "CU": "#2563eb",
+  "Splitter": "#0d9488", "FS": "#0d9488", "Split-Finger": "#0d9488",
+  "Sweeper": "#a16207", "ST": "#a16207",
+  "Knuckle Curve": "#7c3aed", "KC": "#7c3aed",
+  "Knuckleball": "#78716c", "KN": "#78716c",
+  "Slow Curve": "#2563eb", "CS": "#2563eb",
+  "Slurve": "#a16207", "SV": "#a16207",
+  "Eephus": "#78716c", "EP": "#78716c",
+  "Screwball": "#0d9488", "SC": "#0d9488",
 };
-const getPitchColor = (n) => PITCH_COLORS[n] || "#94a3b8";
 const PITCH_ABBREV = {
-  "4-Seam Fastball": "FF", "Sinker": "SI", "Changeup": "CH", "Slider": "SL",
-  "Cutter": "FC", "Curveball": "CU", "Splitter": "FS", "Sweeper": "ST",
-  "Knuckle Curve": "KC", "Knuckleball": "KN",
+  "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
+  "Sinker": "SI", "Two-Seam Fastball": "SI",
+  "Changeup": "CH", "Slider": "SL",
+  "Cutter": "FC", "Curveball": "CU",
+  "Splitter": "FS", "Split-Finger": "FS",
+  "Sweeper": "ST", "Knuckle Curve": "KC",
+  "Knuckleball": "KN", "Slow Curve": "CS",
+  "Slurve": "SV", "Eephus": "EP", "Screwball": "SC",
 };
+const getPitchColor = (n) => PITCH_COLORS[n] || PITCH_COLORS[PITCH_ABBREV[n]] || "#94a3b8";
 
 const COUNT_STATES = {
   all: { label: "All", counts: null },
@@ -196,6 +210,7 @@ const computeMetrics = (pitches, hf) => {
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
       gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, ip),
+      bipCount: ip,
       xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
@@ -790,6 +805,15 @@ const normalizeLivePitch = (p) => {
   const zone = p.zone;
   const isInZone = zone != null ? (zone >= 1 && zone <= 9) : (Math.abs(p.plate_x || 0) <= 0.83 && (p.plate_z || 0) >= 1.5 && (p.plate_z || 0) <= 3.5);
 
+  // Movement data:
+  // - Savant CSV: pfx_z and pfx_x are IVB and HB in FEET → multiply by 12 for inches
+  // - Live feed: breakVertical/breakHorizontal are already in inches but are NOT true IVB
+  //   (breakVertical includes gravity and is always negative). We pass them through as-is
+  //   since there's no clean conversion without additional physics modeling.
+  const isSavant = p.movement_source === "savant";
+  const pfx_z_inches = p.pfx_z != null ? (isSavant ? p.pfx_z * 12 : p.pfx_z) : null;
+  const pfx_x_inches = p.pfx_x != null ? (isSavant ? p.pfx_x * 12 : p.pfx_x) : null;
+
   return {
     pitch_number: p.pitch_number,
     pitch_type: p.pitch_type || "",
@@ -797,8 +821,8 @@ const normalizeLivePitch = (p) => {
     release_speed: p.release_speed,
     release_spin_rate: p.release_spin_rate || p.spin_rate,
     spin_efficiency: p.spin_efficiency || null,
-    pfx_z: p.pfx_z != null ? p.pfx_z : null,
-    pfx_x: p.pfx_x != null ? p.pfx_x : null,
+    pfx_z: pfx_z_inches,
+    pfx_x: pfx_x_inches,
     release_pos_z: p.release_pos_z,
     release_pos_x: p.release_pos_x,
     vaa: p.vaa || null,
@@ -830,10 +854,10 @@ const normalizeLivePitch = (p) => {
 const STUFF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
   { key: "avgVelo", label: "Velo" }, { key: "maxVelo", label: "Max" },
-  { key: "avgSpin", label: "Spin" }, { key: "avgSpinEff", label: "SpinEff" },
+  { key: "avgSpin", label: "Spin" },
   { key: "avgIVB", label: "IVB" }, { key: "avgHB", label: "HB" },
   { key: "avgRelH", label: "RelH" }, { key: "avgRelS", label: "RelS" },
-  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" },
+  { key: "avgExt", label: "Ext" },
 ];
 const PERF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
@@ -843,7 +867,7 @@ const PERF_COLS = [
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
 ];
 const RESULT_COLS = [
-  { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
+  { key: "name", label: "Pitch", align: "left" }, { key: "bipCount", label: "BIP" },
   { key: "gbRate", label: "GB%" }, { key: "fbRate", label: "FB%" },
   { key: "barrelRate", label: "Barrel%" }, { key: "xSLG", label: "xSLG" },
   { key: "xwOBACON", label: "xwOBACON" }, { key: "xwOBA", label: "xwOBA" },
