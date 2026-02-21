@@ -229,34 +229,14 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
             coords = pitch_data.get("coordinates", {})
             breaks = pitch_data.get("breaks", {})
 
-            # Compute IVB and HB from the 9-parameter fit.
-            # Uses the standard PITCHf/x formula: pfx = a_spin * T^2 / 2
-            # where a_spin removes gravity from az.
-            # Note: Savant's pfx values use a proprietary computation that
-            # differs slightly from the simple 9P, but this gives values
-            # within ~5-10%, which is acceptable for live game display.
-            g = 32.174  # gravity in ft/s²
-            ax = coords.get("aX")
-            ay = coords.get("aY")
-            az = coords.get("aZ")
-            vx0 = coords.get("vX0")
-            vy0 = coords.get("vY0")
-            vz0 = coords.get("vZ0")
-            y0 = coords.get("y0", 50.0)
-
-            pfx_x_ft = None
-            pfx_z_ft = None
-
-            if all(v is not None for v in [ax, ay, az, vy0]):
-                # Flight time T from y0 to front of plate
-                yf = 17.0 / 12.0
-                disc = vy0 * vy0 + 2.0 * ay * (yf - y0)
-                if disc >= 0 and ay != 0:
-                    vyf = -(disc ** 0.5)  # vyf is negative
-                    T = (vyf - vy0) / ay
-                    if T > 0 and T < 1.0:
-                        pfx_x_ft = (ax / 2.0) * T * T
-                        pfx_z_ft = ((az + g) / 2.0) * T * T
+            # IVB and HB come directly from the live feed's breaks object.
+            # breakVerticalInduced = induced vertical break (inches)
+            # breakHorizontal = horizontal break (inches)
+            # Convert to feet to match Savant's pfx_x/pfx_z convention (feet).
+            raw_ivb = breaks.get("breakVerticalInduced")
+            raw_hb = breaks.get("breakHorizontal")
+            pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
+            pfx_x_ft = raw_hb / 12.0 if raw_hb is not None else None
 
             pitches.append({
                 "pitch_number": len(pitches) + 1,
@@ -287,20 +267,6 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
     set_cache(cache_key, pitches)
     return pitches
-
-
-# ─── Debug route: dump raw coordinates for first few pitches ───
-@app.get("/api/debug/pitches")
-async def debug_pitches(game_pk: int, pitcher_id: int):
-    """Returns raw debug data for first 3 pitches to diagnose movement values."""
-    cache_key = f"pitches:{game_pk}:{pitcher_id}"
-    # Bypass cache for debug
-    set_cache(cache_key, None)
-    pitches = await get_game_pitches(game_pk=game_pk, pitcher_id=pitcher_id)
-    debug_data = []
-    for p in pitches[:3]:
-        debug_data.append({k: v for k, v in p.items() if k.startswith("_debug") or k in ["pitch_name", "pitch_type", "release_speed", "pfx_x", "pfx_z"]})
-    return debug_data
 
 
 # ─── Route 5: Get Statcast data for historical queries ───
