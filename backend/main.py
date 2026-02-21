@@ -283,10 +283,35 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "batter_name": batter_name,
                 "batter_hand": batter_side,
                 "inning": inning,
+                # Debug: raw API values for comparison
+                "_debug_raw_pfxX": coords.get("pfxX"),
+                "_debug_raw_pfxZ": coords.get("pfxZ"),
+                "_debug_aX": ax,
+                "_debug_aY": ay,
+                "_debug_aZ": az,
+                "_debug_vY0": vy0,
+                "_debug_y0": y0,
+                "_debug_T": T if pfx_x_ft is not None else None,
+                "_debug_computed_pfx_x_ft": pfx_x_ft,
+                "_debug_computed_pfx_z_ft": pfx_z_ft,
             })
 
     set_cache(cache_key, pitches)
     return pitches
+
+
+# ─── Debug route: dump raw coordinates for first few pitches ───
+@app.get("/api/debug/pitches")
+async def debug_pitches(game_pk: int, pitcher_id: int):
+    """Returns raw debug data for first 3 pitches to diagnose movement values."""
+    cache_key = f"pitches:{game_pk}:{pitcher_id}"
+    # Bypass cache for debug
+    set_cache(cache_key, None)
+    pitches = await get_game_pitches(game_pk=game_pk, pitcher_id=pitcher_id)
+    debug_data = []
+    for p in pitches[:3]:
+        debug_data.append({k: v for k, v in p.items() if k.startswith("_debug") or k in ["pitch_name", "pitch_type", "release_speed", "pfx_x", "pfx_z"]})
+    return debug_data
 
 
 # ─── Route 5: Get Statcast data for historical queries ───
