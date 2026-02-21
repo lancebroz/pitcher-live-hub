@@ -236,7 +236,7 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
             raw_ivb = breaks.get("breakVerticalInduced")
             raw_hb = breaks.get("breakHorizontal")
             pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
-            pfx_x_ft = raw_hb / 12.0 if raw_hb is not None else None
+            pfx_x_ft = raw_hb / -12.0 if raw_hb is not None else None
 
             pitches.append({
                 "pitch_number": len(pitches) + 1,
