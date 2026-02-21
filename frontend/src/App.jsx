@@ -221,8 +221,40 @@ const computeMetrics = (pitches, hf) => {
     };
   });
   ptm.sort((a, b) => b.count - a.count);
+
+  // Compute "All" summary row across all pitches
+  const allPts = f;
+  const ac = allPts.length, asw = allPts.filter(p => p.is_swing).length, awh = allPts.filter(p => p.is_whiff).length,
+    aiz = allPts.filter(p => p.is_in_zone).length, acs = allPts.filter(p => p.is_called_strike).length,
+    ast = allPts.filter(p => p.is_in_zone || p.is_swing || p.is_called_strike || p.description === "foul").length,
+    aip = allPts.filter(p => p.is_in_play).length, agb = allPts.filter(p => p.is_ground_ball).length,
+    afb = allPts.filter(p => p.is_fly_ball).length, aba = allPts.filter(p => p.is_barrel).length,
+    aozs = allPts.filter(p => !p.is_in_zone && p.is_swing).length,
+    aozt = allPts.filter(p => !p.is_in_zone).length,
+    aizw = allPts.filter(p => p.is_in_zone && p.is_whiff).length,
+    aizs = allPts.filter(p => p.is_in_zone && p.is_swing).length;
+  const allRow = {
+    name: "All", code: "", color: C => C.accent, isAllRow: true, count: ac,
+    avgVelo: avg1(allPts.map(p => p.release_speed)),
+    maxVelo: Math.max(...allPts.map(p => p.release_speed)).toFixed(1),
+    avgSpin: avgInt(allPts.map(p => p.release_spin_rate)),
+    avgIVB: avg1(allPts.map(p => p.pfx_z)), avgHB: avg1(allPts.map(p => p.pfx_x)),
+    avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
+    avgExt: avg1(allPts.map(p => p.release_extension)),
+    strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
+    calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
+    chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
+    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, aip),
+    bipCount: aip,
+    xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
+    xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
+    xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
+    expRunValue: allPts.map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
+    rawPitches: allPts,
+  };
+
   return {
-    total: f.length, pitchTypeMetrics: ptm,
+    total: f.length, pitchTypeMetrics: ptm, allRow,
     avgRelH: avg1(pitches.map(p => p.release_pos_z)),
     avgRelS: avgNum(pitches.map(p => p.release_pos_x)),
     avgExt: avg1(pitches.map(p => p.release_extension)),
@@ -415,12 +447,15 @@ const SortIcon = ({ active, dir }) => (
 );
 
 // ─── Movement Plot ───
-const MovementPlot = ({ pitchTypeMetrics, C }) => {
+const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
   const grouped = {};
   pitchTypeMetrics.forEach(pt => {
     pt.rawPitches.forEach(p => {
       if (!grouped[p.pitch_name]) grouped[p.pitch_name] = { name: p.pitch_name, abbrev: PITCH_ABBREV[p.pitch_name] || p.pitch_type, color: pt.color, data: [] };
-      grouped[p.pitch_name].data.push({ x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color });
+      grouped[p.pitch_name].data.push({
+        x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color,
+        velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
+      });
     });
   });
   return (
@@ -438,9 +473,17 @@ const MovementPlot = ({ pitchTypeMetrics, C }) => {
               if (!payload?.length) return null;
               const d = payload[0].payload;
               return (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
-                  <div style={{ color: d.color, fontWeight: 700 }}>{d.name}</div>
-                  <div style={{ color: C.textMuted }}>HB: {d.x}" | IVB: {d.y}"</div>
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px", minWidth: "160px" }}>
+                  <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo != null ? d.velo.toFixed(1) : "—"} mph</div>
+                  <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
+                    <div>IVB: {d.y != null ? d.y.toFixed(1) : "—"}" | HB: {d.x != null ? d.x.toFixed(1) : "—"}"</div>
+                    {currentView === "live" && (
+                      <>
+                        {d.batter && <div>vs. {d.batter}</div>}
+                        <div>Inning {d.inning} · Count: {d.count}</div>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             }} />
@@ -471,15 +514,15 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   const countKeys = Object.keys(COUNT_STATES);
   const currentIdx = countKeys.indexOf(countState);
 
-  const PillBar = ({ value, color, align }) => {
+  const PillBar = ({ value, color, align, code }) => {
     const widthPct = (value / maxUsage) * 100;
     return (
-      <div style={{ display: "flex", alignItems: "center", flexDirection: align === "right" ? "row-reverse" : "row", gap: "8px", width: "100%" }}>
-        {align === "right" && <span style={{ fontSize: "12px", fontWeight: 600, color: C.text, minWidth: "32px", textAlign: "right" }}>{value}%</span>}
-        <div style={{ flex: 1, height: "22px", borderRadius: "11px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "right" ? "flex-end" : "flex-start" }}>
-          <div style={{ width: `${Math.max(widthPct, 3)}%`, height: "100%", borderRadius: "11px", background: color, opacity: 0.85, transition: "width 0.4s ease" }} />
+      <div style={{ display: "flex", alignItems: "center", flexDirection: align === "right" ? "row-reverse" : "row", gap: "6px", width: "100%" }}>
+        <div style={{ flex: 1, height: "26px", borderRadius: "13px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "right" ? "flex-end" : "flex-start" }}>
+          <div style={{ width: `${Math.max(widthPct, 4)}%`, height: "100%", borderRadius: "13px", background: color, opacity: 0.85, transition: "width 0.4s ease" }} />
         </div>
-        {align === "left" && <span style={{ fontSize: "12px", fontWeight: 600, color: C.text, minWidth: "32px", textAlign: "left" }}>{value}%</span>}
+        <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, minWidth: "32px", textAlign: "center" }}>{value}%</span>
+        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "4px", padding: "3px 8px", minWidth: "28px", textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>{code}</span>
       </div>
     );
   };
@@ -487,19 +530,15 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", display: "flex", flexDirection: "column" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "20px" }}>Pitch Usage by Batter Hand</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. LHH</div>
-        <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.textDim }}>Pitch</div>
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. RHH</div>
       </div>
       <div style={{ flex: 1 }}>
         {ordered.map(p => (
-          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 60px 1fr", alignItems: "center", padding: "6px 0" }}>
-            <PillBar value={p.vsL} color={p.color} align="right" />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "4px", padding: "3px 8px", minWidth: "28px", textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>{p.code}</span>
-            </div>
-            <PillBar value={p.vsR} color={p.color} align="left" />
+          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", alignItems: "center", padding: "5px 0", gap: "12px" }}>
+            <PillBar value={p.vsL} color={p.color} align="right" code={p.code} />
+            <PillBar value={p.vsR} color={p.color} align="left" code={p.code} />
           </div>
         ))}
       </div>
@@ -721,7 +760,7 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   );
 };
 // ─── Sortable Table ───
-const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, setHandFilter }) => {
+const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, setHandFilter, allRow }) => {
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState("desc");
   const handleSort = (k) => {
@@ -772,6 +811,17 @@ const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, se
             </tr>
           </thead>
           <tbody>
+            {allRow && (
+              <tr style={{ background: C.accentGlow, fontWeight: 600 }}>
+                {columns.map(col => (
+                  <td key={col.key} style={{ padding: "7px 10px", textAlign: col.align === "left" ? "left" : "right", borderBottom: `2px solid ${C.border}`, color: C.text, whiteSpace: "nowrap" }}>
+                    {col.key === "name" ? (
+                      <span style={{ fontWeight: 700 }}>All</span>
+                    ) : allRow[col.key]}
+                  </td>
+                ))}
+              </tr>
+            )}
             {sorted.map((row, i) => (
               <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : C.tableStripe }}>
                 {columns.map(col => (
@@ -807,9 +857,10 @@ const normalizeLivePitch = (p) => {
 
   // Movement data:
   // - Savant CSV: pfx_z and pfx_x are IVB and HB in FEET → multiply by 12 for inches
-  // - Live feed: pfxZ and pfxX from coordinates are also in FEET → multiply by 12
-  const pfx_z_inches = p.pfx_z != null ? p.pfx_z * 12 : null;
-  const pfx_x_inches = p.pfx_x != null ? p.pfx_x * 12 : null;
+  // - Live feed: pfxZ and pfxX from coordinates are already in INCHES
+  const isSavant = p.movement_source === "savant";
+  const pfx_z_inches = p.pfx_z != null ? (isSavant ? p.pfx_z * 12 : p.pfx_z) : null;
+  const pfx_x_inches = p.pfx_x != null ? (isSavant ? p.pfx_x * -12 : p.pfx_x * -1) : null;
 
   return {
     pitch_number: p.pitch_number,
@@ -878,8 +929,11 @@ export default function PitcherTracker() {
   const [pitcherName, setPitcherName] = useState("");
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
+  const [pitcherHand, setPitcherHand] = useState("");
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
+  const [livePitchData, setLivePitchData] = useState(null);
+  const [historicalPitchData, setHistoricalPitchData] = useState(null);
   const [startDate, setStartDate] = useState("2025-04-01");
   const [endDate, setEndDate] = useState("2025-06-15");
   const [isLoading, setIsLoading] = useState(false);
@@ -903,37 +957,78 @@ export default function PitcherTracker() {
       pollRef.current = setInterval(async () => {
         try {
           const raw = await getGamePitches(gamePk, pitcherId);
-          if (raw.length > 0) setPitchData(raw.map(normalizeLivePitch));
+          if (raw.length > 0) {
+            const normalized = raw.map(normalizeLivePitch);
+            setLivePitchData(normalized);
+            setPitchData(normalized);
+          }
         } catch (e) { console.error("Poll failed:", e); }
       }, 15000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [view, gamePk, pitcherId]);
 
-  // Load pitcher from search (uses pitcher ID for historical, no game for live yet)
+  // When switching views, swap the displayed data
+  const handleViewSwitch = async (newView) => {
+    setView(newView);
+    if (newView === "live") {
+      // Reload live data if we have a game selected
+      if (gamePk && pitcherId) {
+        setIsLoading(true);
+        try {
+          const raw = await getGamePitches(gamePk, pitcherId);
+          const normalized = raw.map(normalizeLivePitch);
+          setLivePitchData(normalized);
+          setPitchData(normalized);
+        } catch (e) { console.error("Failed to reload live:", e); }
+        setIsLoading(false);
+      } else if (livePitchData) {
+        setPitchData(livePitchData);
+      }
+    } else {
+      // Historical: restore cached historical data if available
+      if (historicalPitchData) {
+        setPitchData(historicalPitchData);
+      } else {
+        setPitchData(null);
+      }
+    }
+  };
+
+  // Load pitcher from search
   const handleLoadPitcher = async (selection) => {
     if (!selection) return;
-    // selection is { id, name, team } from autocomplete
     const name = typeof selection === "string" ? selection : selection.name;
     const id = typeof selection === "string" ? null : selection.id;
+    const hand = typeof selection === "string" ? "" : (selection.throws || "");
     setPitcherName(name);
     setPitcherId(id);
+    setPitcherHand(hand);
     setActivePitcher(name);
-    // No game context from search — just set pitcher, user can switch to historical or pick a game
+    // Reset all data on pitcher change
     setPitchData(null);
+    setLivePitchData(null);
+    setHistoricalPitchData(null);
+    setActiveGame(null);
+    setGamePk(null);
   };
 
   // Load pitcher from live game selector
   const handleSelectFromGame = async (pitcher, game) => {
     setPitcherName(pitcher.name);
     setPitcherId(pitcher.id);
+    setPitcherHand(pitcher.throws || "");
     setActiveGame(game);
     setGamePk(game.game_pk);
     setView("live");
+    // Reset historical on pitcher change
+    setHistoricalPitchData(null);
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
-      setPitchData(raw.map(normalizeLivePitch));
+      const normalized = raw.map(normalizeLivePitch);
+      setLivePitchData(normalized);
+      setPitchData(normalized);
       setActivePitcher(pitcher.name);
     } catch (e) {
       console.error("Failed to load pitches:", e);
@@ -951,7 +1046,11 @@ export default function PitcherTracker() {
     try {
       const raw = await getStatcast(pitcherId, startDate, endDate);
       if (raw.length > 0) {
-        setPitchData(raw.map(normalizeLivePitch));
+        const normalized = raw.map(normalizeLivePitch);
+        setHistoricalPitchData(normalized);
+        setPitchData(normalized);
+        // Detect hand from Savant data if we don't have it
+        if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
         alert("No Statcast data found for this pitcher in that date range.");
       }
@@ -978,7 +1077,9 @@ export default function PitcherTracker() {
           {view === "live" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} />}
           {activePitcher && (
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: "16px", fontWeight: 700, color: C.text }}>{activePitcher}</div>
+              <div style={{ fontSize: "16px", fontWeight: 700, color: C.text }}>
+                {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
+              </div>
               <div style={{ fontSize: "11px", color: C.textDim }}>
                 {view === "live" && currentGame && <span>{currentGame.away_team} @ {currentGame.home_team} · {currentGame.inning || currentGame.detailed_status}</span>}
                 {view === "historical" && `${startDate} → ${endDate}`}
@@ -1007,7 +1108,7 @@ export default function PitcherTracker() {
             {/* View tabs */}
             <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}` }}>
               {["live", "historical"].map(t => (
-                <button key={t} onClick={() => setView(t)} style={{
+                <button key={t} onClick={() => handleViewSwitch(t)} style={{
                   padding: "10px 24px", fontSize: "11px", fontWeight: 600, letterSpacing: "2px",
                   textTransform: "uppercase", color: view === t ? C.accent : C.textDim,
                   background: "transparent", border: "none", fontFamily: "inherit", cursor: "pointer",
@@ -1038,7 +1139,7 @@ export default function PitcherTracker() {
               <>
                 {/* Movement + Usage */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
-                  <MovementPlot pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
+                  <MovementPlot pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} view={view} />
                   <UsageSplitChart pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} pitchData={pitchData} C={C} />
                 </div>
 
@@ -1065,6 +1166,7 @@ export default function PitcherTracker() {
                     data={displayMetrics.pitchTypeMetrics} columns={tableCols} title={tableTitle} C={C}
                     showHandToggle={tableView === "performance" || tableView === "results"}
                     handFilter={handFilter} setHandFilter={setHandFilter}
+                    allRow={(tableView === "performance" || tableView === "results") ? displayMetrics.allRow : null}
                   />
                 )}
 

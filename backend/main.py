@@ -64,10 +64,12 @@ async def search_pitcher(q: str):
         pos = person.get("primaryPosition", {}).get("abbreviation", "")
         if pos == "P":
             team = person.get("currentTeam", {}).get("abbreviation", "")
+            throw_hand = person.get("pitchHand", {}).get("code", "")
             results.append({
                 "id": person["id"],
                 "name": person["fullName"],
                 "team": team,
+                "throws": throw_hand,
             })
 
     set_cache(cache_key, results)
