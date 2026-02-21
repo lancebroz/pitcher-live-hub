@@ -807,12 +807,9 @@ const normalizeLivePitch = (p) => {
 
   // Movement data:
   // - Savant CSV: pfx_z and pfx_x are IVB and HB in FEET → multiply by 12 for inches
-  // - Live feed: breakVertical/breakHorizontal are already in inches but are NOT true IVB
-  //   (breakVertical includes gravity and is always negative). We pass them through as-is
-  //   since there's no clean conversion without additional physics modeling.
-  const isSavant = p.movement_source === "savant";
-  const pfx_z_inches = p.pfx_z != null ? (isSavant ? p.pfx_z * 12 : p.pfx_z) : null;
-  const pfx_x_inches = p.pfx_x != null ? (isSavant ? p.pfx_x * 12 : p.pfx_x) : null;
+  // - Live feed: pfxZ and pfxX from coordinates are also in FEET → multiply by 12
+  const pfx_z_inches = p.pfx_z != null ? p.pfx_z * 12 : null;
+  const pfx_x_inches = p.pfx_x != null ? p.pfx_x * 12 : null;
 
   return {
     pitch_number: p.pitch_number,
@@ -876,7 +873,7 @@ const RESULT_COLS = [
 
 // ─── Main App ───
 export default function PitcherTracker() {
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState("light");
   const C = themes[theme];
   const [pitcherName, setPitcherName] = useState("");
   const [activePitcher, setActivePitcher] = useState(null);
