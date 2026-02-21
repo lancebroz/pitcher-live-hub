@@ -229,6 +229,39 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
             coords = pitch_data.get("coordinates", {})
             breaks = pitch_data.get("breaks", {})
 
+            # Compute IVB and HB from the 9-parameter fit, matching Savant's method.
+            # The live feed provides accelerations (aX, aY, aZ) in ft/s² and
+            # initial velocities (vX0, vY0, vZ0) in ft/s at y0 (typically 50 ft).
+            # Formula: pfx = (a_spin / 2) * T^2, where T is flight time from y0 to plate.
+            # For z: a_spin = az + g (removing gravity), g = 32.174 ft/s²
+            # For x: a_spin = ax (no gravity component)
+            # T = time from y0 to front of plate (y = 17/12 ft)
+            g = 32.174  # gravity in ft/s²
+            ax = coords.get("aX")
+            ay = coords.get("aY")
+            az = coords.get("aZ")
+            vy0 = coords.get("vY0")
+            y0 = coords.get("y0", 50.0)
+
+            pfx_x_ft = None
+            pfx_z_ft = None
+
+            if all(v is not None for v in [ax, ay, az, vy0]):
+                # Flight time T from y0 to front of plate (y ≈ 17/12 ft)
+                y_plate = 17.0 / 12.0  # front of home plate in feet
+                dy = y0 - y_plate  # distance to travel (positive, ~48.6 ft)
+
+                # Using kinematic equation: dy = -vy0*T + 0.5*ay*T^2
+                # (vy0 is negative since ball moves toward plate)
+                # Rearranging: 0.5*ay*T^2 - vy0*T - dy = 0
+                # Quadratic: T = (vy0 - sqrt(vy0^2 + 2*ay*dy)) / ay
+                discriminant = vy0 * vy0 + 2.0 * ay * dy
+                if discriminant >= 0 and ay != 0:
+                    T = (vy0 - (discriminant ** 0.5)) / ay
+                    if T > 0:
+                        pfx_x_ft = (ax / 2.0) * T * T
+                        pfx_z_ft = ((az + g) / 2.0) * T * T
+
             pitches.append({
                 "pitch_number": len(pitches) + 1,
                 "pitch_type": pitch_type.get("code", ""),
@@ -239,8 +272,8 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "release_pos_x": coords.get("x0"),
                 "release_pos_z": coords.get("z0"),
                 "release_extension": pitch_data.get("extension"),
-                "pfx_x": coords.get("pfxX"),
-                "pfx_z": coords.get("pfxZ"),
+                "pfx_x": pfx_x_ft,
+                "pfx_z": pfx_z_ft,
                 "movement_source": "live_feed",
                 "release_spin_rate": breaks.get("spinRate"),
                 "spin_direction": breaks.get("spinDirection"),
