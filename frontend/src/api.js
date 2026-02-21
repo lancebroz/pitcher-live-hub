@@ -7,7 +7,7 @@
  * In production: set it in Vercel's environment variables
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app";
 
 export async function searchPitchers(query) {
   const res = await fetch(`${API_BASE}/api/search/pitcher?q=${encodeURIComponent(query)}`);
