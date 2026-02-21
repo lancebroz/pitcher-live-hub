@@ -255,8 +255,10 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                     vyf = -(disc ** 0.5)  # vyf is negative
                     T = (vyf - vy0) / ay
                     if T > 0 and T < 1.0:
-                        pfx_x_ft = (ax / 2.0) * T * T
-                        pfx_z_ft = ((az + g) / 2.0) * T * T
+                        # Note: the MLB live feed API reports accelerations that are
+                        # already halved (a/2), so the movement formula is a*T^2, not a*T^2/2
+                        pfx_x_ft = ax * T * T
+                        pfx_z_ft = (az + g) * T * T
 
             pitches.append({
                 "pitch_number": len(pitches) + 1,
@@ -283,17 +285,6 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "batter_name": batter_name,
                 "batter_hand": batter_side,
                 "inning": inning,
-                # Debug: raw API values for comparison
-                "_debug_raw_pfxX": coords.get("pfxX"),
-                "_debug_raw_pfxZ": coords.get("pfxZ"),
-                "_debug_aX": ax,
-                "_debug_aY": ay,
-                "_debug_aZ": az,
-                "_debug_vY0": vy0,
-                "_debug_y0": y0,
-                "_debug_T": T if pfx_x_ft is not None else None,
-                "_debug_computed_pfx_x_ft": pfx_x_ft,
-                "_debug_computed_pfx_z_ft": pfx_z_ft,
             })
 
     set_cache(cache_key, pitches)
