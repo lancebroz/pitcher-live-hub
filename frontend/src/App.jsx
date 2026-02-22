@@ -504,6 +504,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
       grouped[p.pitch_name].data.push({
         x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color,
         velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
+        game_date: p.game_date || "",
       });
       if (Math.abs(p.pfx_x) > maxAbs) maxAbs = Math.abs(p.pfx_x);
       if (Math.abs(p.pfx_z) > maxAbs) maxAbs = Math.abs(p.pfx_z);
@@ -532,12 +533,9 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                   <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo != null ? d.velo.toFixed(1) : "—"} mph</div>
                   <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
                     <div>IVB: {d.y != null ? d.y.toFixed(1) : "—"}" | HB: {d.x != null ? d.x.toFixed(1) : "—"}"</div>
-                    {currentView === "live" && (
-                      <>
-                        {d.batter && <div>vs. {d.batter}</div>}
-                        <div>Inning {d.inning} · Count: {d.count}</div>
-                      </>
-                    )}
+                    {d.batter && <div>vs. {d.batter}</div>}
+                    {d.game_date && <div>{d.game_date}</div>}
+                    <div>Inning {d.inning} · Count: {d.count}</div>
                   </div>
                 </div>
               );
@@ -565,16 +563,16 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
     name: pt.name, code: pt.code, color: pt.color,
     vsL: usageSplits[pt.name]?.vsL || 0, vsR: usageSplits[pt.name]?.vsR || 0,
   }));
-  const maxUsage = Math.max(...ordered.flatMap(p => [p.vsL, p.vsR]), 50);
   const countKeys = Object.keys(COUNT_STATES);
   const currentIdx = countKeys.indexOf(countState);
+  const MAX_SCALE = 80; // bars fill completely at 80%+
 
   const PillBar = ({ value, color, align }) => {
-    const widthPct = value > 0 ? (value / maxUsage) * 100 : 0;
+    const widthPct = value > 0 ? Math.min((value / MAX_SCALE) * 100, 100) : 0;
     const barColor = value > 0 ? color : "transparent";
     return (
-      <div style={{ flex: 1, height: "28px", borderRadius: "14px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "left" ? "flex-start" : "flex-end" }}>
-        <div style={{ width: `${Math.max(widthPct, value > 0 ? 6 : 0)}%`, height: "100%", borderRadius: "14px", background: barColor, opacity: 0.85, transition: "width 0.4s ease" }} />
+      <div style={{ flex: 1, height: "36px", borderRadius: "18px", background: C.surfaceAlt, overflow: "hidden", display: "flex", justifyContent: align === "left" ? "flex-start" : "flex-end" }}>
+        <div style={{ width: `${Math.max(widthPct, value > 0 ? 5 : 0)}%`, height: "100%", borderRadius: "18px", background: barColor, opacity: 0.85, transition: "width 0.4s ease" }} />
       </div>
     );
   };
@@ -582,7 +580,7 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", display: "flex", flexDirection: "column" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "20px" }}>Pitch Usage by Batter Hand</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 36px 50px 36px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 40px 56px 40px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. LHH</div>
         <div />
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.textDim }}>Pitch</div>
@@ -591,11 +589,11 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
       </div>
       <div style={{ flex: 1 }}>
         {ordered.map(p => (
-          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 36px 50px 36px 1fr", alignItems: "center", padding: "5px 0", gap: "0" }}>
+          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 40px 56px 40px 1fr", alignItems: "center", padding: "6px 0", gap: "0" }}>
             <PillBar value={p.vsL} color={p.color} align="right" />
             <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "right", paddingRight: "4px" }}>{p.vsL}%</span>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "5px", padding: "4px 10px", minWidth: "32px", textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>{p.code}</span>
+              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "5px", padding: "4px 10px", minWidth: "36px", textShadow: "0 1px 2px rgba(0,0,0,0.3)", whiteSpace: "nowrap" }}>{p.code}</span>
             </div>
             <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "left", paddingLeft: "4px" }}>{p.vsR}%</span>
             <PillBar value={p.vsR} color={p.color} align="left" />
@@ -758,7 +756,7 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
             <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
               <CartesianGrid stroke="none" />
               <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
-              <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
+              <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
               {/* Strike zone */}
               <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
               {/* Home plate drawn via ReferenceLine label for perfect coordinate alignment */}
@@ -960,7 +958,206 @@ const normalizeLivePitch = (p) => {
     estimated_ba_using_speedangle: p.estimated_ba_using_speedangle || null,
     woba_value: p.woba_value || null,
     delta_run_exp: p.delta_run_exp,
+    game_date: p.game_date || "",
+    at_bat_number: p.at_bat_number || null,
+    events: p.events || "",
   };
+};
+
+const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type !== "PO");
+
+// ─── Compute Historical Summary Stats from pitch-level data ───
+const computeHistoricalSummary = (pitchData) => {
+  if (!pitchData || pitchData.length === 0) return null;
+
+  // Get unique game dates
+  const gameDates = [...new Set(pitchData.filter(p => p.game_date).map(p => p.game_date))];
+  const gamesStarted = gameDates.length;
+
+  // Find at-bat ending pitches (those with events)
+  const abEndPitches = pitchData.filter(p => p.events && p.events.trim() !== "");
+
+  // Count plate appearances (batters faced)
+  const totalPA = abEndPitches.length;
+
+  // Count strikeouts
+  const strikeouts = abEndPitches.filter(p => {
+    const ev = (p.events || "").toLowerCase();
+    return ev.includes("strikeout") || ev === "strikeout_double_play";
+  }).length;
+
+  // Count walks (BB + HBP)
+  const walks = abEndPitches.filter(p => {
+    const ev = (p.events || "").toLowerCase();
+    return ev === "walk" || ev === "hit_by_pitch" || ev === "intent_walk";
+  }).length;
+
+  const bbOnly = abEndPitches.filter(p => {
+    const ev = (p.events || "").toLowerCase();
+    return ev === "walk" || ev === "intent_walk";
+  }).length;
+
+  // Count hits
+  const hits = abEndPitches.filter(p => {
+    const ev = (p.events || "").toLowerCase();
+    return ev === "single" || ev === "double" || ev === "triple" || ev === "home_run";
+  }).length;
+
+  // Count outs to estimate IP
+  const outEvents = abEndPitches.reduce((outs, p) => {
+    const ev = (p.events || "").toLowerCase();
+    if (ev === "strikeout" || ev === "field_out" || ev === "flyout" || ev === "groundout" ||
+        ev === "lineout" || ev === "pop_out" || ev === "force_out" || ev === "forceout" ||
+        ev === "sac_fly" || ev === "sac_bunt" || ev === "sac_fly_double_play" ||
+        ev === "fielders_choice" || ev === "fielders_choice_out" ||
+        ev === "field_error" || ev === "catcher_interf") return outs + 1;
+    if (ev === "double_play" || ev === "grounded_into_double_play" ||
+        ev === "strikeout_double_play" || ev === "sac_bunt_double_play") return outs + 2;
+    if (ev === "triple_play") return outs + 3;
+    return outs;
+  }, 0);
+
+  const ipNum = outEvents / 3;
+  const ipWhole = Math.floor(ipNum);
+  const ipRemainder = outEvents % 3;
+  const ipStr = `${ipWhole}.${ipRemainder}`;
+
+  // Compute rates
+  const kPct = totalPA > 0 ? ((strikeouts / totalPA) * 100).toFixed(1) : "0.0";
+  const bbPct = totalPA > 0 ? ((walks / totalPA) * 100).toFixed(1) : "0.0";
+  const whip = ipNum > 0 ? ((bbOnly + hits) / ipNum).toFixed(2) : "-.--";
+
+  // ERA: use delta_run_exp sum as a proxy for runs, or compute from run-scoring events
+  // Since we don't have earned runs directly, we'll estimate using run expectancy
+  // A better approach: count runs scored via events (HR = at least 1 run, etc.)
+  // But the most accurate available proxy is sum of delta_run_exp
+  const totalRunExp = pitchData.reduce((s, p) => s + (p.delta_run_exp || 0), 0);
+  // delta_run_exp sums to approximately total runs above average
+  // For ERA, we'll note it's estimated. Alternative: just show "-" if we can't get ER
+  // Let's use the rough estimate: total estimated runs = totalRunExp + league_avg_runs_per_out * outs
+  // Actually, let's just show the stats we can compute accurately and skip ERA since we can't get ER
+  // Instead, we'll compute FIP which is more meaningful from pitch data:
+  // FIP = ((13*HR + 3*BB - 2*K) / IP) + 3.2 (constant)
+  const homeRuns = abEndPitches.filter(p => (p.events || "").toLowerCase() === "home_run").length;
+  const fip = ipNum > 0 ? (((13 * homeRuns + 3 * walks - 2 * strikeouts) / ipNum) + 3.20).toFixed(2) : "-.--";
+
+  return {
+    gamesStarted, ip: ipStr, kPct, bbPct, whip, fip, gameDates,
+    totalPA, strikeouts, walks, hits, homeRuns, outs: outEvents,
+  };
+};
+
+// ─── Historical Summary Box ───
+const HistoricalSummaryBox = ({ pitchData, activePitcher, pitcherHand, C }) => {
+  const summary = useMemo(() => computeHistoricalSummary(pitchData), [pitchData]);
+  if (!summary) return null;
+
+  const lastName = activePitcher.split(" ").slice(-1)[0];
+  const firstName = activePitcher.split(" ")[0];
+  const initial = firstName ? firstName[0] + "." : "";
+  const displayName = `${initial} ${lastName}`;
+
+  const statCols = [
+    { label: "GS", val: summary.gamesStarted },
+    { label: "IP", val: summary.ip },
+    { label: "K%", val: `${summary.kPct}` },
+    { label: "BB%", val: `${summary.bbPct}` },
+    { label: "WHIP", val: summary.whip },
+    { label: "FIP", val: summary.fip },
+  ];
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", marginBottom: "20px", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <div style={{ padding: "12px 20px", minWidth: "120px", fontSize: "13px", fontWeight: 700, color: C.text, borderRight: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "6px" }}>
+          {displayName}
+          {pitcherHand && <span style={{ fontSize: "10px", fontWeight: 500, color: C.textDim }}>({pitcherHand}HP)</span>}
+        </div>
+        <div style={{ display: "flex", flex: 1 }}>
+          {statCols.map((col, i) => (
+            <div key={col.label} style={{ flex: 1, textAlign: "center", padding: "0 4px", borderRight: i < statCols.length - 1 ? `1px solid ${C.border}` : "none" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", padding: "8px 0 4px", borderBottom: `1px solid ${C.border}` }}>{col.label}</div>
+              <div style={{ fontSize: "14px", fontWeight: 600, padding: "8px 0", color: C.text }}>{col.val}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Mini Calendar showing pitched dates ───
+const PitchedDatesCalendar = ({ pitchData, startDate, endDate, C }) => {
+  const pitchedDates = useMemo(() => {
+    if (!pitchData) return new Set();
+    return new Set(pitchData.filter(p => p.game_date).map(p => p.game_date));
+  }, [pitchData]);
+
+  // Generate months between start and end
+  const months = useMemo(() => {
+    if (!startDate || !endDate) return [];
+    const start = new Date(startDate + "T12:00:00");
+    const end = new Date(endDate + "T12:00:00");
+    const result = [];
+    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (cur <= end) {
+      result.push({ year: cur.getFullYear(), month: cur.getMonth() });
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    return result;
+  }, [startDate, endDate]);
+
+  if (pitchedDates.size === 0 || months.length === 0) return null;
+
+  const dayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "20px" }}>
+      <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "12px" }}>Game Log Calendar</div>
+      <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", justifyContent: "center" }}>
+        {months.map(({ year, month }) => {
+          const firstDay = new Date(year, month, 1).getDay();
+          const daysInMonth = new Date(year, month + 1, 0).getDate();
+          const cells = [];
+          for (let i = 0; i < firstDay; i++) cells.push(null);
+          for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+          return (
+            <div key={`${year}-${month}`} style={{ minWidth: "168px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "6px" }}>
+                {monthNames[month]} {year}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "1px" }}>
+                {dayNames.map(d => (
+                  <div key={d} style={{ fontSize: "8px", fontWeight: 600, color: C.textDim, textAlign: "center", padding: "2px 0" }}>{d}</div>
+                ))}
+                {cells.map((day, i) => {
+                  if (day === null) return <div key={`empty-${i}`} />;
+                  const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                  const pitched = pitchedDates.has(dateStr);
+                  return (
+                    <div key={dateStr} style={{
+                      fontSize: "9px", textAlign: "center", padding: "3px 0", borderRadius: "3px",
+                      fontWeight: pitched ? 700 : 400,
+                      color: pitched ? "#fff" : C.textDim,
+                      background: pitched ? C.accent : "transparent",
+                    }}>
+                      {day}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" }}>
+        <div style={{ width: "10px", height: "10px", borderRadius: "2px", background: C.accent }} />
+        <span style={{ fontSize: "9px", color: C.textDim }}>{pitchedDates.size} game{pitchedDates.size !== 1 ? "s" : ""} pitched</span>
+      </div>
+    </div>
+  );
 };
 
 // ─── Table Columns ───
@@ -1024,7 +1221,7 @@ export default function PitcherTracker() {
         try {
           const raw = await getGamePitches(gamePk, pitcherId);
           if (raw.length > 0) {
-            const normalized = raw.map(normalizeLivePitch);
+            const normalized = normAndFilter(raw);
             setLivePitchData(normalized);
             setPitchData(normalized);
           }
@@ -1047,7 +1244,7 @@ export default function PitcherTracker() {
         setIsLoading(true);
         try {
           const raw = await getGamePitches(gamePk, pitcherId);
-          const normalized = raw.map(normalizeLivePitch);
+          const normalized = normAndFilter(raw);
           setLivePitchData(normalized);
           setPitchData(normalized);
         } catch (e) { console.error("Failed to reload live:", e); }
@@ -1097,7 +1294,7 @@ export default function PitcherTracker() {
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
-      const normalized = raw.map(normalizeLivePitch);
+      const normalized = normAndFilter(raw);
       setLivePitchData(normalized);
       setPitchData(normalized);
       setActivePitcher(pitcher.name);
@@ -1117,7 +1314,7 @@ export default function PitcherTracker() {
     try {
       const raw = await getStatcast(pitcherId, startDate, endDate);
       if (raw.length > 0) {
-        const normalized = raw.map(normalizeLivePitch);
+        const normalized = normAndFilter(raw);
         setHistoricalPitchData(normalized);
         setPitchData(normalized);
         // Detect hand from Savant data if we don't have it
@@ -1263,6 +1460,14 @@ export default function PitcherTracker() {
                   {isLoading ? "Loading..." : "Fetch Data"}
                 </button>
               </div>
+            )}
+
+            {view === "historical" && historicalPitchData && activePitcher && (
+              <HistoricalSummaryBox pitchData={historicalPitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
+            )}
+
+            {view === "historical" && historicalPitchData && (
+              <PitchedDatesCalendar pitchData={historicalPitchData} startDate={startDate} endDate={endDate} C={C} />
             )}
 
             {stuffMetrics && (

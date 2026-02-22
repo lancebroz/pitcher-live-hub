@@ -413,6 +413,8 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "strikes": row.get("strikes", ""),
             "game_date": row.get("game_date", ""),
             "inning": safe_float("inning"),
+            "at_bat_number": safe_float("at_bat_number"),
+            "events": row.get("events", ""),
             "delta_run_exp": safe_float("delta_run_exp"),
             "bat_speed": safe_float("bat_speed"),
             "swing_length": safe_float("swing_length"),
