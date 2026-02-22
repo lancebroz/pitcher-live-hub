@@ -560,7 +560,7 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   const [countState, setCountState] = useState("all");
   const usageSplits = useMemo(() => computeUsageSplits(pitchData, countState), [pitchData, countState]);
   const ordered = pitchTypeMetrics.map(pt => ({
-    name: pt.name, code: pt.code, color: pt.color,
+    name: pt.name, code: pt.code || PITCH_ABBREV[pt.name] || "?", color: pt.color,
     vsL: usageSplits[pt.name]?.vsL || 0, vsR: usageSplits[pt.name]?.vsR || 0,
   }));
   const countKeys = Object.keys(COUNT_STATES);
@@ -580,7 +580,7 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", display: "flex", flexDirection: "column" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "20px" }}>Pitch Usage by Batter Hand</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 40px 56px 40px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 40px 60px 40px 1fr", alignItems: "center", marginBottom: "12px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.accent }}>vs. LHH</div>
         <div />
         <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 700, letterSpacing: "1.5px", color: C.textDim }}>Pitch</div>
@@ -589,11 +589,11 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
       </div>
       <div style={{ flex: 1 }}>
         {ordered.map(p => (
-          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 40px 56px 40px 1fr", alignItems: "center", padding: "6px 0", gap: "0" }}>
+          <div key={p.name} style={{ display: "grid", gridTemplateColumns: "1fr 40px 60px 40px 1fr", alignItems: "center", padding: "6px 0", gap: "0" }}>
             <PillBar value={p.vsL} color={p.color} align="right" />
             <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "right", paddingRight: "4px" }}>{p.vsL}%</span>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "10px", borderRadius: "5px", padding: "4px 10px", minWidth: "36px", textShadow: "0 1px 2px rgba(0,0,0,0.3)", whiteSpace: "nowrap" }}>{p.code}</span>
+              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", background: p.color, color: "#fff", fontWeight: 700, fontSize: "11px", borderRadius: "6px", padding: "5px 8px", minWidth: "40px", height: "26px", boxSizing: "border-box", textShadow: "0 1px 2px rgba(0,0,0,0.3)", whiteSpace: "nowrap", lineHeight: 1 }}>{p.code || "?"}</span>
             </div>
             <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, textAlign: "left", paddingLeft: "4px" }}>{p.vsR}%</span>
             <PillBar value={p.vsR} color={p.color} align="left" />

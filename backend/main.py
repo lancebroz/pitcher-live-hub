@@ -258,6 +258,21 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
             coords = pitch_data.get("coordinates", {})
             breaks = pitch_data.get("breaks", {})
 
+            # Hit data (only present on balls in play)
+            hit_data = event.get("hitData", {})
+            launch_speed = hit_data.get("launchSpeed")
+            launch_angle = hit_data.get("launchAngle")
+            # trajectory: "ground_ball", "fly_ball", "line_drive", "popup"
+            trajectory = hit_data.get("trajectory", "")
+            # Map trajectory to Savant bb_type format
+            bb_type_map = {
+                "ground_ball": "ground_ball",
+                "fly_ball": "fly_ball",
+                "line_drive": "line_drive",
+                "popup": "popup",
+            }
+            bb_type = bb_type_map.get(trajectory, "")
+
             # IVB and HB come directly from the live feed's breaks object.
             # breakVerticalInduced = induced vertical break (inches)
             # breakHorizontal = horizontal break (inches)
@@ -292,6 +307,9 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "batter_name": batter_name,
                 "batter_hand": batter_side,
                 "inning": inning,
+                "launch_speed": launch_speed,
+                "launch_angle": launch_angle,
+                "bb_type": bb_type,
             })
 
     set_cache(cache_key, pitches)
