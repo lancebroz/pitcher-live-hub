@@ -15,8 +15,9 @@ export async function searchPitchers(query) {
   return res.json();
 }
 
-export async function getLiveGames() {
-  const res = await fetch(`${API_BASE}/api/games/live`);
+export async function getLiveGames(gameDate) {
+  const params = gameDate ? `?game_date=${gameDate}` : "";
+  const res = await fetch(`${API_BASE}/api/games/live${params}`);
   if (!res.ok) return [];
   return res.json();
 }

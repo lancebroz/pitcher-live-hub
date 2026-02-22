@@ -343,6 +343,7 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
   const [games, setGames] = useState([]);
   const [pitchers, setPitchers] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const ref = useRef(null);
 
   useEffect(() => {
@@ -351,18 +352,36 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
+  const loadGamesForDate = async (dateStr) => {
+    setLoading(true);
+    try {
+      const g = await getLiveGames(dateStr);
+      setGames(g);
+    } catch (e) { console.error("Failed to load games:", e); }
+    setLoading(false);
+  };
+
   const handleOpen = async () => {
     const nowOpen = !open;
     setOpen(nowOpen);
     setSg(null);
-    if (nowOpen) {
-      setLoading(true);
-      try {
-        const g = await getLiveGames();
-        setGames(g);
-      } catch (e) { console.error("Failed to load games:", e); }
-      setLoading(false);
-    }
+    if (nowOpen) await loadGamesForDate(selectedDate);
+  };
+
+  const shiftDate = async (days) => {
+    const d = new Date(selectedDate + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    const newDate = d.toISOString().slice(0, 10);
+    setSelectedDate(newDate);
+    setSg(null);
+    await loadGamesForDate(newDate);
+  };
+
+  const handleDateChange = async (e) => {
+    const newDate = e.target.value;
+    setSelectedDate(newDate);
+    setSg(null);
+    await loadGamesForDate(newDate);
   };
 
   const handleSelectGame = async (game) => {
@@ -377,18 +396,26 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
 
   const isFinal = g => g.status === "Final" || (g.detailed_status || "").toLowerCase().includes("final") || (g.detailed_status || "").toLowerCase().includes("game over");
   const isLive = g => (g.status === "Live" || g.status === "In Progress") && !isFinal(g);
-  const liveGames = games.filter(g => isLive(g));
   const sortedGames = [...games].sort((a, b) => {
     const order = g => isLive(g) ? 0 : isFinal(g) ? 2 : 1;
     return order(a) - order(b);
   });
   const allGames = sortedGames.length > 0 ? sortedGames : [];
+  const today = new Date().toISOString().slice(0, 10);
+  const isToday = selectedDate === today;
+
+  // Format display date
+  const formatDate = (dateStr) => {
+    if (dateStr === today) return "Today";
+    const d = new Date(dateStr + "T12:00:00");
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button onClick={handleOpen} style={{ display: "flex", alignItems: "center", gap: "16px", background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "10px 20px", cursor: "pointer", fontFamily: "inherit" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px rgba(34,197,94,0.6)" }} />
+          {isToday && <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px rgba(34,197,94,0.6)" }} />}
           <span style={{ fontSize: "12px", fontWeight: 700, color: C.accent, letterSpacing: "1px" }}>GAMES</span>
         </div>
         <span style={{ fontSize: "10px", color: C.textDim }}>{open ? "▲" : "▼"}</span>
@@ -397,8 +424,23 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
         <div style={{ position: "absolute", top: "100%", right: 0, zIndex: 200, marginTop: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", boxShadow: "0 12px 40px rgba(0,0,0,0.4)", width: "420px", overflow: "hidden", maxHeight: "500px", overflowY: "auto" }}>
           {!sg ? (
             <>
-              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, fontSize: "10px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim }}>
-                {loading ? "Loading games..." : `Today's Games (${allGames.length})`}
+              {/* Date navigation header */}
+              <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <button onClick={() => shiftDate(-1)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: C.accent, fontWeight: 700, padding: "2px 8px", fontFamily: "inherit" }}>‹</button>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "12px", fontWeight: 700, color: C.text, letterSpacing: "0.5px" }}>{formatDate(selectedDate)}</span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={handleDateChange}
+                    style={{ width: "18px", height: "18px", opacity: 0.5, cursor: "pointer", border: "none", background: "transparent", colorScheme: C === themes.dark ? "dark" : "light" }}
+                    title="Pick a date"
+                  />
+                </div>
+                <button onClick={() => shiftDate(1)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: C.accent, fontWeight: 700, padding: "2px 8px", fontFamily: "inherit" }}>›</button>
+              </div>
+              <div style={{ padding: "6px 16px", borderBottom: `1px solid ${C.border}`, fontSize: "10px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim }}>
+                {loading ? "Loading games..." : `${allGames.length} Game${allGames.length !== 1 ? "s" : ""}`}
               </div>
               {allGames.map(g => (
                 <div key={g.game_pk} onClick={() => handleSelectGame(g)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", borderBottom: `1px solid ${C.border}` }}
@@ -415,7 +457,7 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
                 </div>
               ))}
               {!loading && allGames.length === 0 && (
-                <div style={{ padding: "20px 16px", textAlign: "center", fontSize: "12px", color: C.textDim }}>No games scheduled today</div>
+                <div style={{ padding: "20px 16px", textAlign: "center", fontSize: "12px", color: C.textDim }}>No games scheduled</div>
               )}
             </>
           ) : (
@@ -964,6 +1006,7 @@ export default function PitcherTracker() {
   const [handFilter, setHandFilter] = useState("all");
   const [activeGame, setActiveGame] = useState(null);
   const [gamePk, setGamePk] = useState(null);
+  const [pitcherGameStats, setPitcherGameStats] = useState(null);
   const pollRef = useRef(null);
 
   const metrics = useMemo(() => {
@@ -985,6 +1028,10 @@ export default function PitcherTracker() {
             setLivePitchData(normalized);
             setPitchData(normalized);
           }
+          // Also refresh pitcher game stats
+          const pitchers = await getGamePitchers(gamePk);
+          const me = pitchers.find(p => p.id === pitcherId);
+          if (me?.game_stats) setPitcherGameStats(me.game_stats);
         } catch (e) { console.error("Poll failed:", e); }
       }, 15000);
     }
@@ -1044,6 +1091,7 @@ export default function PitcherTracker() {
     setActiveGame(game);
     setGamePk(game.game_pk);
     setView("live");
+    setPitcherGameStats(pitcher.game_stats || null);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setIsLoading(true);
@@ -1141,6 +1189,65 @@ export default function PitcherTracker() {
                 </button>
               ))}
             </div>
+
+            {/* Pitcher Game Line - Live view only */}
+            {view === "live" && pitcherGameStats && activePitcher && (() => {
+              const s = pitcherGameStats;
+              // Calculate ERA: season_era is cumulative including this game
+              // The API's seasonStats already includes this game's stats
+              // So season_era IS the current ERA including today's ER
+              const era = s.season_era && s.season_era !== "-.--" ? s.season_era : "-.--";
+              const lastName = activePitcher.split(" ").slice(-1)[0];
+              const firstName = activePitcher.split(" ")[0];
+              const initial = firstName ? firstName[0] + "." : "";
+              const displayName = `${initial} ${lastName}`;
+              const statCols = [
+                { label: "IP", val: s.ip || "0" },
+                { label: "H", val: s.h ?? 0 },
+                { label: "R", val: s.r ?? 0 },
+                { label: "ER", val: s.er ?? 0 },
+                { label: "BB", val: s.bb ?? 0 },
+                { label: "K", val: s.k ?? 0 },
+                { label: "HR", val: s.hr ?? 0 },
+                { label: "ERA", val: era },
+              ];
+              return (
+                <div style={{
+                  background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
+                  marginBottom: "20px", overflow: "hidden",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    {/* Pitcher name */}
+                    <div style={{
+                      padding: "12px 20px", minWidth: "120px", fontSize: "13px", fontWeight: 700,
+                      color: C.text, borderRight: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "6px",
+                    }}>
+                      {displayName}
+                      {pitcherHand && <span style={{ fontSize: "10px", fontWeight: 500, color: C.textDim }}>({pitcherHand}HP)</span>}
+                    </div>
+                    {/* Stat columns */}
+                    <div style={{ display: "flex", flex: 1 }}>
+                      {statCols.map((col, i) => (
+                        <div key={col.label} style={{
+                          flex: 1, textAlign: "center", padding: "0 4px",
+                          borderRight: i < statCols.length - 1 ? `1px solid ${C.border}` : "none",
+                        }}>
+                          <div style={{ fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", padding: "8px 0 4px", borderBottom: `1px solid ${C.border}` }}>
+                            {col.label}
+                          </div>
+                          <div style={{
+                            fontSize: "14px", fontWeight: 600, padding: "8px 0",
+                            color: col.label === "ERA" ? C.accent : C.text,
+                          }}>
+                            {col.val}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>

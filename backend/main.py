@@ -78,23 +78,23 @@ async def search_pitcher(q: str):
 
 # ─── Route 2: Get today's live/scheduled games ───
 @app.get("/api/games/live")
-async def get_live_games():
+async def get_live_games(game_date: str = None):
     """
-    Returns all of today's MLB games with scores and status.
+    Returns all MLB games for a given date (default: today) with scores and status.
     """
-    cached = get_cached("live_games", 30)  # refresh every 30 seconds
+    from datetime import date, timedelta
+    target = game_date or date.today().strftime("%Y-%m-%d")
+    cache_key = f"live_games:{target}"
+    cached = get_cached(cache_key, 30)  # refresh every 30 seconds
     if cached:
         return cached
-
-    from datetime import date
-    today = date.today().strftime("%Y-%m-%d")
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{MLB_BASE}/api/v1/schedule",
             params={
                 "sportId": 1,
-                "date": today,
+                "date": target,
                 "hydrate": "linescore,probablePitcher,decisions,team",
             },
             timeout=10,
@@ -128,7 +128,7 @@ async def get_live_games():
                 "venue": game.get("venue", {}).get("name", ""),
             })
 
-    set_cache("live_games", games)
+    set_cache(cache_key, games)
     return games
 
 
@@ -136,7 +136,8 @@ async def get_live_games():
 @app.get("/api/game/{game_pk}/pitchers")
 async def get_game_pitchers(game_pk: int):
     """
-    Returns all pitchers who have thrown in this game so far.
+    Returns all pitchers who have thrown in this game so far,
+    including their box score line and season ERA.
     """
     cache_key = f"game_pitchers:{game_pk}"
     cached = get_cached(cache_key, 30)
@@ -153,6 +154,30 @@ async def get_game_pitchers(game_pk: int):
     pitchers = []
     seen_ids = set()
 
+    # Build a map of pitcher game stats from the boxscore
+    boxscore = data.get("liveData", {}).get("boxscore", {})
+    pitcher_stats = {}  # pid -> {ip, h, r, er, bb, k, hr, pitches, seasonEra}
+    for side in ["home", "away"]:
+        team_players = boxscore.get("teams", {}).get(side, {}).get("players", {})
+        for key, pdata in team_players.items():
+            pid = pdata.get("person", {}).get("id")
+            stats = pdata.get("stats", {}).get("pitching", {})
+            season_stats = pdata.get("seasonStats", {}).get("pitching", {})
+            if pid and stats.get("inningsPitched") is not None:
+                pitcher_stats[pid] = {
+                    "ip": stats.get("inningsPitched", "0"),
+                    "h": stats.get("hits", 0),
+                    "r": stats.get("runs", 0),
+                    "er": stats.get("earnedRuns", 0),
+                    "bb": stats.get("baseOnBalls", 0),
+                    "k": stats.get("strikeOuts", 0),
+                    "hr": stats.get("homeRuns", 0),
+                    "pitches": stats.get("numberOfPitches", 0),
+                    "season_era": season_stats.get("era", "-.--"),
+                    "season_ip": season_stats.get("inningsPitched", "0"),
+                    "season_er": season_stats.get("earnedRuns", 0),
+                }
+
     # Walk through all plays to find every pitcher
     all_plays = data.get("liveData", {}).get("plays", {}).get("allPlays", [])
     for play in all_plays:
@@ -167,17 +192,21 @@ async def get_game_pitchers(game_pk: int):
             # Top inning = away batting = home pitching, Bottom = home batting = away pitching
             side = "home" if half == "top" else "away"
 
-            # Count pitches
+            # Count pitches from play events
             pitch_count = 0
             for p in all_plays:
                 if p.get("matchup", {}).get("pitcher", {}).get("id") == pid:
                     pitch_count += len(p.get("playEvents", []))
+
+            p_stats = pitcher_stats.get(pid, {})
 
             pitchers.append({
                 "id": pid,
                 "name": pitcher.get("fullName", ""),
                 "side": side,
                 "pitch_count": pitch_count,
+                "throws": matchup.get("pitchHand", {}).get("code", ""),
+                "game_stats": p_stats if p_stats else None,
             })
 
     set_cache(cache_key, pitchers)
