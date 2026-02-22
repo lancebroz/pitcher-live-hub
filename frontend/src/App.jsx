@@ -1086,76 +1086,114 @@ const HistoricalSummaryBox = ({ pitchData, activePitcher, pitcherHand, C }) => {
   );
 };
 
-// ─── Mini Calendar showing pitched dates ───
-const PitchedDatesCalendar = ({ pitchData, startDate, endDate, C }) => {
-  const pitchedDates = useMemo(() => {
-    if (!pitchData) return new Set();
-    return new Set(pitchData.filter(p => p.game_date).map(p => p.game_date));
-  }, [pitchData]);
+// ─── Date Picker with Pitched Date Highlights ───
+const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const parsed = value ? new Date(value + "T12:00:00") : new Date();
+  const [viewYear, setViewYear] = useState(parsed.getFullYear());
+  const [viewMonth, setViewMonth] = useState(parsed.getMonth());
 
-  // Generate months between start and end
-  const months = useMemo(() => {
-    if (!startDate || !endDate) return [];
-    const start = new Date(startDate + "T12:00:00");
-    const end = new Date(endDate + "T12:00:00");
-    const result = [];
-    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
-    while (cur <= end) {
-      result.push({ year: cur.getFullYear(), month: cur.getMonth() });
-      cur.setMonth(cur.getMonth() + 1);
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // Sync view to value when it changes externally
+  useEffect(() => {
+    if (value) {
+      const d = new Date(value + "T12:00:00");
+      setViewYear(d.getFullYear());
+      setViewMonth(d.getMonth());
     }
-    return result;
-  }, [startDate, endDate]);
-
-  if (pitchedDates.size === 0 || months.length === 0) return null;
+  }, [value]);
 
   const dayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+    else setViewMonth(viewMonth - 1);
+  };
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+    else setViewMonth(viewMonth + 1);
+  };
+
+  const selectDate = (day) => {
+    const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    onChange(dateStr);
+    setOpen(false);
+  };
+
+  const displayVal = value || "Select date";
 
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "20px" }}>
-      <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "12px" }}>Game Log Calendar</div>
-      <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", justifyContent: "center" }}>
-        {months.map(({ year, month }) => {
-          const firstDay = new Date(year, month, 1).getDay();
-          const daysInMonth = new Date(year, month + 1, 0).getDate();
-          const cells = [];
-          for (let i = 0; i < firstDay; i++) cells.push(null);
-          for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-
-          return (
-            <div key={`${year}-${month}`} style={{ minWidth: "168px" }}>
-              <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "6px" }}>
-                {monthNames[month]} {year}
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "1px" }}>
-                {dayNames.map(d => (
-                  <div key={d} style={{ fontSize: "8px", fontWeight: 600, color: C.textDim, textAlign: "center", padding: "2px 0" }}>{d}</div>
-                ))}
-                {cells.map((day, i) => {
-                  if (day === null) return <div key={`empty-${i}`} />;
-                  const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-                  const pitched = pitchedDates.has(dateStr);
-                  return (
-                    <div key={dateStr} style={{
-                      fontSize: "9px", textAlign: "center", padding: "3px 0", borderRadius: "3px",
-                      fontWeight: pitched ? 700 : 400,
-                      color: pitched ? "#fff" : C.textDim,
-                      background: pitched ? C.accent : "transparent",
-                    }}>
-                      {day}
-                    </div>
-                  );
-                })}
-              </div>
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button onClick={() => setOpen(!open)} style={{
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px",
+        color: C.text, fontSize: "13px", fontFamily: "inherit", cursor: "pointer", minWidth: "130px",
+        textAlign: "left", display: "flex", alignItems: "center", gap: "8px",
+      }}>
+        <span>{displayVal}</span>
+        <span style={{ fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>▼</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, zIndex: 300, marginTop: "4px",
+          background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)", padding: "12px", width: "260px",
+        }}>
+          {/* Month/Year nav */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>‹</button>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{monthNames[viewMonth]} {viewYear}</span>
+            <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>›</button>
+          </div>
+          {/* Day headers */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px", marginBottom: "4px" }}>
+            {dayNames.map(d => (
+              <div key={d} style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textAlign: "center", padding: "2px 0" }}>{d}</div>
+            ))}
+          </div>
+          {/* Day cells */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px" }}>
+            {cells.map((day, i) => {
+              if (day === null) return <div key={`e-${i}`} />;
+              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              const pitched = pitchedDates && pitchedDates.has(dateStr);
+              const isSelected = dateStr === value;
+              return (
+                <div key={dateStr} onClick={() => selectDate(day)} style={{
+                  fontSize: "11px", textAlign: "center", padding: "5px 0", borderRadius: "4px", cursor: "pointer",
+                  fontWeight: (pitched || isSelected) ? 700 : 400,
+                  color: isSelected ? "#fff" : pitched ? C.accent : C.text,
+                  background: isSelected ? C.accent : pitched ? (C.accent + "22") : "transparent",
+                  border: pitched && !isSelected ? `1px solid ${C.accent}55` : "1px solid transparent",
+                  transition: "background 0.15s",
+                }}
+                  onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.accentGlow; }}
+                  onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = pitched ? (C.accent + "22") : "transparent"; }}
+                >
+                  {day}
+                </div>
+              );
+            })}
+          </div>
+          {pitchedDates && pitchedDates.size > 0 && (
+            <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "6px", justifyContent: "center" }}>
+              <div style={{ width: "8px", height: "8px", borderRadius: "2px", border: `1px solid ${C.accent}55`, background: C.accent + "22" }} />
+              <span style={{ fontSize: "9px", color: C.textDim }}>Pitched ({pitchedDates.size})</span>
             </div>
-          );
-        })}
-      </div>
-      <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" }}>
-        <div style={{ width: "10px", height: "10px", borderRadius: "2px", background: C.accent }} />
-        <span style={{ fontSize: "9px", color: C.textDim }}>{pitchedDates.size} game{pitchedDates.size !== 1 ? "s" : ""} pitched</span>
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1212,6 +1250,10 @@ export default function PitcherTracker() {
     return computeMetrics(pitchData, hf);
   }, [pitchData, handFilter, tableView]);
   const stuffMetrics = useMemo(() => pitchData ? computeMetrics(pitchData, "all") : null, [pitchData]);
+  const pitchedDates = useMemo(() => {
+    if (!historicalPitchData) return new Set();
+    return new Set(historicalPitchData.filter(p => p.game_date).map(p => p.game_date));
+  }, [historicalPitchData]);
 
   // Live polling: re-fetch pitch data every 15 seconds during live games
   useEffect(() => {
@@ -1449,9 +1491,9 @@ export default function PitcherTracker() {
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
-                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", color: C.text, fontSize: "13px", fontFamily: "inherit", outline: "none", colorScheme: theme }} />
+                <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start" />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
-                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", color: C.text, fontSize: "13px", fontFamily: "inherit", outline: "none", colorScheme: theme }} />
+                <DatePickerWithHighlights value={endDate} onChange={setEndDate} pitchedDates={pitchedDates} C={C} label="End" />
                 <button onClick={handleLoadHistorical} style={{
                   background: C.accent, border: "none", borderRadius: "6px", padding: "10px 20px",
                   color: "#fff", fontSize: "12px", fontWeight: 600, letterSpacing: "1px",
@@ -1464,10 +1506,6 @@ export default function PitcherTracker() {
 
             {view === "historical" && historicalPitchData && activePitcher && (
               <HistoricalSummaryBox pitchData={historicalPitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
-            )}
-
-            {view === "historical" && historicalPitchData && (
-              <PitchedDatesCalendar pitchData={historicalPitchData} startDate={startDate} endDate={endDate} C={C} />
             )}
 
             {stuffMetrics && (
