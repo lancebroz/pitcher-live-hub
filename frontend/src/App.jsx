@@ -1384,6 +1384,18 @@ export default function PitcherTracker() {
             <div style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "3px", textTransform: "uppercase", color: C.accent, marginBottom: "4px" }}>Pitcher Command Center</div>
             <div style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px" }}>Live Statcast Tracking & Analytics</div>
           </div>
+          <a href="https://lancebroz.substack.com/subscribe" target="_blank" rel="noopener noreferrer" style={{
+            display: "inline-flex", alignItems: "center", gap: "8px", background: "#FF6719", color: "#fff",
+            fontSize: "11px", fontWeight: 700, letterSpacing: "0.5px", padding: "8px 16px", borderRadius: "6px",
+            textDecoration: "none", fontFamily: "inherit", transition: "opacity 0.2s", whiteSpace: "nowrap",
+          }} onMouseEnter={e => e.currentTarget.style.opacity = "0.85"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M4 3H20V5H4V3Z" fill="#fff"/>
+              <path d="M4 7H20V9H4V7Z" fill="#fff"/>
+              <path d="M4 11H20V21L12 16.5L4 21V11Z" fill="#fff"/>
+            </svg>
+            Subscribe to my Substack!
+          </a>
           {view === "live" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} />}
           {activePitcher && (
             <div style={{ textAlign: "right" }}>
