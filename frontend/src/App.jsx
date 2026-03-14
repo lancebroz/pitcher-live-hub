@@ -543,10 +543,8 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
     return { x: avgX, y: avgY, name: g.name, abbrev: g.abbrev, color: g.color, isAvg: true, count: g.data.length };
   });
 
-  const axisMax = maxAbs > 20 ? 25 : 20;
-  const ticks20 = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
-  const ticks25 = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
-  const ticks = axisMax === 25 ? ticks25 : ticks20;
+  const axisMax = 25;
+  const ticks = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>Pitch Movement Profile</div>
@@ -691,10 +689,15 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
 };
 
 // ─── Release Point ───
-const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => {
+const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C, pitcherHand }) => {
   const rh = parseFloat(avgRelH) || 0;
   const rs = typeof avgRelS === "number" ? avgRelS : parseFloat(avgRelS) || 0;
   const dots = pitchTypeMetrics.map(pt => ({ x: pt.avgRelSNum, y: pt.avgRelHNum, name: pt.name, color: pt.color }));
+  // MLB average release point by handedness
+  const mlbAvg = pitcherHand === "L"
+    ? { x: 2.08, y: 5.78 }
+    : { x: -1.88, y: 5.76 }; // default to RHP
+  const avgDot = [{ x: mlbAvg.x, y: mlbAvg.y, name: "MLB Avg", isMLBAvg: true }];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
@@ -717,6 +720,12 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
             <Tooltip content={({ payload }) => {
               if (!payload?.length) return null;
               const d = payload[0].payload;
+              if (d.isMLBAvg) return (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
+                  <div style={{ fontWeight: 700, color: C.textMuted }}>MLB Avg ({pitcherHand === "L" ? "LHP" : "RHP"})</div>
+                  <div style={{ color: C.textDim }}>Side: {d.x.toFixed(2)}ft | Height: {d.y.toFixed(2)}ft</div>
+                </div>
+              );
               return (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
                   <div style={{ color: d.color, fontWeight: 700 }}>{d.name}</div>
@@ -727,6 +736,17 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
             <Scatter data={dots} r={12}>
               {dots.map((d, i) => <Cell key={i} fill={d.color} stroke="#000" strokeWidth={1.5} />)}
             </Scatter>
+            {/* MLB Average release point */}
+            <Scatter data={avgDot} r={14} shape={(props) => {
+              const { cx, cy } = props;
+              return (
+                <g>
+                  <circle cx={cx} cy={cy} r={14} fill="none" stroke={C.textMuted} strokeWidth={2} strokeDasharray="3 2" />
+                  <text x={cx} y={cy + 1} textAnchor="middle" dominantBaseline="middle"
+                    fill={C.textMuted} fontSize="7" fontWeight="700" fontFamily="inherit" letterSpacing="0.5">AVG</text>
+                </g>
+              );
+            }} />
           </ScatterChart>
         </ResponsiveContainer>
     </div>
@@ -827,20 +847,20 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
               <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
               {/* Strike zone */}
               <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
-              {/* Home plate - centered at x=0 using customized SVG */}
-              <ReferenceArea x1={-0.83} x2={0.83} y1={0.4} y2={0.9} fill="none" stroke="none" label={{
+              {/* Home plate - bottom edge at y=0 */}
+              <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{
                 position: "center",
                 content: (props) => {
                   const { viewBox } = props;
                   if (!viewBox) return null;
                   const cx = viewBox.x + viewBox.width / 2;
-                  const cy = viewBox.y + viewBox.height / 2;
+                  const bottomY = viewBox.y + viewBox.height;
                   const halfW = viewBox.width / 2;
                   const tipUp = 18;
                   const cornerUp = 8;
                   return (
                     <polygon
-                      points={`${cx - halfW},${cy} ${cx + halfW},${cy} ${cx + halfW * 0.88},${cy - cornerUp} ${cx},${cy - tipUp} ${cx - halfW * 0.88},${cy - cornerUp}`}
+                      points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - cornerUp} ${cx},${bottomY - tipUp} ${cx - halfW * 0.88},${bottomY - cornerUp}`}
                       fill={C.textMuted} fillOpacity={0.15}
                       stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
                       strokeLinejoin="round"
@@ -1029,7 +1049,7 @@ const normalizeLivePitch = (p) => {
   };
 };
 
-const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type !== "PO");
+const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other");
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
 const computeHistoricalSummary = (pitchData) => {
@@ -1572,7 +1592,7 @@ export default function PitcherTracker() {
         {activePitcher && (
           <>
             {/* View tabs */}
-            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
               {["live", "historical"].map(t => (
                 <button key={t} onClick={() => handleViewSwitch(t)} style={{
                   padding: "10px 24px", fontSize: "11px", fontWeight: 600, letterSpacing: "2px",
@@ -1583,6 +1603,35 @@ export default function PitcherTracker() {
                   {t === "live" ? "Live Game" : "Historical"}
                 </button>
               ))}
+              {view === "live" && gamePk && pitcherId && (
+                <button onClick={async () => {
+                  try {
+                    const raw = await getGamePitches(gamePk, pitcherId);
+                    if (raw.length > 0) {
+                      const normalized = normAndFilter(raw);
+                      setLivePitchData(normalized);
+                      if (liveSampleMode && recentPitchData) {
+                        setPitchData([...recentPitchData, ...normalized]);
+                      } else {
+                        setPitchData(normalized);
+                      }
+                    }
+                    const pitchers = await getGamePitchers(gamePk);
+                    const me = pitchers.find(p => p.id === pitcherId);
+                    if (me?.game_stats) setPitcherGameStats(me.game_stats);
+                  } catch (e) { console.error("Refresh failed:", e); }
+                }} style={{
+                  background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px",
+                  padding: "4px 10px", marginLeft: "auto", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: "5px", color: C.textDim, fontSize: "10px",
+                  fontWeight: 600, letterSpacing: "0.5px", marginBottom: "2px",
+                }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}
+                >
+                  <span style={{ fontSize: "13px", lineHeight: 1 }}>↻</span> Refresh
+                </button>
+              )}
             </div>
 
             {/* Pitcher Game Line - Live view only */}
@@ -1758,6 +1807,7 @@ export default function PitcherTracker() {
                   <ReleasePointPlot
                     pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
                     avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
+                    pitcherHand={pitcherHand}
                   />
                   <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
                 </div>
