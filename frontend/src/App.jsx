@@ -804,9 +804,126 @@ const PlateSVG = ({ color }) => (
   </svg>
 );
 
+// ─── Heatmap Canvas renderer ───
+const HeatmapCanvas = ({ pitches, width, height, C }) => {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !pitches.length) return;
+    const ctx = canvas.getContext("2d");
+    const w = width, h = height;
+    canvas.width = w; canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+
+    // Data bounds: x=[-2.5, 2.5], y=[0, 5]
+    const toCanvasX = (x) => ((x + 2.5) / 5) * w;
+    const toCanvasY = (y) => (1 - y / 5) * h;
+
+    // KDE grid
+    const gridW = 80, gridH = 80;
+    const grid = new Float32Array(gridW * gridH);
+    const bandwidth = 0.22; // feet — controls smoothness
+    const bw2 = bandwidth * bandwidth;
+
+    for (const p of pitches) {
+      if (p.plate_x == null || p.plate_z == null) continue;
+      const gxCenter = ((p.plate_x + 2.5) / 5) * gridW;
+      const gyCenter = ((1 - p.plate_z / 5)) * gridH;
+      const radius = Math.ceil((bandwidth / 5) * gridW * 2.5);
+      const gxMin = Math.max(0, Math.floor(gxCenter - radius));
+      const gxMax = Math.min(gridW - 1, Math.ceil(gxCenter + radius));
+      const gyMin = Math.max(0, Math.floor(gyCenter - radius));
+      const gyMax = Math.min(gridH - 1, Math.ceil(gyCenter + radius));
+      for (let gy = gyMin; gy <= gyMax; gy++) {
+        for (let gx = gxMin; gx <= gxMax; gx++) {
+          const dx = (gx / gridW) * 5 - 2.5 - p.plate_x;
+          const dy = (1 - gy / gridH) * 5 - p.plate_z;
+          const dist2 = dx * dx + dy * dy;
+          grid[gy * gridW + gx] += Math.exp(-dist2 / (2 * bw2));
+        }
+      }
+    }
+
+    // Find max
+    let maxVal = 0;
+    for (let i = 0; i < grid.length; i++) if (grid[i] > maxVal) maxVal = grid[i];
+    if (maxVal === 0) return;
+
+    // Color ramp: blue → cyan → green → yellow → red
+    const colorRamp = (t) => {
+      if (t < 0.25) { const s = t / 0.25; return [0, Math.round(s * 255), 255]; }
+      if (t < 0.5) { const s = (t - 0.25) / 0.25; return [0, 255, Math.round(255 * (1 - s))]; }
+      if (t < 0.75) { const s = (t - 0.5) / 0.25; return [Math.round(255 * s), 255, 0]; }
+      const s = (t - 0.75) / 0.25; return [255, Math.round(255 * (1 - s)), 0];
+    };
+
+    // Render to canvas
+    const imgData = ctx.createImageData(w, h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const gx = Math.floor((px / w) * gridW);
+        const gy = Math.floor((py / h) * gridH);
+        const val = grid[gy * gridW + gx] / maxVal;
+        const idx = (py * w + px) * 4;
+        if (val > 0.02) {
+          const [r, g, b] = colorRamp(Math.min(val, 1));
+          const alpha = Math.min(val * 2.5, 0.85) * 255;
+          imgData.data[idx] = r;
+          imgData.data[idx + 1] = g;
+          imgData.data[idx + 2] = b;
+          imgData.data[idx + 3] = alpha;
+        }
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Draw strike zone
+    const zx1 = toCanvasX(-0.83), zx2 = toCanvasX(0.83);
+    const zy1 = toCanvasY(3.5), zy2 = toCanvasY(1.5);
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
+
+    // Draw home plate at y=0
+    const pcx = toCanvasX(0), pby = toCanvasY(0);
+    const phw = (toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
+    ctx.beginPath();
+    ctx.moveTo(pcx - phw, pby);
+    ctx.lineTo(pcx + phw, pby);
+    ctx.lineTo(pcx + phw * 0.88, pby - 8);
+    ctx.lineTo(pcx, pby - 16);
+    ctx.lineTo(pcx - phw * 0.88, pby - 8);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(120,120,120,0.15)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(120,120,120,0.5)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+  }, [pitches, width, height]);
+
+  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
+};
+
 // ─── Pitch Location Plot ───
 const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   const [locHand, setLocHand] = useState("all");
+  const [viewMode, setViewMode] = useState("dots"); // "dots" or "heatmap"
+  const [heatPitchFilter, setHeatPitchFilter] = useState("all");
+  const heatContainerRef = useRef(null);
+  const [heatSize, setHeatSize] = useState({ w: 400, h: 400 });
+
+  // Measure heatmap container
+  useEffect(() => {
+    if (!heatContainerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width } = entries[0].contentRect;
+      setHeatSize({ w: Math.round(width), h: Math.round(width * 1.0) });
+    });
+    ro.observe(heatContainerRef.current);
+    return () => ro.disconnect();
+  }, [viewMode]);
 
   const filtered = useMemo(() => {
     if (!pitchData) return [];
@@ -818,87 +935,160 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
     }));
   }, [pitchData, locHand]);
 
-  const descLabel = (d) => ({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: "In Play" }[d] || d);
+  const heatFiltered = useMemo(() => {
+    if (!pitchData) return [];
+    let f = locHand === "all" ? pitchData : pitchData.filter(p => p.batter_hand === locHand);
+    if (heatPitchFilter !== "all") f = f.filter(p => p.pitch_type === heatPitchFilter);
+    return f;
+  }, [pitchData, locHand, heatPitchFilter]);
 
-  // From pitcher POV: LHH stands on RIGHT side of plate, RHH on LEFT
+  const descLabel = (d) => ({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: "In Play" }[d] || d);
   const batterSide = locHand === "L" ? "right" : locHand === "R" ? "left" : null;
+
+  // Available pitch types for filter
+  const availPitchTypes = useMemo(() => {
+    if (!pitchTypeMetrics) return [];
+    return pitchTypeMetrics.map(pt => ({
+      code: pt.code || PITCH_ABBREV[pt.name] || "?",
+      name: pt.name,
+      color: pt.color,
+    }));
+  }, [pitchTypeMetrics]);
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
-          <div style={{ display: "flex", gap: "4px" }}>
-            {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
-              <button key={t.key} onClick={() => setLocHand(t.key)} style={{
-                background: locHand === t.key ? C.accentGlow : "transparent",
-                border: `1px solid ${locHand === t.key ? C.accent : C.border}`,
-                borderRadius: "4px", padding: "4px 10px",
-                color: locHand === t.key ? C.accent : C.textDim,
-                fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              }}>{t.label}</button>
-            ))}
-          </div>
-        </div>
-        <div style={{ position: "relative" }}>
-          <ResponsiveContainer width="100%" height={480}>
-            <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
-              <CartesianGrid stroke="none" />
-              <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
-              <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
-              {/* Strike zone */}
-              <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
-              {/* Home plate - bottom edge at y=0 */}
-              <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{
-                position: "center",
-                content: (props) => {
-                  const { viewBox } = props;
-                  if (!viewBox) return null;
-                  const cx = viewBox.x + viewBox.width / 2;
-                  const bottomY = viewBox.y + viewBox.height;
-                  const halfW = viewBox.width / 2;
-                  const tipUp = 18;
-                  const cornerUp = 8;
-                  return (
-                    <polygon
-                      points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - cornerUp} ${cx},${bottomY - tipUp} ${cx - halfW * 0.88},${bottomY - cornerUp}`}
-                      fill={C.textMuted} fillOpacity={0.15}
-                      stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
-                      strokeLinejoin="round"
-                    />
-                  );
-                }
-              }} />
-              <Tooltip content={({ payload }) => {
-                if (!payload?.length) return null;
-                const d = payload[0].payload;
-                return (
-                  <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}>
-                    <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div>
-                    <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
-                      <div>vs. {d.batter} ({d.hand}HH)</div>
-                      <div>Inning {d.inning} · Count: {d.count}</div>
-                      <div>Result: {descLabel(d.description)}</div>
-                    </div>
-                  </div>
-                );
-              }} />
-              <Scatter data={filtered} r={5} opacity={0.8}>
-                {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
-              </Scatter>
-            </ScatterChart>
-          </ResponsiveContainer>
-
-
-        </div>
-        {/* Legend */}
-        <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
-          {pitchTypeMetrics.map(pt => (
-            <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
-              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
-              {PITCH_ABBREV[pt.name] || pt.code}
-            </div>
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+        <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          {/* Dots/Heatmap toggle */}
+          <button onClick={() => setViewMode("dots")} style={{
+            background: viewMode === "dots" ? C.accentGlow : "transparent",
+            border: `1px solid ${viewMode === "dots" ? C.accent : C.border}`,
+            borderRadius: "4px", padding: "4px 10px",
+            color: viewMode === "dots" ? C.accent : C.textDim,
+            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+          }}>Dots</button>
+          <button onClick={() => setViewMode("heatmap")} style={{
+            background: viewMode === "heatmap" ? C.accentGlow : "transparent",
+            border: `1px solid ${viewMode === "heatmap" ? C.accent : C.border}`,
+            borderRadius: "4px", padding: "4px 10px",
+            color: viewMode === "heatmap" ? C.accent : C.textDim,
+            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+          }}>Heatmap</button>
+          <span style={{ width: "1px", height: "16px", background: C.border, margin: "0 4px" }} />
+          {/* Batter hand filter */}
+          {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
+            <button key={t.key} onClick={() => setLocHand(t.key)} style={{
+              background: locHand === t.key ? C.accentGlow : "transparent",
+              border: `1px solid ${locHand === t.key ? C.accent : C.border}`,
+              borderRadius: "4px", padding: "4px 10px",
+              color: locHand === t.key ? C.accent : C.textDim,
+              fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            }}>{t.label}</button>
           ))}
         </div>
+      </div>
+
+      {/* Pitch type filter (heatmap mode) */}
+      {viewMode === "heatmap" && (
+        <div style={{ display: "flex", gap: "4px", marginBottom: "12px", flexWrap: "wrap" }}>
+          <button onClick={() => setHeatPitchFilter("all")} style={{
+            background: heatPitchFilter === "all" ? C.accentGlow : "transparent",
+            border: `1px solid ${heatPitchFilter === "all" ? C.accent : C.border}`,
+            borderRadius: "4px", padding: "3px 10px",
+            color: heatPitchFilter === "all" ? C.accent : C.textDim,
+            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+          }}>All</button>
+          {availPitchTypes.map(pt => (
+            <button key={pt.code} onClick={() => setHeatPitchFilter(pt.code)} style={{
+              background: heatPitchFilter === pt.code ? pt.color + "22" : "transparent",
+              border: `1px solid ${heatPitchFilter === pt.code ? pt.color : C.border}`,
+              borderRadius: "4px", padding: "3px 10px",
+              color: heatPitchFilter === pt.code ? pt.color : C.textDim,
+              fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+            }}>{pt.code}</button>
+          ))}
+          <span style={{ fontSize: "10px", color: C.textDim, alignSelf: "center", marginLeft: "8px" }}>
+            {heatFiltered.length} pitches
+          </span>
+        </div>
+      )}
+
+      {/* Dot view */}
+      {viewMode === "dots" && (
+        <>
+          <div style={{ position: "relative" }}>
+            <ResponsiveContainer width="100%" height={480}>
+              <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
+                <CartesianGrid stroke="none" />
+                <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
+                <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
+                <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
+                <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{
+                  position: "center",
+                  content: (props) => {
+                    const { viewBox } = props;
+                    if (!viewBox) return null;
+                    const cx = viewBox.x + viewBox.width / 2;
+                    const bottomY = viewBox.y + viewBox.height;
+                    const halfW = viewBox.width / 2;
+                    return (
+                      <polygon
+                        points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - 8} ${cx},${bottomY - 18} ${cx - halfW * 0.88},${bottomY - 8}`}
+                        fill={C.textMuted} fillOpacity={0.15}
+                        stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
+                        strokeLinejoin="round"
+                      />
+                    );
+                  }
+                }} />
+                <Tooltip content={({ payload }) => {
+                  if (!payload?.length) return null;
+                  const d = payload[0].payload;
+                  return (
+                    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}>
+                      <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div>
+                      <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
+                        <div>vs. {d.batter} ({d.hand}HH)</div>
+                        <div>Inning {d.inning} · Count: {d.count}</div>
+                        <div>Result: {descLabel(d.description)}</div>
+                      </div>
+                    </div>
+                  );
+                }} />
+                <Scatter data={filtered} r={5} opacity={0.8}>
+                  {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Scatter>
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
+            {pitchTypeMetrics.map(pt => (
+              <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
+                <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
+                {PITCH_ABBREV[pt.name] || pt.code}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Heatmap view */}
+      {viewMode === "heatmap" && (
+        <>
+          <div ref={heatContainerRef} style={{ width: "100%", aspectRatio: "1/1", maxHeight: "500px", position: "relative", background: "#f8f8f8", borderRadius: "6px", overflow: "hidden" }}>
+            <HeatmapCanvas pitches={heatFiltered} width={heatSize.w * 2} height={heatSize.h * 2} C={C} />
+          </div>
+          {/* Color legend */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginTop: "10px" }}>
+            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Least</span>
+            <div style={{ width: "120px", height: "10px", borderRadius: "3px",
+              background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
+            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Most</span>
+          </div>
+        </>
+      )}
     </div>
   );
 };
