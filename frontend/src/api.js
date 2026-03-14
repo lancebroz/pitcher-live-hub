@@ -29,6 +29,10 @@ export async function getTeamLogos() {
     if (map["WAS"] && !map["WSH"]) map["WSH"] = map["WAS"];
     if (map["AZ"] && !map["ARI"]) map["ARI"] = map["AZ"];
     if (map["ARI"] && !map["AZ"]) map["AZ"] = map["ARI"];
+    if (map["CHW"] && !map["CWS"]) map["CWS"] = map["CHW"];
+    if (map["CWS"] && !map["CHW"]) map["CHW"] = map["CWS"];
+    if (map["CHA"] && !map["CWS"]) map["CWS"] = map["CHA"];
+    if (map["CHA"] && !map["CHW"]) map["CHW"] = map["CHA"];
     _logoCache = map;
     return map;
   } catch (e) {

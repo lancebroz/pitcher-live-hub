@@ -27,10 +27,10 @@ const themes = {
     yellow: "#facc15",
   },
   light: {
-    bg: "#f1f5f9", surface: "#ffffff", surfaceAlt: "#f8fafc",
-    border: "#e2e8f0", borderLight: "#cbd5e1", text: "#1e293b",
-    textMuted: "#475569", textDim: "#94a3b8", accent: "#2563eb",
-    accentGlow: "rgba(37,99,235,0.1)", tableStripe: "rgba(241,245,249,0.7)",
+    bg: "#f5f0e8", surface: "#faf7f2", surfaceAlt: "#f0ebe3",
+    border: "#e0d9ce", borderLight: "#c9c1b4", text: "#2c2418",
+    textMuted: "#5c5347", textDim: "#9c9488", accent: "#2563eb",
+    accentGlow: "rgba(37,99,235,0.1)", tableStripe: "rgba(240,235,227,0.7)",
     yellow: "#ca8a04",
   },
 };
@@ -463,12 +463,10 @@ const LiveGameSelector = ({ onSelectPitcher, C, logos }) => {
               {allGames.map(g => (
                 <div key={g.game_pk} onClick={() => handleSelectGame(g)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", borderBottom: `1px solid ${C.border}` }}
                   onMouseEnter={e => e.currentTarget.style.background = C.accentGlow} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <TeamLogo abbr={g.away_team} logos={logos} size={20} />
-                    <span style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>{g.away_team}</span>
-                    <span style={{ fontSize: "12px", color: C.textDim, margin: "0 4px" }}>@</span>
-                    <TeamLogo abbr={g.home_team} logos={logos} size={20} />
-                    <span style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>{g.home_team}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <TeamLogo abbr={g.away_team} logos={logos} size={24} />
+                    <span style={{ fontSize: "12px", color: C.textDim }}>@</span>
+                    <TeamLogo abbr={g.home_team} logos={logos} size={24} />
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: "13px", fontWeight: 700, color: C.text }}>{g.away_score} - {g.home_score}</div>
@@ -1237,13 +1235,8 @@ const PERF_COLS = [
   { key: "cswRate", label: "CSW%" }, { key: "calledStrikeRate", label: "CStr%" },
   { key: "swStrRate", label: "SwStr%" }, { key: "whiffRate", label: "Whiff%" },
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
-];
-const RESULT_COLS = [
-  { key: "name", label: "Pitch", align: "left" }, { key: "bipCount", label: "BIP" },
-  { key: "gbRate", label: "GB%" }, { key: "fbRate", label: "FB%" },
-  { key: "barrelRate", label: "Barrel%" }, { key: "xSLG", label: "xSLG" },
-  { key: "xwOBACON", label: "xwOBACON" }, { key: "xwOBA", label: "xwOBA" },
-  { key: "expRunValue", label: "xRV" },
+  { key: "bipCount", label: "BIP" }, { key: "gbRate", label: "GB%" },
+  { key: "fbRate", label: "FB%" }, { key: "barrelRate", label: "Barrel%" },
 ];
 
 // ─── Main App ───
@@ -1275,7 +1268,7 @@ export default function PitcherTracker() {
 
   const metrics = useMemo(() => {
     if (!pitchData) return null;
-    const hf = (tableView === "performance" || tableView === "results") ? handFilter : "all";
+    const hf = tableView === "performance" ? handFilter : "all";
     return computeMetrics(pitchData, hf);
   }, [pitchData, handFilter, tableView]);
   const stuffMetrics = useMemo(() => pitchData ? computeMetrics(pitchData, "all") : null, [pitchData]);
@@ -1400,8 +1393,8 @@ export default function PitcherTracker() {
   };
 
   const currentGame = activeGame;
-  const tableCols = tableView === "stuff" ? STUFF_COLS : tableView === "performance" ? PERF_COLS : RESULT_COLS;
-  const tableTitle = tableView === "stuff" ? "Stuff & Movement" : tableView === "performance" ? "Plate Discipline & Performance" : "Batted Ball & Expected Stats";
+  const tableCols = tableView === "stuff" ? STUFF_COLS : PERF_COLS;
+  const tableTitle = tableView === "stuff" ? "Stuff & Movement" : "Plate Discipline & Batted Ball";
   const displayMetrics = tableView === "stuff" ? stuffMetrics : metrics;
 
   return (
@@ -1570,8 +1563,7 @@ export default function PitcherTracker() {
                 <div style={{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
                   {[
                     { key: "stuff", label: "Stuff & Movement" },
-                    { key: "performance", label: "Plate Discipline" },
-                    { key: "results", label: "Batted Ball & xStats" },
+                    { key: "performance", label: "Plate Discipline & Batted Ball" },
                   ].map(t => (
                     <button key={t.key} onClick={() => { setTableView(t.key); setHandFilter("all"); }} style={{
                       background: tableView === t.key ? C.accentGlow : "transparent",
@@ -1587,9 +1579,9 @@ export default function PitcherTracker() {
                 {displayMetrics && (
                   <SortableTable
                     data={displayMetrics.pitchTypeMetrics} columns={tableCols} title={tableTitle} C={C}
-                    showHandToggle={tableView === "performance" || tableView === "results"}
+                    showHandToggle={tableView === "performance"}
                     handFilter={handFilter} setHandFilter={setHandFilter}
-                    allRow={(tableView === "performance" || tableView === "results") ? displayMetrics.allRow : null}
+                    allRow={tableView === "performance" ? displayMetrics.allRow : null}
                   />
                 )}
 
