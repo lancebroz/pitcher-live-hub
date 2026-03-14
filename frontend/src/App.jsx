@@ -1630,10 +1630,30 @@ export default function PitcherTracker() {
 
   // Load pitcher from search
   const handleLoadPitcher = async (selection) => {
-    if (!selection) return;
-    const name = typeof selection === "string" ? selection : selection.name;
-    const id = typeof selection === "string" ? null : selection.id;
-    const hand = typeof selection === "string" ? "" : (selection.throws || "");
+    let name, id, hand;
+    if (selection && typeof selection === "object") {
+      // From autocomplete dropdown
+      name = selection.name;
+      id = selection.id;
+      hand = selection.throws || "";
+    } else {
+      // From button click or Enter key with typed name - search for the pitcher
+      const searchName = (selection && typeof selection === "string") ? selection : pitcherName;
+      if (!searchName || searchName.length < 2) return;
+      try {
+        const results = await searchPitchers(searchName);
+        if (results.length === 0) {
+          alert("No pitcher found with that name.");
+          return;
+        }
+        name = results[0].name;
+        id = results[0].id;
+        hand = results[0].throws || "";
+      } catch (e) {
+        console.error("Search failed:", e);
+        return;
+      }
+    }
     setPitcherName(name);
     setPitcherId(id);
     setPitcherHand(hand);
