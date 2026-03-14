@@ -1294,9 +1294,13 @@ export default function PitcherTracker() {
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
+  const [recentPitchData, setRecentPitchData] = useState(null);
+  const [liveSampleMode, setLiveSampleMode] = useState(false);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  const [startDate, setStartDate] = useState("2025-03-27");
-  const [endDate, setEndDate] = useState("2025-09-28");
+  // Smart defaults: current season
+  const currentYear = new Date().getFullYear();
+  const [startDate, setStartDate] = useState(`${currentYear}-03-20`);
+  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
   const [handFilter, setHandFilter] = useState("all");
@@ -1320,6 +1324,17 @@ export default function PitcherTracker() {
     return new Set(historicalPitchData.filter(p => p.game_date).map(p => p.game_date));
   }, [historicalPitchData]);
 
+  // Merge live + recent data when sample mode changes
+  useEffect(() => {
+    if (view !== "live") return;
+    if (liveSampleMode && recentPitchData && livePitchData) {
+      // Merge: recent data + live game data (deduplicate by ensuring live pitches come last)
+      setPitchData([...recentPitchData, ...livePitchData]);
+    } else if (livePitchData) {
+      setPitchData(livePitchData);
+    }
+  }, [liveSampleMode, recentPitchData, livePitchData, view]);
+
   // Live polling: re-fetch pitch data every 15 seconds during live games
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -1330,7 +1345,11 @@ export default function PitcherTracker() {
           if (raw.length > 0) {
             const normalized = normAndFilter(raw);
             setLivePitchData(normalized);
-            setPitchData(normalized);
+            if (liveSampleMode && recentPitchData) {
+              setPitchData([...recentPitchData, ...normalized]);
+            } else {
+              setPitchData(normalized);
+            }
           }
           // Also refresh pitcher game stats
           const pitchers = await getGamePitchers(gamePk);
@@ -1340,7 +1359,7 @@ export default function PitcherTracker() {
       }, 15000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [view, gamePk, pitcherId]);
+  }, [view, gamePk, pitcherId, liveSampleMode, recentPitchData]);
 
   // When switching views, swap the displayed data
   const handleViewSwitch = async (newView) => {
@@ -1353,11 +1372,19 @@ export default function PitcherTracker() {
           const raw = await getGamePitches(gamePk, pitcherId);
           const normalized = normAndFilter(raw);
           setLivePitchData(normalized);
-          setPitchData(normalized);
+          if (liveSampleMode && recentPitchData) {
+            setPitchData([...recentPitchData, ...normalized]);
+          } else {
+            setPitchData(normalized);
+          }
         } catch (e) { console.error("Failed to reload live:", e); }
         setIsLoading(false);
       } else if (livePitchData) {
-        setPitchData(livePitchData);
+        if (liveSampleMode && recentPitchData) {
+          setPitchData([...recentPitchData, ...livePitchData]);
+        } else {
+          setPitchData(livePitchData);
+        }
       }
     } else {
       // Historical: restore cached historical data if available
@@ -1382,6 +1409,8 @@ export default function PitcherTracker() {
     // Reset all data on pitcher change
     setPitchData(null);
     setLivePitchData(null);
+    setRecentPitchData(null);
+    setLiveSampleMode(false);
     setHistoricalPitchData(null);
     setActiveGame(null);
     setGamePk(null);
@@ -1396,6 +1425,8 @@ export default function PitcherTracker() {
     setGamePk(game.game_pk);
     setView("live");
     setPitcherGameStats(pitcher.game_stats || null);
+    setRecentPitchData(null);
+    setLiveSampleMode(false);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setIsLoading(true);
@@ -1409,6 +1440,19 @@ export default function PitcherTracker() {
       console.error("Failed to load pitches:", e);
     }
     setIsLoading(false);
+    // Fetch recent Savant data in background (last 30 days)
+    if (pitcher.id) {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const d30 = new Date();
+        d30.setDate(d30.getDate() - 30);
+        const thirtyAgo = d30.toISOString().slice(0, 10);
+        const recentRaw = await getStatcast(pitcher.id, thirtyAgo, today);
+        if (recentRaw.length > 0) {
+          setRecentPitchData(normAndFilter(recentRaw));
+        }
+      } catch (e) { console.error("Failed to load recent data:", e); }
+    }
   };
 
   // Load historical Statcast data
@@ -1573,6 +1617,47 @@ export default function PitcherTracker() {
                 </div>
               );
             })()}
+
+            {/* Sample mode toggle - Live view */}
+            {view === "live" && activePitcher && gamePk && (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
+                <button
+                  onClick={() => { if (recentPitchData) setLiveSampleMode(false); }}
+                  style={{
+                    background: !liveSampleMode ? C.accentGlow : "transparent",
+                    border: `1px solid ${!liveSampleMode ? C.accent : C.border}`,
+                    borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
+                    color: !liveSampleMode ? C.accent : C.textDim,
+                    fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
+                    textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  This Game
+                </button>
+                <button
+                  onClick={() => { if (recentPitchData) setLiveSampleMode(true); }}
+                  style={{
+                    background: liveSampleMode ? C.accentGlow : "transparent",
+                    border: `1px solid ${liveSampleMode ? C.accent : C.border}`,
+                    borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
+                    color: liveSampleMode ? C.accent : C.textDim,
+                    fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
+                    textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
+                    opacity: recentPitchData ? 1 : 0.4,
+                  }}
+                >
+                  Last 30 Days + Live
+                </button>
+                {!recentPitchData && (
+                  <span style={{ fontSize: "10px", color: C.textDim, fontStyle: "italic" }}>Loading recent data...</span>
+                )}
+                {liveSampleMode && recentPitchData && (
+                  <span style={{ fontSize: "10px", color: C.textDim }}>
+                    {recentPitchData.length} recent + {livePitchData?.length || 0} live pitches
+                  </span>
+                )}
+              </div>
+            )}
 
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
