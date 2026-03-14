@@ -1296,15 +1296,15 @@ export default function PitcherTracker() {
   const [livePitchData, setLivePitchData] = useState(null);
   const [recentPitchData, setRecentPitchData] = useState(null);
   const [liveSampleMode, setLiveSampleMode] = useState(false);
+  const [noRecentData, setNoRecentData] = useState(false);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  // Smart defaults: current season
-  const currentYear = new Date().getFullYear();
+  // Date helpers
   const todayStr = new Date().toISOString().slice(0, 10);
-  const [startDate, setStartDate] = useState(`${currentYear}-03-20`);
-  const [endDate, setEndDate] = useState(todayStr);
-  // Live tab date range (for supplemental Savant fetch)
-  const thirtyAgo = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
-  const [liveStartDate, setLiveStartDate] = useState(thirtyAgo);
+  // Historical defaults: 2025 full season
+  const [startDate, setStartDate] = useState("2025-03-27");
+  const [endDate, setEndDate] = useState("2025-09-28");
+  // Live tab date range (for supplemental Savant fetch - covers spring training)
+  const [liveStartDate, setLiveStartDate] = useState("2026-02-20");
   const [liveEndDate, setLiveEndDate] = useState(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
@@ -1420,6 +1420,7 @@ export default function PitcherTracker() {
     setLivePitchData(null);
     setRecentPitchData(null);
     setLiveSampleMode(false);
+    setNoRecentData(false);
     setHistoricalPitchData(null);
     setActiveGame(null);
     setGamePk(null);
@@ -1436,6 +1437,7 @@ export default function PitcherTracker() {
     setPitcherGameStats(pitcher.game_stats || null);
     setRecentPitchData(null);
     setLiveSampleMode(false);
+    setNoRecentData(false);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setIsLoading(true);
@@ -1455,6 +1457,7 @@ export default function PitcherTracker() {
   const handleFetchLiveRecent = async () => {
     if (!pitcherId) return;
     setIsLoading(true);
+    setNoRecentData(false);
     try {
       const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate);
       if (recentRaw.length > 0) {
@@ -1464,7 +1467,7 @@ export default function PitcherTracker() {
       } else {
         setRecentPitchData(null);
         setLiveSampleMode(false);
-        alert("No Statcast data found for this pitcher in that date range.");
+        setNoRecentData(true);
       }
     } catch (e) { console.error("Failed to load recent data:", e); }
     setIsLoading(false);
@@ -1474,6 +1477,7 @@ export default function PitcherTracker() {
   const handleClearLiveRecent = () => {
     setRecentPitchData(null);
     setLiveSampleMode(false);
+    setNoRecentData(false);
     if (livePitchData) setPitchData(livePitchData);
   };
 
@@ -1670,11 +1674,33 @@ export default function PitcherTracker() {
                     +{recentPitchData.length} pitches
                   </span>
                 )}
+                {noRecentData && !liveSampleMode && (
+                  <span style={{ fontSize: "10px", color: "#ef4444", fontWeight: 500 }}>
+                    No Statcast data available for this range
+                  </span>
+                )}
               </div>
             )}
 
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+                {/* Season quick toggles */}
+                {[
+                  { label: "2025", start: "2025-03-27", end: "2025-09-28" },
+                  { label: "2026", start: "2026-02-20", end: todayStr },
+                ].map(s => {
+                  const isActive = startDate === s.start && endDate === s.end;
+                  return (
+                    <button key={s.label} onClick={() => { setStartDate(s.start); setEndDate(s.end); }} style={{
+                      background: isActive ? C.accentGlow : "transparent",
+                      border: `1px solid ${isActive ? C.accent : C.border}`,
+                      borderRadius: "6px", padding: "8px 14px",
+                      color: isActive ? C.accent : C.textDim,
+                      fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    }}>{s.label}</button>
+                  );
+                })}
+                <span style={{ width: "1px", height: "20px", background: C.border }} />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
                 <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start" />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
