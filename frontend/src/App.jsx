@@ -518,6 +518,7 @@ const SortIcon = ({ active, dir }) => (
 
 // ─── Movement Plot ───
 const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
+  const [showAvg, setShowAvg] = useState(false);
   const grouped = {};
   let maxAbs = 0;
   pitchTypeMetrics.forEach(pt => {
@@ -532,6 +533,16 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
       if (Math.abs(p.pfx_z) > maxAbs) maxAbs = Math.abs(p.pfx_z);
     });
   });
+
+  // Compute average dots
+  const avgDots = Object.values(grouped).map(g => {
+    const xs = g.data.map(d => d.x).filter(v => v != null);
+    const ys = g.data.map(d => d.y).filter(v => v != null);
+    const avgX = xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+    const avgY = ys.length > 0 ? ys.reduce((a, b) => a + b, 0) / ys.length : 0;
+    return { x: avgX, y: avgY, name: g.name, abbrev: g.abbrev, color: g.color, isAvg: true, count: g.data.length };
+  });
+
   const axisMax = maxAbs > 20 ? 25 : 20;
   const ticks20 = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
   const ticks25 = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
@@ -547,9 +558,23 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
             <YAxis type="number" dataKey="y" domain={[-axisMax, axisMax]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={ticks} label={{ value: "Induced Vertical Break (in)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
             <ReferenceLine x={0} stroke={C.borderLight} />
             <ReferenceLine y={0} stroke={C.borderLight} />
+            <defs>
+              <filter id="avgShadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000" floodOpacity="0.35" />
+              </filter>
+            </defs>
             <Tooltip content={({ payload }) => {
               if (!payload?.length) return null;
               const d = payload[0].payload;
+              if (d.isAvg) return (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px", minWidth: "140px" }}>
+                  <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — Avg</div>
+                  <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
+                    <div>IVB: {d.y.toFixed(1)}" | HB: {d.x.toFixed(1)}"</div>
+                    <div>{d.count} pitches</div>
+                  </div>
+                </div>
+              );
               return (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px", minWidth: "160px" }}>
                   <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo != null ? d.velo.toFixed(1) : "—"} mph</div>
@@ -563,15 +588,39 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
               );
             }} />
             {Object.values(grouped).map(g => <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} opacity={0.7} r={5.5} />)}
+            {showAvg && (
+              <Scatter name="averages" data={avgDots} fill="#000" opacity={1} r={9} shape={(props) => {
+                const { cx, cy, payload } = props;
+                return (
+                  <circle
+                    cx={cx} cy={cy} r={9}
+                    fill={payload.color} fillOpacity={0.95}
+                    stroke="#000" strokeWidth={2}
+                    filter="url(#avgShadow)"
+                  />
+                );
+              }} />
+            )}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ display: "flex", gap: "14px", justifyContent: "center", flexWrap: "wrap", marginTop: "8px" }}>
-        {Object.values(grouped).map(g => (
-          <div key={g.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
-            <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: g.color }} />{g.abbrev}
-          </div>
-        ))}
+      <div style={{ display: "flex", alignItems: "center", marginTop: "8px" }}>
+        <div style={{ display: "flex", gap: "14px", justifyContent: "center", flexWrap: "wrap", flex: 1 }}>
+          {Object.values(grouped).map(g => (
+            <div key={g.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: g.color }} />{g.abbrev}
+            </div>
+          ))}
+        </div>
+        <button onClick={() => setShowAvg(!showAvg)} style={{
+          display: "flex", alignItems: "center", gap: "5px", background: showAvg ? C.accentGlow : "transparent",
+          border: `1px solid ${showAvg ? C.accent : C.border}`, borderRadius: "4px", padding: "3px 10px",
+          color: showAvg ? C.accent : C.textDim, fontSize: "10px", fontWeight: 600, cursor: "pointer",
+          fontFamily: "inherit", whiteSpace: "nowrap", flexShrink: 0,
+        }}>
+          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: showAvg ? C.accent : C.textDim, border: "1.5px solid #000", display: "inline-block" }} />
+          Avg.
+        </button>
       </div>
     </div>
   );
@@ -647,10 +696,9 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
   const rs = typeof avgRelS === "number" ? avgRelS : parseFloat(avgRelS) || 0;
   const dots = pitchTypeMetrics.map(pt => ({ x: pt.avgRelSNum, y: pt.avgRelHNum, name: pt.name, color: pt.color }));
   return (
-    <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "100%", maxWidth: "520px" }}>
-        <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
-        <div style={{ display: "flex", justifyContent: "center", gap: "16px", marginBottom: "12px" }}>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
+      <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
+      <div style={{ display: "flex", justifyContent: "center", gap: "16px", marginBottom: "12px", flexWrap: "wrap" }}>
           <div style={{ background: C.yellow + "22", border: `1px solid ${C.yellow}55`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", fontWeight: 600, color: C.yellow }}>Avg Release Height: {avgRelH} ft</div>
           <div style={{ background: C.yellow + "22", border: `1px solid ${C.yellow}55`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", fontWeight: 600, color: C.yellow }}>Avg Extension: {avgExt} ft</div>
         </div>
@@ -681,7 +729,6 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
             </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
-      </div>
     </div>
   );
 };
@@ -757,9 +804,8 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   const batterSide = locHand === "L" ? "right" : locHand === "R" ? "left" : null;
 
   return (
-    <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "100%", maxWidth: "520px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
           <div style={{ display: "flex", gap: "4px" }}>
             {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
@@ -781,22 +827,20 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
               <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
               {/* Strike zone */}
               <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
-              {/* Home plate drawn via ReferenceLine label for perfect coordinate alignment */}
-              <ReferenceLine y={0.65} stroke="none" label={{
+              {/* Home plate - centered at x=0 using customized SVG */}
+              <ReferenceArea x1={-0.83} x2={0.83} y1={0.4} y2={0.9} fill="none" stroke="none" label={{
                 position: "center",
                 content: (props) => {
                   const { viewBox } = props;
                   if (!viewBox) return null;
-                  const centerX = viewBox.x + viewBox.width / 2;
-                  const centerY = viewBox.y;
-                  // viewBox.width spans the full data range (-2.5 to 2.5 = 5 ft)
-                  const pxPerFt = viewBox.width / 5;
-                  const halfW = 0.83 * pxPerFt;
+                  const cx = viewBox.x + viewBox.width / 2;
+                  const cy = viewBox.y + viewBox.height / 2;
+                  const halfW = viewBox.width / 2;
                   const tipUp = 18;
                   const cornerUp = 8;
                   return (
                     <polygon
-                      points={`${centerX - halfW},${centerY} ${centerX + halfW},${centerY} ${centerX + halfW * 0.88},${centerY - cornerUp} ${centerX},${centerY - tipUp} ${centerX - halfW * 0.88},${centerY - cornerUp}`}
+                      points={`${cx - halfW},${cy} ${cx + halfW},${cy} ${cx + halfW * 0.88},${cy - cornerUp} ${cx},${cy - tipUp} ${cx - halfW * 0.88},${cy - cornerUp}`}
                       fill={C.textMuted} fillOpacity={0.15}
                       stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
                       strokeLinejoin="round"
@@ -835,7 +879,6 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
             </div>
           ))}
         </div>
-      </div>
     </div>
   );
 };
@@ -1585,14 +1628,14 @@ export default function PitcherTracker() {
                   />
                 )}
 
-                {/* Release Point */}
-                <ReleasePointPlot
-                  pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
-                  avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
-                />
-
-                {/* Pitch Locations */}
-                <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
+                {/* Release Point + Pitch Locations */}
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
+                  <ReleasePointPlot
+                    pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
+                    avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
+                  />
+                  <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
+                </div>
               </>
             )}
           </>
