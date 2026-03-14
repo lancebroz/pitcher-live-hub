@@ -1,11 +1,22 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell, ReferenceArea
 } = recharts;
+
+// ─── Responsive hook ───
+const useIsMobile = (breakpoint = 768) => {
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < breakpoint : false);
+  useEffect(() => {
+    const h = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, [breakpoint]);
+  return isMobile;
+};
 
 const themes = {
   dark: {
@@ -317,7 +328,7 @@ const AutocompleteInput = ({ value, onChange, onSelect, C }) => {
   };
 
   return (
-    <div ref={ref} style={{ position: "relative", width: "280px" }}>
+    <div ref={ref} style={{ position: "relative", width: "280px", maxWidth: "100%" }}>
       <input
         style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", color: C.text, fontSize: "13px", fontFamily: "inherit", outline: "none", width: "100%", boxSizing: "border-box" }}
         placeholder="Search pitcher name..." value={value} onChange={e => onChange(e.target.value)} onKeyDown={hk} onFocus={() => suggestions.length > 0 && setShow(true)}
@@ -336,8 +347,15 @@ const AutocompleteInput = ({ value, onChange, onSelect, C }) => {
   );
 };
 
+// ─── Team Logo Helper ───
+const TeamLogo = ({ abbr, logos, size = 20 }) => {
+  const src = logos?.[abbr];
+  if (!src) return null;
+  return <img src={src} alt={abbr} style={{ width: size, height: size, objectFit: "contain" }} />;
+};
+
 // ─── Live Game Selector (real MLB API) ───
-const LiveGameSelector = ({ onSelectPitcher, C }) => {
+const LiveGameSelector = ({ onSelectPitcher, C, logos }) => {
   const [open, setOpen] = useState(false);
   const [sg, setSg] = useState(null);
   const [games, setGames] = useState([]);
@@ -421,7 +439,7 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
         <span style={{ fontSize: "10px", color: C.textDim }}>{open ? "▲" : "▼"}</span>
       </button>
       {open && (
-        <div style={{ position: "absolute", top: "100%", right: 0, zIndex: 200, marginTop: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", boxShadow: "0 12px 40px rgba(0,0,0,0.4)", width: "420px", overflow: "hidden", maxHeight: "500px", overflowY: "auto" }}>
+        <div style={{ position: "absolute", top: "100%", right: 0, zIndex: 200, marginTop: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", boxShadow: "0 12px 40px rgba(0,0,0,0.4)", width: "min(420px, 92vw)", overflow: "hidden", maxHeight: "500px", overflowY: "auto" }}>
           {!sg ? (
             <>
               {/* Date navigation header */}
@@ -445,9 +463,11 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
               {allGames.map(g => (
                 <div key={g.game_pk} onClick={() => handleSelectGame(g)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", borderBottom: `1px solid ${C.border}` }}
                   onMouseEnter={e => e.currentTarget.style.background = C.accentGlow} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <TeamLogo abbr={g.away_team} logos={logos} size={20} />
                     <span style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>{g.away_team}</span>
-                    <span style={{ fontSize: "12px", color: C.textDim, margin: "0 8px" }}>@</span>
+                    <span style={{ fontSize: "12px", color: C.textDim, margin: "0 4px" }}>@</span>
+                    <TeamLogo abbr={g.home_team} logos={logos} size={20} />
                     <span style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>{g.home_team}</span>
                   </div>
                   <div style={{ textAlign: "right" }}>
@@ -464,7 +484,11 @@ const LiveGameSelector = ({ onSelectPitcher, C }) => {
             <>
               <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <button onClick={() => setSg(null)} style={{ background: "none", border: "none", color: C.accent, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 600 }}>← Back</button>
-                <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{sg.away_team} @ {sg.home_team}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <TeamLogo abbr={sg.away_team} logos={logos} size={18} />
+                  <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{sg.away_team} @ {sg.home_team}</span>
+                  <TeamLogo abbr={sg.home_team} logos={logos} size={18} />
+                </div>
                 <span style={{ fontSize: "10px", color: C.accent }}>{sg.inning || sg.detailed_status}</span>
               </div>
               <div style={{ padding: "8px 16px", fontSize: "9px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim }}>
@@ -626,7 +650,7 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
   const dots = pitchTypeMetrics.map(pt => ({ x: pt.avgRelSNum, y: pt.avgRelHNum, name: pt.name, color: pt.color }));
   return (
     <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "520px" }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "100%", maxWidth: "520px" }}>
         <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
         <div style={{ display: "flex", justifyContent: "center", gap: "16px", marginBottom: "12px" }}>
           <div style={{ background: C.yellow + "22", border: `1px solid ${C.yellow}55`, borderRadius: "4px", padding: "4px 10px", fontSize: "10px", fontWeight: 600, color: C.yellow }}>Avg Release Height: {avgRelH} ft</div>
@@ -736,7 +760,7 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
 
   return (
     <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "520px" }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px", width: "100%", maxWidth: "520px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
           <div style={{ display: "flex", gap: "4px" }}>
@@ -1068,7 +1092,7 @@ const HistoricalSummaryBox = ({ pitchData, activePitcher, pitcherHand, C }) => {
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", marginBottom: "20px", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center" }}>
+      <div style={{ display: "flex", alignItems: "center", overflowX: "auto" }}>
         <div style={{ padding: "12px 20px", minWidth: "120px", fontSize: "13px", fontWeight: 700, color: C.text, borderRight: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "6px" }}>
           {displayName}
           {pitcherHand && <span style={{ fontSize: "10px", fontWeight: 500, color: C.textDim }}>({pitcherHand}HP)</span>}
@@ -1226,6 +1250,7 @@ const RESULT_COLS = [
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
   const C = themes[theme];
+  const isMobile = useIsMobile();
   const [pitcherName, setPitcherName] = useState("");
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
@@ -1242,7 +1267,11 @@ export default function PitcherTracker() {
   const [activeGame, setActiveGame] = useState(null);
   const [gamePk, setGamePk] = useState(null);
   const [pitcherGameStats, setPitcherGameStats] = useState(null);
+  const [teamLogos, setTeamLogos] = useState({});
   const pollRef = useRef(null);
+
+  // Load team logos on mount
+  useEffect(() => { getTeamLogos().then(setTeamLogos); }, []);
 
   const metrics = useMemo(() => {
     if (!pitchData) return null;
@@ -1378,41 +1407,50 @@ export default function PitcherTracker() {
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'JetBrains Mono','SF Mono','Fira Code',monospace" }}>
       {/* Header */}
-      <div style={{ background: theme === "dark" ? `linear-gradient(180deg,${C.surfaceAlt} 0%,${C.bg} 100%)` : C.surface, borderBottom: `1px solid ${C.border}`, padding: "16px 32px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", maxWidth: "1440px", margin: "0 auto" }}>
+      <div style={{ background: theme === "dark" ? `linear-gradient(180deg,${C.surfaceAlt} 0%,${C.bg} 100%)` : C.surface, borderBottom: `1px solid ${C.border}`, padding: isMobile ? "12px 16px" : "16px 32px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", maxWidth: "1440px", margin: "0 auto", gap: isMobile ? "10px" : "0" }}>
           <div>
-            <div style={{ fontSize: "13px", fontWeight: 700, letterSpacing: "3px", textTransform: "uppercase", color: C.accent, marginBottom: "4px" }}>Pitcher Command Center</div>
-            <div style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px" }}>Live Statcast Tracking & Analytics</div>
+            <div style={{ fontSize: isMobile ? "11px" : "13px", fontWeight: 700, letterSpacing: "3px", textTransform: "uppercase", color: C.accent, marginBottom: "4px" }}>Pitcher Command Center</div>
+            {!isMobile && <div style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px" }}>Live Statcast Tracking & Analytics</div>}
           </div>
-          <a href="https://lancebroz.substack.com/subscribe" target="_blank" rel="noopener noreferrer" style={{
-            display: "inline-flex", alignItems: "center", gap: "8px", background: "#FF6719", color: "#fff",
-            fontSize: "11px", fontWeight: 700, letterSpacing: "0.5px", padding: "8px 16px", borderRadius: "6px",
-            textDecoration: "none", fontFamily: "inherit", transition: "opacity 0.2s", whiteSpace: "nowrap",
-          }} onMouseEnter={e => e.currentTarget.style.opacity = "0.85"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M4 3H20V5H4V3Z" fill="#fff"/>
-              <path d="M4 7H20V9H4V7Z" fill="#fff"/>
-              <path d="M4 11H20V21L12 16.5L4 21V11Z" fill="#fff"/>
-            </svg>
-            Subscribe to my Substack!
-          </a>
-          {view === "live" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} />}
-          {activePitcher && (
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: "16px", fontWeight: 700, color: C.text }}>
-                {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
-              </div>
-              <div style={{ fontSize: "11px", color: C.textDim }}>
-                {view === "live" && currentGame && <span>{currentGame.away_team} @ {currentGame.home_team} · {currentGame.inning || currentGame.detailed_status}</span>}
-                {view === "historical" && `${startDate} → ${endDate}`}
-                {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
-              </div>
-            </div>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <a href="https://lancebroz.substack.com/subscribe" target="_blank" rel="noopener noreferrer" style={{
+              display: "inline-flex", alignItems: "center", gap: "6px", background: "#FF6719", color: "#fff",
+              fontSize: "10px", fontWeight: 700, letterSpacing: "0.5px", padding: isMobile ? "6px 10px" : "8px 16px", borderRadius: "6px",
+              textDecoration: "none", fontFamily: "inherit", transition: "opacity 0.2s", whiteSpace: "nowrap",
+            }} onMouseEnter={e => e.currentTarget.style.opacity = "0.85"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 3H20V5H4V3Z" fill="#fff"/>
+                <path d="M4 7H20V9H4V7Z" fill="#fff"/>
+                <path d="M4 11H20V21L12 16.5L4 21V11Z" fill="#fff"/>
+              </svg>
+              {isMobile ? "Substack" : "Subscribe to my Substack!"}
+            </a>
+            {view === "live" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />}
+          </div>
         </div>
+        {activePitcher && (
+          <div style={{ maxWidth: "1440px", margin: "0 auto", marginTop: "8px", textAlign: isMobile ? "left" : "right" }}>
+            <div style={{ fontSize: isMobile ? "14px" : "16px", fontWeight: 700, color: C.text }}>
+              {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
+            </div>
+            <div style={{ fontSize: "11px", color: C.textDim, display: "flex", alignItems: "center", justifyContent: isMobile ? "flex-start" : "flex-end", gap: "6px", flexWrap: "wrap" }}>
+              {view === "live" && currentGame && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                  <TeamLogo abbr={currentGame.away_team} logos={teamLogos} size={16} />
+                  {currentGame.away_team} @ {currentGame.home_team}
+                  <TeamLogo abbr={currentGame.home_team} logos={teamLogos} size={16} />
+                  <span style={{ margin: "0 2px" }}>·</span> {currentGame.inning || currentGame.detailed_status}
+                </span>
+              )}
+              {view === "historical" && `${startDate} → ${endDate}`}
+              {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
+            </div>
+          </div>
+        )}
       </div>
 
-      <div style={{ maxWidth: "1440px", margin: "0 auto", padding: "24px 32px" }}>
+      <div style={{ maxWidth: "1440px", margin: "0 auto", padding: isMobile ? "16px 12px" : "24px 32px" }}>
         {/* Search */}
         <div style={{ display: "flex", gap: "12px", marginBottom: "24px", alignItems: "center", flexWrap: "wrap" }}>
           <AutocompleteInput value={pitcherName} onChange={setPitcherName} onSelect={handleLoadPitcher} C={C} />
@@ -1467,7 +1505,7 @@ export default function PitcherTracker() {
                   background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
                   marginBottom: "20px", overflow: "hidden",
                 }}>
-                  <div style={{ display: "flex", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", overflowX: "auto" }}>
                     {/* Pitcher name */}
                     <div style={{
                       padding: "12px 20px", minWidth: "120px", fontSize: "13px", fontWeight: 700,
@@ -1523,13 +1561,13 @@ export default function PitcherTracker() {
             {stuffMetrics && (
               <>
                 {/* Movement + Usage */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
                   <MovementPlot pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} view={view} />
                   <UsageSplitChart pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} pitchData={pitchData} C={C} />
                 </div>
 
                 {/* Table tabs */}
-                <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
                   {[
                     { key: "stuff", label: "Stuff & Movement" },
                     { key: "performance", label: "Plate Discipline" },
@@ -1538,9 +1576,9 @@ export default function PitcherTracker() {
                     <button key={t.key} onClick={() => { setTableView(t.key); setHandFilter("all"); }} style={{
                       background: tableView === t.key ? C.accentGlow : "transparent",
                       border: `1px solid ${tableView === t.key ? C.accent : C.border}`,
-                      borderRadius: "6px", padding: "10px 20px",
+                      borderRadius: "6px", padding: isMobile ? "8px 12px" : "10px 20px",
                       color: tableView === t.key ? C.accent : C.textMuted,
-                      fontSize: "12px", fontWeight: 600, letterSpacing: "1px",
+                      fontSize: isMobile ? "10px" : "12px", fontWeight: 600, letterSpacing: "1px",
                       textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
                     }}>{t.label}</button>
                   ))}
@@ -1580,7 +1618,7 @@ export default function PitcherTracker() {
       </div>
 
       {/* Footer */}
-      <div style={{ borderTop: `1px solid ${C.border}`, padding: "16px 32px", display: "flex", justifyContent: "center", alignItems: "center", gap: "16px" }}>
+      <div style={{ borderTop: `1px solid ${C.border}`, padding: isMobile ? "12px 16px" : "16px 32px", display: "flex", justifyContent: "center", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
         <div style={{ fontSize: "9px", color: C.textDim, letterSpacing: "1px" }}>DATA SOURCES: MLB STATS API · BASEBALL SAVANT STATCAST</div>
         <div style={{ width: "1px", height: "16px", background: C.border }} />
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} style={{

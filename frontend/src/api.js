@@ -9,6 +9,34 @@
 
 const API_BASE = import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app";
 
+// ESPN team logos - fetched once and cached
+let _logoCache = null;
+export async function getTeamLogos() {
+  if (_logoCache) return _logoCache;
+  try {
+    const res = await fetch("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
+    if (!res.ok) return {};
+    const data = await res.json();
+    const map = {};
+    for (const t of data.sports?.[0]?.leagues?.[0]?.teams || []) {
+      const team = t.team;
+      const abbr = team.abbreviation;
+      const logo = team.logos?.[0]?.href || "";
+      if (abbr && logo) map[abbr] = logo;
+    }
+    // Handle common abbreviation differences (MLB API vs ESPN)
+    if (map["WSH"] && !map["WAS"]) map["WAS"] = map["WSH"];
+    if (map["WAS"] && !map["WSH"]) map["WSH"] = map["WAS"];
+    if (map["AZ"] && !map["ARI"]) map["ARI"] = map["AZ"];
+    if (map["ARI"] && !map["AZ"]) map["AZ"] = map["ARI"];
+    _logoCache = map;
+    return map;
+  } catch (e) {
+    console.error("Failed to load team logos:", e);
+    return {};
+  }
+}
+
 export async function searchPitchers(query) {
   const res = await fetch(`${API_BASE}/api/search/pitcher?q=${encodeURIComponent(query)}`);
   if (!res.ok) return [];
