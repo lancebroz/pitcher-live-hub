@@ -1299,8 +1299,13 @@ export default function PitcherTracker() {
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
   // Smart defaults: current season
   const currentYear = new Date().getFullYear();
+  const todayStr = new Date().toISOString().slice(0, 10);
   const [startDate, setStartDate] = useState(`${currentYear}-03-20`);
-  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(todayStr);
+  // Live tab date range (for supplemental Savant fetch)
+  const thirtyAgo = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+  const [liveStartDate, setLiveStartDate] = useState(thirtyAgo);
+  const [liveEndDate, setLiveEndDate] = useState(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
   const [handFilter, setHandFilter] = useState("all");
@@ -1323,6 +1328,10 @@ export default function PitcherTracker() {
     if (!historicalPitchData) return new Set();
     return new Set(historicalPitchData.filter(p => p.game_date).map(p => p.game_date));
   }, [historicalPitchData]);
+  const livePitchedDates = useMemo(() => {
+    if (!recentPitchData) return new Set();
+    return new Set(recentPitchData.filter(p => p.game_date).map(p => p.game_date));
+  }, [recentPitchData]);
 
   // Merge live + recent data when sample mode changes
   useEffect(() => {
@@ -1440,19 +1449,32 @@ export default function PitcherTracker() {
       console.error("Failed to load pitches:", e);
     }
     setIsLoading(false);
-    // Fetch recent Savant data in background (last 30 days)
-    if (pitcher.id) {
-      try {
-        const today = new Date().toISOString().slice(0, 10);
-        const d30 = new Date();
-        d30.setDate(d30.getDate() - 30);
-        const thirtyAgo = d30.toISOString().slice(0, 10);
-        const recentRaw = await getStatcast(pitcher.id, thirtyAgo, today);
-        if (recentRaw.length > 0) {
-          setRecentPitchData(normAndFilter(recentRaw));
-        }
-      } catch (e) { console.error("Failed to load recent data:", e); }
-    }
+  };
+
+  // Fetch supplemental Savant data for live tab date range
+  const handleFetchLiveRecent = async () => {
+    if (!pitcherId) return;
+    setIsLoading(true);
+    try {
+      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate);
+      if (recentRaw.length > 0) {
+        const normalized = normAndFilter(recentRaw);
+        setRecentPitchData(normalized);
+        setLiveSampleMode(true);
+      } else {
+        setRecentPitchData(null);
+        setLiveSampleMode(false);
+        alert("No Statcast data found for this pitcher in that date range.");
+      }
+    } catch (e) { console.error("Failed to load recent data:", e); }
+    setIsLoading(false);
+  };
+
+  // Clear supplemental data and return to live-only
+  const handleClearLiveRecent = () => {
+    setRecentPitchData(null);
+    setLiveSampleMode(false);
+    if (livePitchData) setPitchData(livePitchData);
   };
 
   // Load historical Statcast data
@@ -1618,42 +1640,34 @@ export default function PitcherTracker() {
               );
             })()}
 
-            {/* Sample mode toggle - Live view */}
+            {/* Supplemental date range - Live view */}
             {view === "live" && activePitcher && gamePk && (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
-                <button
-                  onClick={() => { if (recentPitchData) setLiveSampleMode(false); }}
-                  style={{
-                    background: !liveSampleMode ? C.accentGlow : "transparent",
-                    border: `1px solid ${!liveSampleMode ? C.accent : C.border}`,
-                    borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
-                    color: !liveSampleMode ? C.accent : C.textDim,
-                    fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
+              <div style={{ display: "flex", gap: "10px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Add Data From</span>
+                <DatePickerWithHighlights value={liveStartDate} onChange={setLiveStartDate} pitchedDates={livePitchedDates} C={C} label="Start" />
+                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
+                <DatePickerWithHighlights value={liveEndDate} onChange={setLiveEndDate} pitchedDates={livePitchedDates} C={C} label="End" />
+                {!liveSampleMode ? (
+                  <button onClick={handleFetchLiveRecent} style={{
+                    background: C.accent, border: "none", borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
+                    color: "#fff", fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
                     textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
-                  }}
-                >
-                  This Game
-                </button>
-                <button
-                  onClick={() => { if (recentPitchData) setLiveSampleMode(true); }}
-                  style={{
-                    background: liveSampleMode ? C.accentGlow : "transparent",
-                    border: `1px solid ${liveSampleMode ? C.accent : C.border}`,
-                    borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
-                    color: liveSampleMode ? C.accent : C.textDim,
-                    fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
+                  }}>
+                    {isLoading ? "Loading..." : "Fetch"}
+                  </button>
+                ) : (
+                  <button onClick={handleClearLiveRecent} style={{
+                    background: "transparent", border: `1px solid ${C.border}`, borderRadius: "6px",
+                    padding: isMobile ? "6px 10px" : "8px 16px",
+                    color: C.textDim, fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
                     textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
-                    opacity: recentPitchData ? 1 : 0.4,
-                  }}
-                >
-                  Last 30 Days + Live
-                </button>
-                {!recentPitchData && (
-                  <span style={{ fontSize: "10px", color: C.textDim, fontStyle: "italic" }}>Loading recent data...</span>
+                  }}>
+                    Clear
+                  </button>
                 )}
                 {liveSampleMode && recentPitchData && (
-                  <span style={{ fontSize: "10px", color: C.textDim }}>
-                    {recentPitchData.length} recent + {livePitchData?.length || 0} live pitches
+                  <span style={{ fontSize: "10px", color: C.accent, fontWeight: 600 }}>
+                    +{recentPitchData.length} pitches
                   </span>
                 )}
               </div>
