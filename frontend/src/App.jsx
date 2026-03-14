@@ -810,7 +810,10 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !pitches.length) return;
+    if (!canvas || !pitches.length) {
+      if (canvas) { const ctx = canvas.getContext("2d"); canvas.width = width; canvas.height = height; ctx.clearRect(0, 0, width, height); }
+      return;
+    }
     const ctx = canvas.getContext("2d");
     const w = width, h = height;
     canvas.width = w; canvas.height = h;
@@ -820,17 +823,17 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
     const toCanvasX = (x) => ((x + 2.5) / 5) * w;
     const toCanvasY = (y) => (1 - y / 5) * h;
 
-    // KDE grid
-    const gridW = 80, gridH = 80;
+    // High-res KDE grid for smoothness
+    const gridW = 200, gridH = 200;
     const grid = new Float32Array(gridW * gridH);
-    const bandwidth = 0.22; // feet — controls smoothness
+    const bandwidth = 0.25;
     const bw2 = bandwidth * bandwidth;
 
     for (const p of pitches) {
       if (p.plate_x == null || p.plate_z == null) continue;
       const gxCenter = ((p.plate_x + 2.5) / 5) * gridW;
       const gyCenter = ((1 - p.plate_z / 5)) * gridH;
-      const radius = Math.ceil((bandwidth / 5) * gridW * 2.5);
+      const radius = Math.ceil((bandwidth / 5) * gridW * 3);
       const gxMin = Math.max(0, Math.floor(gxCenter - radius));
       const gxMax = Math.min(gridW - 1, Math.ceil(gxCenter + radius));
       const gyMin = Math.max(0, Math.floor(gyCenter - radius));
@@ -852,23 +855,32 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
 
     // Color ramp: blue → cyan → green → yellow → red
     const colorRamp = (t) => {
-      if (t < 0.25) { const s = t / 0.25; return [0, Math.round(s * 255), 255]; }
-      if (t < 0.5) { const s = (t - 0.25) / 0.25; return [0, 255, Math.round(255 * (1 - s))]; }
-      if (t < 0.75) { const s = (t - 0.5) / 0.25; return [Math.round(255 * s), 255, 0]; }
-      const s = (t - 0.75) / 0.25; return [255, Math.round(255 * (1 - s)), 0];
+      if (t < 0.2) { const s = t / 0.2; return [0, Math.round(s * 200), 255]; }
+      if (t < 0.4) { const s = (t - 0.2) / 0.2; return [0, 200 + Math.round(55 * s), Math.round(255 * (1 - s))]; }
+      if (t < 0.6) { const s = (t - 0.4) / 0.2; return [Math.round(255 * s), 255, 0]; }
+      if (t < 0.8) { const s = (t - 0.6) / 0.2; return [255, Math.round(255 * (1 - s * 0.5)), 0]; }
+      const s = (t - 0.8) / 0.2; return [255, Math.round(128 * (1 - s)), 0];
     };
 
-    // Render to canvas
+    // Render grid to canvas with bilinear interpolation
     const imgData = ctx.createImageData(w, h);
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
-        const gx = Math.floor((px / w) * gridW);
-        const gy = Math.floor((py / h) * gridH);
-        const val = grid[gy * gridW + gx] / maxVal;
+        // Map pixel to grid with sub-pixel precision
+        const gxf = (px / w) * (gridW - 1);
+        const gyf = (py / h) * (gridH - 1);
+        const gx0 = Math.floor(gxf), gy0 = Math.floor(gyf);
+        const gx1 = Math.min(gx0 + 1, gridW - 1), gy1 = Math.min(gy0 + 1, gridH - 1);
+        const fx = gxf - gx0, fy = gyf - gy0;
+        // Bilinear interpolation
+        const v00 = grid[gy0 * gridW + gx0], v10 = grid[gy0 * gridW + gx1];
+        const v01 = grid[gy1 * gridW + gx0], v11 = grid[gy1 * gridW + gx1];
+        const val = (v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy) / maxVal;
+
         const idx = (py * w + px) * 4;
-        if (val > 0.02) {
-          const [r, g, b] = colorRamp(Math.min(val, 1));
-          const alpha = Math.min(val * 2.5, 0.85) * 255;
+        if (val > 0.015) {
+          const [r, g, b] = colorRamp(Math.pow(Math.min(val, 1), 0.7));
+          const alpha = Math.min(Math.pow(val, 0.5) * 1.8, 0.88) * 255;
           imgData.data[idx] = r;
           imgData.data[idx + 1] = g;
           imgData.data[idx + 2] = b;
@@ -1699,18 +1711,20 @@ export default function PitcherTracker() {
     }
     setIsLoading(true);
     try {
+      console.log("Fetching Statcast:", pitcherId, startDate, endDate);
       const raw = await getStatcast(pitcherId, startDate, endDate);
+      console.log("Statcast response:", raw.length, "pitches");
       if (raw.length > 0) {
         const normalized = normAndFilter(raw);
         setHistoricalPitchData(normalized);
         setPitchData(normalized);
-        // Detect hand from Savant data if we don't have it
         if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
         alert("No Statcast data found for this pitcher in that date range.");
       }
     } catch (e) {
       console.error("Failed to load Statcast:", e);
+      alert("Error loading data. Check console for details.");
     }
     setIsLoading(false);
   };
