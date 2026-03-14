@@ -1525,6 +1525,7 @@ export default function PitcherTracker() {
   // Historical defaults: 2025 full season
   const [startDate, setStartDate] = useState("2025-03-27");
   const [endDate, setEndDate] = useState("2025-09-28");
+  const [historicalGameType, setHistoricalGameType] = useState("R");
   // Live tab date range (for supplemental Savant fetch - covers spring training)
   const [liveStartDate, setLiveStartDate] = useState("2026-02-20");
   const [liveEndDate, setLiveEndDate] = useState(todayStr);
@@ -1681,7 +1682,7 @@ export default function PitcherTracker() {
     setIsLoading(true);
     setNoRecentData(false);
     try {
-      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate);
+      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate, "RS");
       if (recentRaw.length > 0) {
         const normalized = normAndFilter(recentRaw);
         setRecentPitchData(normalized);
@@ -1711,8 +1712,8 @@ export default function PitcherTracker() {
     }
     setIsLoading(true);
     try {
-      console.log("Fetching Statcast:", pitcherId, startDate, endDate);
-      const raw = await getStatcast(pitcherId, startDate, endDate);
+      console.log("Fetching Statcast:", pitcherId, startDate, endDate, historicalGameType);
+      const raw = await getStatcast(pitcherId, startDate, endDate, historicalGameType);
       console.log("Statcast response:", raw.length, "pitches");
       if (raw.length > 0) {
         const normalized = normAndFilter(raw);
@@ -1939,12 +1940,12 @@ export default function PitcherTracker() {
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
                 {/* Season quick toggles */}
                 {[
-                  { label: "2025", start: "2025-03-27", end: "2025-09-28" },
-                  { label: "2026", start: "2026-02-20", end: todayStr },
+                  { label: "2025", start: "2025-03-27", end: "2025-09-28", gt: "R" },
+                  { label: "2026", start: "2026-02-20", end: todayStr, gt: "RS" },
                 ].map(s => {
                   const isActive = startDate === s.start && endDate === s.end;
                   return (
-                    <button key={s.label} onClick={() => { setStartDate(s.start); setEndDate(s.end); }} style={{
+                    <button key={s.label} onClick={() => { setStartDate(s.start); setEndDate(s.end); setHistoricalGameType(s.gt); }} style={{
                       background: isActive ? C.accentGlow : "transparent",
                       border: `1px solid ${isActive ? C.accent : C.border}`,
                       borderRadius: "6px", padding: "8px 14px",

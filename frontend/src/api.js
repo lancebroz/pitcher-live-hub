@@ -66,10 +66,18 @@ export async function getGamePitches(gamePk, pitcherId) {
   return res.json();
 }
 
-export async function getStatcast(pitcherId, startDate, endDate) {
-  const res = await fetch(
-    `${API_BASE}/api/pitcher/${pitcherId}/statcast?start_date=${startDate}&end_date=${endDate}`
-  );
-  if (!res.ok) return [];
-  return res.json();
+export async function getStatcast(pitcherId, startDate, endDate, gameType = "R") {
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/pitcher/${pitcherId}/statcast?start_date=${startDate}&end_date=${endDate}&game_type=${gameType}`
+    );
+    if (!res.ok) {
+      console.error("Statcast API error:", res.status, res.statusText);
+      return [];
+    }
+    return res.json();
+  } catch (e) {
+    console.error("Statcast fetch failed:", e);
+    return [];
+  }
 }

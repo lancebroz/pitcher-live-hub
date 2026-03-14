@@ -318,22 +318,27 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
 # ─── Route 5: Get Statcast data for historical queries ───
 @app.get("/api/pitcher/{pitcher_id}/statcast")
-async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
+async def get_statcast(pitcher_id: int, start_date: str, end_date: str, game_type: str = "R"):
     """
     The main endpoint for the HISTORICAL view.
     Fetches Statcast CSV data from Baseball Savant.
+    game_type: "R" for regular season, "S" for spring training, "RS" for both
     """
-    cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}"
+    cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}:{game_type}"
     cached = get_cached(cache_key, 3600)  # cache for 1 hour
     if cached:
         return cached
+
+    # Build game type filter
+    gt_map = {"R": "R|", "S": "S|", "RS": "R|S|"}
+    hf_gt = gt_map.get(game_type, "R|")
 
     url = "https://baseballsavant.mlb.com/statcast_search/csv"
     params = {
         "all": "true",
         "hfPT": "",
         "hfAB": "",
-        "hfGT": "R|",
+        "hfGT": hf_gt,
         "hfPR": "",
         "hfZ": "",
         "stadium": "",
@@ -373,9 +378,10 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     }
 
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, params=params, timeout=30, follow_redirects=True)
+        resp = await client.get(url, params=params, timeout=60, follow_redirects=True)
 
     if resp.status_code != 200 or "pitch_type" not in resp.text[:500]:
+        print(f"Savant error: status={resp.status_code}, body_start={resp.text[:200]}")
         return []
 
     # Parse CSV
