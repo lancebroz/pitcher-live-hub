@@ -1525,7 +1525,6 @@ export default function PitcherTracker() {
   // Historical defaults: 2025 full season
   const [startDate, setStartDate] = useState("2025-03-27");
   const [endDate, setEndDate] = useState("2025-09-28");
-  const [historicalGameType, setHistoricalGameType] = useState("R");
   // Live tab date range (for supplemental Savant fetch - covers spring training)
   const [liveStartDate, setLiveStartDate] = useState("2026-02-20");
   const [liveEndDate, setLiveEndDate] = useState(todayStr);
@@ -1702,7 +1701,7 @@ export default function PitcherTracker() {
     setIsLoading(true);
     setNoRecentData(false);
     try {
-      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate, "RS");
+      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate);
       if (recentRaw.length > 0) {
         const normalized = normAndFilter(recentRaw);
         setRecentPitchData(normalized);
@@ -1727,25 +1726,25 @@ export default function PitcherTracker() {
   // Load historical Statcast data
   const handleLoadHistorical = async () => {
     if (!pitcherId) {
-      alert("Please search for and select a pitcher first.");
+      alert("No pitcher selected. Please select a pitcher from a live game or search first.");
       return;
     }
+    console.log("handleLoadHistorical called with:", { pitcherId, startDate, endDate });
     setIsLoading(true);
     try {
-      console.log("Fetching Statcast:", pitcherId, startDate, endDate, historicalGameType);
-      const raw = await getStatcast(pitcherId, startDate, endDate, historicalGameType);
-      console.log("Statcast response:", raw.length, "pitches");
+      const raw = await getStatcast(pitcherId, startDate, endDate);
+      console.log("Statcast returned:", raw.length, "pitches");
       if (raw.length > 0) {
         const normalized = normAndFilter(raw);
         setHistoricalPitchData(normalized);
         setPitchData(normalized);
         if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
-        alert("No Statcast data found for this pitcher in that date range.");
+        alert(`No data found for pitcher ID ${pitcherId} from ${startDate} to ${endDate}. The Savant query may have timed out — try again.`);
       }
     } catch (e) {
       console.error("Failed to load Statcast:", e);
-      alert("Error loading data. Check console for details.");
+      alert("Error: " + e.message);
     }
     setIsLoading(false);
   };
@@ -1958,23 +1957,6 @@ export default function PitcherTracker() {
 
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
-                {/* Season quick toggles */}
-                {[
-                  { label: "2025", start: "2025-03-27", end: "2025-09-28", gt: "R" },
-                  { label: "2026", start: "2026-02-20", end: todayStr, gt: "RS" },
-                ].map(s => {
-                  const isActive = startDate === s.start && endDate === s.end;
-                  return (
-                    <button key={s.label} onClick={() => { setStartDate(s.start); setEndDate(s.end); setHistoricalGameType(s.gt); }} style={{
-                      background: isActive ? C.accentGlow : "transparent",
-                      border: `1px solid ${isActive ? C.accent : C.border}`,
-                      borderRadius: "6px", padding: "8px 14px",
-                      color: isActive ? C.accent : C.textDim,
-                      fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                    }}>{s.label}</button>
-                  );
-                })}
-                <span style={{ width: "1px", height: "20px", background: C.border }} />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
                 <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start" />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>

@@ -318,27 +318,22 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
 # ─── Route 5: Get Statcast data for historical queries ───
 @app.get("/api/pitcher/{pitcher_id}/statcast")
-async def get_statcast(pitcher_id: int, start_date: str, end_date: str, game_type: str = "R"):
+async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     """
     The main endpoint for the HISTORICAL view.
     Fetches Statcast CSV data from Baseball Savant.
-    game_type: "R" for regular season, "S" for spring training, "RS" for both
     """
-    cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}:{game_type}"
+    cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}"
     cached = get_cached(cache_key, 3600)  # cache for 1 hour
     if cached:
         return cached
-
-    # Build game type filter
-    gt_map = {"R": "R|", "S": "S|", "RS": "R|S|"}
-    hf_gt = gt_map.get(game_type, "R|")
 
     url = "https://baseballsavant.mlb.com/statcast_search/csv"
     params = {
         "all": "true",
         "hfPT": "",
         "hfAB": "",
-        "hfGT": hf_gt,
+        "hfGT": "R|",
         "hfPR": "",
         "hfZ": "",
         "stadium": "",
