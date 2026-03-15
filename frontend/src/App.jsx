@@ -1520,6 +1520,7 @@ export default function PitcherTracker() {
   const [liveSampleMode, setLiveSampleMode] = useState(false);
   const [noRecentData, setNoRecentData] = useState(false);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
+  const [historicalError, setHistoricalError] = useState("");
   // Date helpers
   const todayStr = new Date().toISOString().slice(0, 10);
   // Historical defaults: 2025 full season
@@ -1725,26 +1726,35 @@ export default function PitcherTracker() {
 
   // Load historical Statcast data
   const handleLoadHistorical = async () => {
+    setHistoricalError("");
     if (!pitcherId) {
-      alert("No pitcher selected. Please select a pitcher from a live game or search first.");
+      setHistoricalError("No pitcher ID found. Select a pitcher from a live game or use the search bar first.");
       return;
     }
-    console.log("handleLoadHistorical called with:", { pitcherId, startDate, endDate });
     setIsLoading(true);
     try {
-      const raw = await getStatcast(pitcherId, startDate, endDate);
-      console.log("Statcast returned:", raw.length, "pitches");
+      const url = `${import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app"}/api/pitcher/${pitcherId}/statcast?start_date=${startDate}&end_date=${endDate}`;
+      console.log("Fetching:", url);
+      const res = await fetch(url);
+      console.log("Response status:", res.status);
+      if (!res.ok) {
+        setHistoricalError(`Backend returned ${res.status} ${res.statusText}. URL: ${url}`);
+        setIsLoading(false);
+        return;
+      }
+      const raw = await res.json();
+      console.log("Pitches returned:", raw.length);
       if (raw.length > 0) {
         const normalized = normAndFilter(raw);
         setHistoricalPitchData(normalized);
         setPitchData(normalized);
         if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
-        alert(`No data found for pitcher ID ${pitcherId} from ${startDate} to ${endDate}. The Savant query may have timed out — try again.`);
+        setHistoricalError(`No data returned for pitcher ${pitcherId} (${startDate} to ${endDate}). Savant may be slow — try again.`);
       }
     } catch (e) {
-      console.error("Failed to load Statcast:", e);
-      alert("Error: " + e.message);
+      console.error("Historical fetch error:", e);
+      setHistoricalError(`Fetch failed: ${e.message}`);
     }
     setIsLoading(false);
   };
@@ -1968,6 +1978,11 @@ export default function PitcherTracker() {
                 }}>
                   {isLoading ? "Loading..." : "Fetch Data"}
                 </button>
+                {historicalError && (
+                  <div style={{ width: "100%", padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
+                    {historicalError}
+                  </div>
+                )}
               </div>
             )}
 
