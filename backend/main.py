@@ -318,16 +318,15 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
 # ─── Route 5: Get Statcast data for historical queries ───
 @app.get("/api/pitcher/{pitcher_id}/statcast")
-async def get_statcast(pitcher_id: int, start_date: str, end_date: str, nocache: str = ""):
+async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     """
     The main endpoint for the HISTORICAL view.
     Fetches Statcast CSV data from Baseball Savant.
     """
     cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}"
-    if not nocache:
-        cached = get_cached(cache_key, 3600)  # cache for 1 hour
-        if cached:
-            return cached
+    cached = get_cached(cache_key, 3600)  # cache for 1 hour
+    if cached:
+        return cached
 
     url = "https://baseballsavant.mlb.com/statcast_search/csv"
     params = {
