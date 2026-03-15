@@ -373,10 +373,9 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     }
 
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, params=params, timeout=60, follow_redirects=True)
+        resp = await client.get(url, params=params, timeout=30, follow_redirects=True)
 
     if resp.status_code != 200 or "pitch_type" not in resp.text[:500]:
-        print(f"Savant error: status={resp.status_code}, body_start={resp.text[:200]}")
         return []
 
     # Parse CSV
@@ -439,8 +438,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "swing_length": safe_float("swing_length"),
         })
 
-    if pitches:
-        set_cache(cache_key, pitches)
+    set_cache(cache_key, pitches)
     return pitches
 
 

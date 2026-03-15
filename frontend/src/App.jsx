@@ -543,8 +543,10 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
     return { x: avgX, y: avgY, name: g.name, abbrev: g.abbrev, color: g.color, isAvg: true, count: g.data.length };
   });
 
-  const axisMax = 25;
-  const ticks = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
+  const axisMax = maxAbs > 20 ? 25 : 20;
+  const ticks20 = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
+  const ticks25 = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
+  const ticks = axisMax === 25 ? ticks25 : ticks20;
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>Pitch Movement Profile</div>
@@ -689,15 +691,10 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
 };
 
 // ─── Release Point ───
-const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C, pitcherHand }) => {
+const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => {
   const rh = parseFloat(avgRelH) || 0;
   const rs = typeof avgRelS === "number" ? avgRelS : parseFloat(avgRelS) || 0;
   const dots = pitchTypeMetrics.map(pt => ({ x: pt.avgRelSNum, y: pt.avgRelHNum, name: pt.name, color: pt.color }));
-  // MLB average release point by handedness
-  const mlbAvg = pitcherHand === "L"
-    ? { x: 2.08, y: 5.78 }
-    : { x: -1.88, y: 5.76 }; // default to RHP
-  const avgDot = [{ x: mlbAvg.x, y: mlbAvg.y, name: "MLB Avg", isMLBAvg: true }];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
@@ -720,12 +717,6 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C, pitch
             <Tooltip content={({ payload }) => {
               if (!payload?.length) return null;
               const d = payload[0].payload;
-              if (d.isMLBAvg) return (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
-                  <div style={{ fontWeight: 700, color: C.textMuted }}>MLB Avg ({pitcherHand === "L" ? "LHP" : "RHP"})</div>
-                  <div style={{ color: C.textDim }}>Side: {d.x.toFixed(2)}ft | Height: {d.y.toFixed(2)}ft</div>
-                </div>
-              );
               return (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
                   <div style={{ color: d.color, fontWeight: 700 }}>{d.name}</div>
@@ -736,17 +727,6 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C, pitch
             <Scatter data={dots} r={12}>
               {dots.map((d, i) => <Cell key={i} fill={d.color} stroke="#000" strokeWidth={1.5} />)}
             </Scatter>
-            {/* MLB Average release point */}
-            <Scatter data={avgDot} r={14} shape={(props) => {
-              const { cx, cy } = props;
-              return (
-                <g>
-                  <circle cx={cx} cy={cy} r={14} fill="none" stroke={C.textMuted} strokeWidth={2} strokeDasharray="3 2" />
-                  <text x={cx} y={cy + 1} textAnchor="middle" dominantBaseline="middle"
-                    fill={C.textMuted} fontSize="7" fontWeight="700" fontFamily="inherit" letterSpacing="0.5">AVG</text>
-                </g>
-              );
-            }} />
           </ScatterChart>
         </ResponsiveContainer>
     </div>
@@ -804,138 +784,9 @@ const PlateSVG = ({ color }) => (
   </svg>
 );
 
-// ─── Heatmap Canvas renderer ───
-const HeatmapCanvas = ({ pitches, width, height, C }) => {
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !pitches.length) {
-      if (canvas) { const ctx = canvas.getContext("2d"); canvas.width = width; canvas.height = height; ctx.clearRect(0, 0, width, height); }
-      return;
-    }
-    const ctx = canvas.getContext("2d");
-    const w = width, h = height;
-    canvas.width = w; canvas.height = h;
-    ctx.clearRect(0, 0, w, h);
-
-    // Data bounds: x=[-2.5, 2.5], y=[0, 5]
-    const toCanvasX = (x) => ((x + 2.5) / 5) * w;
-    const toCanvasY = (y) => (1 - y / 5) * h;
-
-    // High-res KDE grid for smoothness
-    const gridW = 200, gridH = 200;
-    const grid = new Float32Array(gridW * gridH);
-    const bandwidth = 0.25;
-    const bw2 = bandwidth * bandwidth;
-
-    for (const p of pitches) {
-      if (p.plate_x == null || p.plate_z == null) continue;
-      const gxCenter = ((p.plate_x + 2.5) / 5) * gridW;
-      const gyCenter = ((1 - p.plate_z / 5)) * gridH;
-      const radius = Math.ceil((bandwidth / 5) * gridW * 3);
-      const gxMin = Math.max(0, Math.floor(gxCenter - radius));
-      const gxMax = Math.min(gridW - 1, Math.ceil(gxCenter + radius));
-      const gyMin = Math.max(0, Math.floor(gyCenter - radius));
-      const gyMax = Math.min(gridH - 1, Math.ceil(gyCenter + radius));
-      for (let gy = gyMin; gy <= gyMax; gy++) {
-        for (let gx = gxMin; gx <= gxMax; gx++) {
-          const dx = (gx / gridW) * 5 - 2.5 - p.plate_x;
-          const dy = (1 - gy / gridH) * 5 - p.plate_z;
-          const dist2 = dx * dx + dy * dy;
-          grid[gy * gridW + gx] += Math.exp(-dist2 / (2 * bw2));
-        }
-      }
-    }
-
-    // Find max
-    let maxVal = 0;
-    for (let i = 0; i < grid.length; i++) if (grid[i] > maxVal) maxVal = grid[i];
-    if (maxVal === 0) return;
-
-    // Color ramp: blue → cyan → green → yellow → red
-    const colorRamp = (t) => {
-      if (t < 0.2) { const s = t / 0.2; return [0, Math.round(s * 200), 255]; }
-      if (t < 0.4) { const s = (t - 0.2) / 0.2; return [0, 200 + Math.round(55 * s), Math.round(255 * (1 - s))]; }
-      if (t < 0.6) { const s = (t - 0.4) / 0.2; return [Math.round(255 * s), 255, 0]; }
-      if (t < 0.8) { const s = (t - 0.6) / 0.2; return [255, Math.round(255 * (1 - s * 0.5)), 0]; }
-      const s = (t - 0.8) / 0.2; return [255, Math.round(128 * (1 - s)), 0];
-    };
-
-    // Render grid to canvas with bilinear interpolation
-    const imgData = ctx.createImageData(w, h);
-    for (let py = 0; py < h; py++) {
-      for (let px = 0; px < w; px++) {
-        // Map pixel to grid with sub-pixel precision
-        const gxf = (px / w) * (gridW - 1);
-        const gyf = (py / h) * (gridH - 1);
-        const gx0 = Math.floor(gxf), gy0 = Math.floor(gyf);
-        const gx1 = Math.min(gx0 + 1, gridW - 1), gy1 = Math.min(gy0 + 1, gridH - 1);
-        const fx = gxf - gx0, fy = gyf - gy0;
-        // Bilinear interpolation
-        const v00 = grid[gy0 * gridW + gx0], v10 = grid[gy0 * gridW + gx1];
-        const v01 = grid[gy1 * gridW + gx0], v11 = grid[gy1 * gridW + gx1];
-        const val = (v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy) / maxVal;
-
-        const idx = (py * w + px) * 4;
-        if (val > 0.015) {
-          const [r, g, b] = colorRamp(Math.pow(Math.min(val, 1), 0.7));
-          const alpha = Math.min(Math.pow(val, 0.5) * 1.8, 0.88) * 255;
-          imgData.data[idx] = r;
-          imgData.data[idx + 1] = g;
-          imgData.data[idx + 2] = b;
-          imgData.data[idx + 3] = alpha;
-        }
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    // Draw strike zone
-    const zx1 = toCanvasX(-0.83), zx2 = toCanvasX(0.83);
-    const zy1 = toCanvasY(3.5), zy2 = toCanvasY(1.5);
-    ctx.strokeStyle = "rgba(0,0,0,0.7)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
-
-    // Draw home plate at y=0
-    const pcx = toCanvasX(0), pby = toCanvasY(0);
-    const phw = (toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
-    ctx.beginPath();
-    ctx.moveTo(pcx - phw, pby);
-    ctx.lineTo(pcx + phw, pby);
-    ctx.lineTo(pcx + phw * 0.88, pby - 8);
-    ctx.lineTo(pcx, pby - 16);
-    ctx.lineTo(pcx - phw * 0.88, pby - 8);
-    ctx.closePath();
-    ctx.fillStyle = "rgba(120,120,120,0.15)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(120,120,120,0.5)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-  }, [pitches, width, height]);
-
-  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
-};
-
 // ─── Pitch Location Plot ───
 const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   const [locHand, setLocHand] = useState("all");
-  const [viewMode, setViewMode] = useState("dots"); // "dots" or "heatmap"
-  const [heatPitchFilter, setHeatPitchFilter] = useState("all");
-  const heatContainerRef = useRef(null);
-  const [heatSize, setHeatSize] = useState({ w: 400, h: 400 });
-
-  // Measure heatmap container
-  useEffect(() => {
-    if (!heatContainerRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width } = entries[0].contentRect;
-      setHeatSize({ w: Math.round(width), h: Math.round(width * 1.0) });
-    });
-    ro.observe(heatContainerRef.current);
-    return () => ro.disconnect();
-  }, [viewMode]);
 
   const filtered = useMemo(() => {
     if (!pitchData) return [];
@@ -947,160 +798,87 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
     }));
   }, [pitchData, locHand]);
 
-  const heatFiltered = useMemo(() => {
-    if (!pitchData) return [];
-    let f = locHand === "all" ? pitchData : pitchData.filter(p => p.batter_hand === locHand);
-    if (heatPitchFilter !== "all") f = f.filter(p => p.pitch_type === heatPitchFilter);
-    return f;
-  }, [pitchData, locHand, heatPitchFilter]);
-
   const descLabel = (d) => ({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: "In Play" }[d] || d);
-  const batterSide = locHand === "L" ? "right" : locHand === "R" ? "left" : null;
 
-  // Available pitch types for filter
-  const availPitchTypes = useMemo(() => {
-    if (!pitchTypeMetrics) return [];
-    return pitchTypeMetrics.map(pt => ({
-      code: pt.code || PITCH_ABBREV[pt.name] || "?",
-      name: pt.name,
-      color: pt.color,
-    }));
-  }, [pitchTypeMetrics]);
+  // From pitcher POV: LHH stands on RIGHT side of plate, RHH on LEFT
+  const batterSide = locHand === "L" ? "right" : locHand === "R" ? "left" : null;
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
-        <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
-        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
-          {/* Dots/Heatmap toggle */}
-          <button onClick={() => setViewMode("dots")} style={{
-            background: viewMode === "dots" ? C.accentGlow : "transparent",
-            border: `1px solid ${viewMode === "dots" ? C.accent : C.border}`,
-            borderRadius: "4px", padding: "4px 10px",
-            color: viewMode === "dots" ? C.accent : C.textDim,
-            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-          }}>Dots</button>
-          <button onClick={() => setViewMode("heatmap")} style={{
-            background: viewMode === "heatmap" ? C.accentGlow : "transparent",
-            border: `1px solid ${viewMode === "heatmap" ? C.accent : C.border}`,
-            borderRadius: "4px", padding: "4px 10px",
-            color: viewMode === "heatmap" ? C.accent : C.textDim,
-            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-          }}>Heatmap</button>
-          <span style={{ width: "1px", height: "16px", background: C.border, margin: "0 4px" }} />
-          {/* Batter hand filter */}
-          {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
-            <button key={t.key} onClick={() => setLocHand(t.key)} style={{
-              background: locHand === t.key ? C.accentGlow : "transparent",
-              border: `1px solid ${locHand === t.key ? C.accent : C.border}`,
-              borderRadius: "4px", padding: "4px 10px",
-              color: locHand === t.key ? C.accent : C.textDim,
-              fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-            }}>{t.label}</button>
-          ))}
-        </div>
-      </div>
-
-      {/* Pitch type filter (heatmap mode) */}
-      {viewMode === "heatmap" && (
-        <div style={{ display: "flex", gap: "4px", marginBottom: "12px", flexWrap: "wrap" }}>
-          <button onClick={() => setHeatPitchFilter("all")} style={{
-            background: heatPitchFilter === "all" ? C.accentGlow : "transparent",
-            border: `1px solid ${heatPitchFilter === "all" ? C.accent : C.border}`,
-            borderRadius: "4px", padding: "3px 10px",
-            color: heatPitchFilter === "all" ? C.accent : C.textDim,
-            fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-          }}>All</button>
-          {availPitchTypes.map(pt => (
-            <button key={pt.code} onClick={() => setHeatPitchFilter(pt.code)} style={{
-              background: heatPitchFilter === pt.code ? pt.color + "22" : "transparent",
-              border: `1px solid ${heatPitchFilter === pt.code ? pt.color : C.border}`,
-              borderRadius: "4px", padding: "3px 10px",
-              color: heatPitchFilter === pt.code ? pt.color : C.textDim,
-              fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-            }}>{pt.code}</button>
-          ))}
-          <span style={{ fontSize: "10px", color: C.textDim, alignSelf: "center", marginLeft: "8px" }}>
-            {heatFiltered.length} pitches
-          </span>
-        </div>
-      )}
-
-      {/* Dot view */}
-      {viewMode === "dots" && (
-        <>
-          <div style={{ position: "relative" }}>
-            <ResponsiveContainer width="100%" height={480}>
-              <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
-                <CartesianGrid stroke="none" />
-                <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
-                <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
-                <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
-                <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{
-                  position: "center",
-                  content: (props) => {
-                    const { viewBox } = props;
-                    if (!viewBox) return null;
-                    const cx = viewBox.x + viewBox.width / 2;
-                    const bottomY = viewBox.y + viewBox.height;
-                    const halfW = viewBox.width / 2;
-                    return (
-                      <polygon
-                        points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - 8} ${cx},${bottomY - 18} ${cx - halfW * 0.88},${bottomY - 8}`}
-                        fill={C.textMuted} fillOpacity={0.15}
-                        stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
-                        strokeLinejoin="round"
-                      />
-                    );
-                  }
-                }} />
-                <Tooltip content={({ payload }) => {
-                  if (!payload?.length) return null;
-                  const d = payload[0].payload;
-                  return (
-                    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}>
-                      <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div>
-                      <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
-                        <div>vs. {d.batter} ({d.hand}HH)</div>
-                        <div>Inning {d.inning} · Count: {d.count}</div>
-                        <div>Result: {descLabel(d.description)}</div>
-                      </div>
-                    </div>
-                  );
-                }} />
-                <Scatter data={filtered} r={5} opacity={0.8}>
-                  {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
-                </Scatter>
-              </ScatterChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
-            {pitchTypeMetrics.map(pt => (
-              <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
-                <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
-                {PITCH_ABBREV[pt.name] || pt.code}
-              </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
+              <button key={t.key} onClick={() => setLocHand(t.key)} style={{
+                background: locHand === t.key ? C.accentGlow : "transparent",
+                border: `1px solid ${locHand === t.key ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "4px 10px",
+                color: locHand === t.key ? C.accent : C.textDim,
+                fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.label}</button>
             ))}
           </div>
-        </>
-      )}
+        </div>
+        <div style={{ position: "relative" }}>
+          <ResponsiveContainer width="100%" height={480}>
+            <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
+              <CartesianGrid stroke="none" />
+              <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
+              <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
+              {/* Strike zone */}
+              <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
+              {/* Home plate - centered at x=0 using customized SVG */}
+              <ReferenceArea x1={-0.83} x2={0.83} y1={0.4} y2={0.9} fill="none" stroke="none" label={{
+                position: "center",
+                content: (props) => {
+                  const { viewBox } = props;
+                  if (!viewBox) return null;
+                  const cx = viewBox.x + viewBox.width / 2;
+                  const cy = viewBox.y + viewBox.height / 2;
+                  const halfW = viewBox.width / 2;
+                  const tipUp = 18;
+                  const cornerUp = 8;
+                  return (
+                    <polygon
+                      points={`${cx - halfW},${cy} ${cx + halfW},${cy} ${cx + halfW * 0.88},${cy - cornerUp} ${cx},${cy - tipUp} ${cx - halfW * 0.88},${cy - cornerUp}`}
+                      fill={C.textMuted} fillOpacity={0.15}
+                      stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
+                      strokeLinejoin="round"
+                    />
+                  );
+                }
+              }} />
+              <Tooltip content={({ payload }) => {
+                if (!payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}>
+                    <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div>
+                    <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
+                      <div>vs. {d.batter} ({d.hand}HH)</div>
+                      <div>Inning {d.inning} · Count: {d.count}</div>
+                      <div>Result: {descLabel(d.description)}</div>
+                    </div>
+                  </div>
+                );
+              }} />
+              <Scatter data={filtered} r={5} opacity={0.8}>
+                {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
 
-      {/* Heatmap view */}
-      {viewMode === "heatmap" && (
-        <>
-          <div ref={heatContainerRef} style={{ width: "100%", aspectRatio: "1/1", maxHeight: "500px", position: "relative", background: "#f8f8f8", borderRadius: "6px", overflow: "hidden" }}>
-            <HeatmapCanvas pitches={heatFiltered} width={heatSize.w * 2} height={heatSize.h * 2} C={C} />
-          </div>
-          {/* Color legend */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginTop: "10px" }}>
-            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Least</span>
-            <div style={{ width: "120px", height: "10px", borderRadius: "3px",
-              background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
-            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Most</span>
-          </div>
-        </>
-      )}
+
+        </div>
+        {/* Legend */}
+        <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
+          {pitchTypeMetrics.map(pt => (
+            <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
+              {PITCH_ABBREV[pt.name] || pt.code}
+            </div>
+          ))}
+        </div>
     </div>
   );
 };
@@ -1251,7 +1029,7 @@ const normalizeLivePitch = (p) => {
   };
 };
 
-const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other");
+const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type !== "PO");
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
 const computeHistoricalSummary = (pitchData) => {
@@ -1516,19 +1294,9 @@ export default function PitcherTracker() {
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
-  const [recentPitchData, setRecentPitchData] = useState(null);
-  const [liveSampleMode, setLiveSampleMode] = useState(false);
-  const [noRecentData, setNoRecentData] = useState(false);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  const [historicalError, setHistoricalError] = useState("");
-  // Date helpers
-  const todayStr = new Date().toISOString().slice(0, 10);
-  // Historical defaults: 2025 full season
   const [startDate, setStartDate] = useState("2025-03-27");
   const [endDate, setEndDate] = useState("2025-09-28");
-  // Live tab date range (for supplemental Savant fetch - covers spring training)
-  const [liveStartDate, setLiveStartDate] = useState("2026-02-20");
-  const [liveEndDate, setLiveEndDate] = useState(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
   const [handFilter, setHandFilter] = useState("all");
@@ -1551,21 +1319,6 @@ export default function PitcherTracker() {
     if (!historicalPitchData) return new Set();
     return new Set(historicalPitchData.filter(p => p.game_date).map(p => p.game_date));
   }, [historicalPitchData]);
-  const livePitchedDates = useMemo(() => {
-    if (!recentPitchData) return new Set();
-    return new Set(recentPitchData.filter(p => p.game_date).map(p => p.game_date));
-  }, [recentPitchData]);
-
-  // Merge live + recent data when sample mode changes
-  useEffect(() => {
-    if (view !== "live") return;
-    if (liveSampleMode && recentPitchData && livePitchData) {
-      // Merge: recent data + live game data (deduplicate by ensuring live pitches come last)
-      setPitchData([...recentPitchData, ...livePitchData]);
-    } else if (livePitchData) {
-      setPitchData(livePitchData);
-    }
-  }, [liveSampleMode, recentPitchData, livePitchData, view]);
 
   // Live polling: re-fetch pitch data every 15 seconds during live games
   useEffect(() => {
@@ -1577,11 +1330,7 @@ export default function PitcherTracker() {
           if (raw.length > 0) {
             const normalized = normAndFilter(raw);
             setLivePitchData(normalized);
-            if (liveSampleMode && recentPitchData) {
-              setPitchData([...recentPitchData, ...normalized]);
-            } else {
-              setPitchData(normalized);
-            }
+            setPitchData(normalized);
           }
           // Also refresh pitcher game stats
           const pitchers = await getGamePitchers(gamePk);
@@ -1591,7 +1340,7 @@ export default function PitcherTracker() {
       }, 15000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [view, gamePk, pitcherId, liveSampleMode, recentPitchData]);
+  }, [view, gamePk, pitcherId]);
 
   // When switching views, swap the displayed data
   const handleViewSwitch = async (newView) => {
@@ -1604,19 +1353,11 @@ export default function PitcherTracker() {
           const raw = await getGamePitches(gamePk, pitcherId);
           const normalized = normAndFilter(raw);
           setLivePitchData(normalized);
-          if (liveSampleMode && recentPitchData) {
-            setPitchData([...recentPitchData, ...normalized]);
-          } else {
-            setPitchData(normalized);
-          }
+          setPitchData(normalized);
         } catch (e) { console.error("Failed to reload live:", e); }
         setIsLoading(false);
       } else if (livePitchData) {
-        if (liveSampleMode && recentPitchData) {
-          setPitchData([...recentPitchData, ...livePitchData]);
-        } else {
-          setPitchData(livePitchData);
-        }
+        setPitchData(livePitchData);
       }
     } else {
       // Historical: restore cached historical data if available
@@ -1630,30 +1371,10 @@ export default function PitcherTracker() {
 
   // Load pitcher from search
   const handleLoadPitcher = async (selection) => {
-    let name, id, hand;
-    if (selection && typeof selection === "object") {
-      // From autocomplete dropdown
-      name = selection.name;
-      id = selection.id;
-      hand = selection.throws || "";
-    } else {
-      // From button click or Enter key with typed name - search for the pitcher
-      const searchName = (selection && typeof selection === "string") ? selection : pitcherName;
-      if (!searchName || searchName.length < 2) return;
-      try {
-        const results = await searchPitchers(searchName);
-        if (results.length === 0) {
-          alert("No pitcher found with that name.");
-          return;
-        }
-        name = results[0].name;
-        id = results[0].id;
-        hand = results[0].throws || "";
-      } catch (e) {
-        console.error("Search failed:", e);
-        return;
-      }
-    }
+    if (!selection) return;
+    const name = typeof selection === "string" ? selection : selection.name;
+    const id = typeof selection === "string" ? null : selection.id;
+    const hand = typeof selection === "string" ? "" : (selection.throws || "");
     setPitcherName(name);
     setPitcherId(id);
     setPitcherHand(hand);
@@ -1661,9 +1382,6 @@ export default function PitcherTracker() {
     // Reset all data on pitcher change
     setPitchData(null);
     setLivePitchData(null);
-    setRecentPitchData(null);
-    setLiveSampleMode(false);
-    setNoRecentData(false);
     setHistoricalPitchData(null);
     setActiveGame(null);
     setGamePk(null);
@@ -1678,9 +1396,6 @@ export default function PitcherTracker() {
     setGamePk(game.game_pk);
     setView("live");
     setPitcherGameStats(pitcher.game_stats || null);
-    setRecentPitchData(null);
-    setLiveSampleMode(false);
-    setNoRecentData(false);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setIsLoading(true);
@@ -1696,78 +1411,26 @@ export default function PitcherTracker() {
     setIsLoading(false);
   };
 
-  // Fetch supplemental Savant data for live tab date range
-  const handleFetchLiveRecent = async () => {
-    if (!pitcherId) return;
-    setIsLoading(true);
-    setNoRecentData(false);
-    try {
-      const recentRaw = await getStatcast(pitcherId, liveStartDate, liveEndDate);
-      if (recentRaw.length > 0) {
-        const normalized = normAndFilter(recentRaw);
-        setRecentPitchData(normalized);
-        setLiveSampleMode(true);
-      } else {
-        setRecentPitchData(null);
-        setLiveSampleMode(false);
-        setNoRecentData(true);
-      }
-    } catch (e) { console.error("Failed to load recent data:", e); }
-    setIsLoading(false);
-  };
-
-  // Clear supplemental data and return to live-only
-  const handleClearLiveRecent = () => {
-    setRecentPitchData(null);
-    setLiveSampleMode(false);
-    setNoRecentData(false);
-    if (livePitchData) setPitchData(livePitchData);
-  };
-
   // Load historical Statcast data
   const handleLoadHistorical = async () => {
-    setHistoricalError("");
-    let pid = pitcherId;
-    // If pitcherId is missing, try to resolve it from the pitcher name
-    if (!pid && pitcherName && pitcherName.length >= 2) {
-      try {
-        const results = await searchPitchers(pitcherName);
-        if (results.length > 0) {
-          pid = results[0].id;
-          setPitcherId(pid);
-          if (!pitcherHand && results[0].throws) setPitcherHand(results[0].throws);
-        }
-      } catch (e) { console.error("Name lookup failed:", e); }
-    }
-    if (!pid) {
-      setHistoricalError("No pitcher ID found. Select a pitcher from a live game or use the search bar.");
+    if (!pitcherId) {
+      alert("Please search for and select a pitcher first.");
       return;
     }
     setIsLoading(true);
     try {
-      const url = `${import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app"}/api/pitcher/${pid}/statcast?start_date=${startDate}&end_date=${endDate}`;
-      console.log("Fetching:", url);
-      const res = await fetch(url);
-      console.log("Response status:", res.status);
-      if (!res.ok) {
-        const body = await res.text();
-        setHistoricalError(`Backend error ${res.status}: ${body.slice(0, 200)}`);
-        setIsLoading(false);
-        return;
-      }
-      const raw = await res.json();
-      console.log("Pitches returned:", raw.length);
+      const raw = await getStatcast(pitcherId, startDate, endDate);
       if (raw.length > 0) {
         const normalized = normAndFilter(raw);
         setHistoricalPitchData(normalized);
         setPitchData(normalized);
+        // Detect hand from Savant data if we don't have it
         if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
-        setHistoricalError(`No data for pitcher ${pid} (${pitcherName}) from ${startDate} to ${endDate}.`);
+        alert("No Statcast data found for this pitcher in that date range.");
       }
     } catch (e) {
-      console.error("Historical fetch error:", e);
-      setHistoricalError(`Network error: ${e.message}`);
+      console.error("Failed to load Statcast:", e);
     }
     setIsLoading(false);
   };
@@ -1839,7 +1502,7 @@ export default function PitcherTracker() {
         {activePitcher && (
           <>
             {/* View tabs */}
-            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
+            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}` }}>
               {["live", "historical"].map(t => (
                 <button key={t} onClick={() => handleViewSwitch(t)} style={{
                   padding: "10px 24px", fontSize: "11px", fontWeight: 600, letterSpacing: "2px",
@@ -1850,35 +1513,6 @@ export default function PitcherTracker() {
                   {t === "live" ? "Live Game" : "Historical"}
                 </button>
               ))}
-              {view === "live" && gamePk && pitcherId && (
-                <button onClick={async () => {
-                  try {
-                    const raw = await getGamePitches(gamePk, pitcherId);
-                    if (raw.length > 0) {
-                      const normalized = normAndFilter(raw);
-                      setLivePitchData(normalized);
-                      if (liveSampleMode && recentPitchData) {
-                        setPitchData([...recentPitchData, ...normalized]);
-                      } else {
-                        setPitchData(normalized);
-                      }
-                    }
-                    const pitchers = await getGamePitchers(gamePk);
-                    const me = pitchers.find(p => p.id === pitcherId);
-                    if (me?.game_stats) setPitcherGameStats(me.game_stats);
-                  } catch (e) { console.error("Refresh failed:", e); }
-                }} style={{
-                  background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px",
-                  padding: "4px 10px", marginLeft: "auto", cursor: "pointer", fontFamily: "inherit",
-                  display: "flex", alignItems: "center", gap: "5px", color: C.textDim, fontSize: "10px",
-                  fontWeight: 600, letterSpacing: "0.5px", marginBottom: "2px",
-                }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}
-                >
-                  <span style={{ fontSize: "13px", lineHeight: 1 }}>↻</span> Refresh
-                </button>
-              )}
             </div>
 
             {/* Pitcher Game Line - Live view only */}
@@ -1940,44 +1574,6 @@ export default function PitcherTracker() {
               );
             })()}
 
-            {/* Supplemental date range - Live view */}
-            {view === "live" && activePitcher && gamePk && (
-              <div style={{ display: "flex", gap: "10px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Add Data From</span>
-                <DatePickerWithHighlights value={liveStartDate} onChange={setLiveStartDate} pitchedDates={livePitchedDates} C={C} label="Start" />
-                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
-                <DatePickerWithHighlights value={liveEndDate} onChange={setLiveEndDate} pitchedDates={livePitchedDates} C={C} label="End" />
-                {!liveSampleMode ? (
-                  <button onClick={handleFetchLiveRecent} style={{
-                    background: C.accent, border: "none", borderRadius: "6px", padding: isMobile ? "6px 10px" : "8px 16px",
-                    color: "#fff", fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
-                    textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
-                  }}>
-                    {isLoading ? "Loading..." : "Fetch"}
-                  </button>
-                ) : (
-                  <button onClick={handleClearLiveRecent} style={{
-                    background: "transparent", border: `1px solid ${C.border}`, borderRadius: "6px",
-                    padding: isMobile ? "6px 10px" : "8px 16px",
-                    color: C.textDim, fontSize: isMobile ? "10px" : "11px", fontWeight: 600, letterSpacing: "1px",
-                    textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
-                  }}>
-                    Clear
-                  </button>
-                )}
-                {liveSampleMode && recentPitchData && (
-                  <span style={{ fontSize: "10px", color: C.accent, fontWeight: 600 }}>
-                    +{recentPitchData.length} pitches
-                  </span>
-                )}
-                {noRecentData && !liveSampleMode && (
-                  <span style={{ fontSize: "10px", color: "#ef4444", fontWeight: 500 }}>
-                    No Statcast data available for this range
-                  </span>
-                )}
-              </div>
-            )}
-
             {view === "historical" && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
@@ -1991,11 +1587,6 @@ export default function PitcherTracker() {
                 }}>
                   {isLoading ? "Loading..." : "Fetch Data"}
                 </button>
-                {historicalError && (
-                  <div style={{ width: "100%", padding: "10px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px", fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
-                    {historicalError}
-                  </div>
-                )}
               </div>
             )}
 
@@ -2042,7 +1633,6 @@ export default function PitcherTracker() {
                   <ReleasePointPlot
                     pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
                     avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
-                    pitcherHand={pitcherHand}
                   />
                   <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
                 </div>
