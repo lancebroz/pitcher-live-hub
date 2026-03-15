@@ -1727,18 +1727,31 @@ export default function PitcherTracker() {
   // Load historical Statcast data
   const handleLoadHistorical = async () => {
     setHistoricalError("");
-    if (!pitcherId) {
-      setHistoricalError("No pitcher ID found. Select a pitcher from a live game or use the search bar first.");
+    let pid = pitcherId;
+    // If pitcherId is missing, try to resolve it from the pitcher name
+    if (!pid && pitcherName && pitcherName.length >= 2) {
+      try {
+        const results = await searchPitchers(pitcherName);
+        if (results.length > 0) {
+          pid = results[0].id;
+          setPitcherId(pid);
+          if (!pitcherHand && results[0].throws) setPitcherHand(results[0].throws);
+        }
+      } catch (e) { console.error("Name lookup failed:", e); }
+    }
+    if (!pid) {
+      setHistoricalError("No pitcher ID found. Select a pitcher from a live game or use the search bar.");
       return;
     }
     setIsLoading(true);
     try {
-      const url = `${import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app"}/api/pitcher/${pitcherId}/statcast?start_date=${startDate}&end_date=${endDate}`;
+      const url = `${import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app"}/api/pitcher/${pid}/statcast?start_date=${startDate}&end_date=${endDate}`;
       console.log("Fetching:", url);
       const res = await fetch(url);
       console.log("Response status:", res.status);
       if (!res.ok) {
-        setHistoricalError(`Backend returned ${res.status} ${res.statusText}. URL: ${url}`);
+        const body = await res.text();
+        setHistoricalError(`Backend error ${res.status}: ${body.slice(0, 200)}`);
         setIsLoading(false);
         return;
       }
@@ -1750,11 +1763,11 @@ export default function PitcherTracker() {
         setPitchData(normalized);
         if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
       } else {
-        setHistoricalError(`No data returned for pitcher ${pitcherId} (${startDate} to ${endDate}). Savant may be slow — try again.`);
+        setHistoricalError(`No data for pitcher ${pid} (${pitcherName}) from ${startDate} to ${endDate}.`);
       }
     } catch (e) {
       console.error("Historical fetch error:", e);
-      setHistoricalError(`Fetch failed: ${e.message}`);
+      setHistoricalError(`Network error: ${e.message}`);
     }
     setIsLoading(false);
   };
