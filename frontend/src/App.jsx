@@ -1632,7 +1632,6 @@ export default function PitcherTracker() {
                 </button>
               )}
             </div>
-            </div>
 
             {/* Pitcher Game Line - Live view only */}
             {view === "live" && pitcherGameStats && activePitcher && (() => {
