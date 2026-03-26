@@ -543,10 +543,8 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
     return { x: avgX, y: avgY, name: g.name, abbrev: g.abbrev, color: g.color, isAvg: true, count: g.data.length };
   });
 
-  const axisMax = maxAbs > 20 ? 25 : 20;
-  const ticks20 = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
-  const ticks25 = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
-  const ticks = axisMax === 25 ? ticks25 : ticks20;
+  const axisMax = 25;
+  const ticks = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>Pitch Movement Profile</div>
@@ -691,10 +689,12 @@ const UsageSplitChart = ({ pitchTypeMetrics, pitchData, C }) => {
 };
 
 // ─── Release Point ───
-const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => {
+const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C, pitcherHand }) => {
   const rh = parseFloat(avgRelH) || 0;
   const rs = typeof avgRelS === "number" ? avgRelS : parseFloat(avgRelS) || 0;
   const dots = pitchTypeMetrics.map(pt => ({ x: pt.avgRelSNum, y: pt.avgRelHNum, name: pt.name, color: pt.color }));
+  const mlbAvg = pitcherHand === "L" ? { x: 2.08, y: 5.78 } : { x: -1.88, y: 5.76 };
+  const avgDot = [{ x: mlbAvg.x, y: mlbAvg.y, name: "MLB Avg", isMLBAvg: true }];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
       <div style={{ fontSize: "14px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "12px" }}>Release Point</div>
@@ -717,6 +717,12 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
             <Tooltip content={({ payload }) => {
               if (!payload?.length) return null;
               const d = payload[0].payload;
+              if (d.isMLBAvg) return (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
+                  <div style={{ fontWeight: 700, color: C.textMuted }}>MLB Avg ({pitcherHand === "L" ? "LHP" : "RHP"})</div>
+                  <div style={{ color: C.textDim }}>Side: {d.x.toFixed(2)}ft | Height: {d.y.toFixed(2)}ft</div>
+                </div>
+              );
               return (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "8px 12px", fontSize: "11px" }}>
                   <div style={{ color: d.color, fontWeight: 700 }}>{d.name}</div>
@@ -727,6 +733,16 @@ const ReleasePointPlot = ({ pitchTypeMetrics, avgRelH, avgRelS, avgExt, C }) => 
             <Scatter data={dots} r={12}>
               {dots.map((d, i) => <Cell key={i} fill={d.color} stroke="#000" strokeWidth={1.5} />)}
             </Scatter>
+            <Scatter data={avgDot} r={14} shape={(props) => {
+              const { cx, cy } = props;
+              return (
+                <g>
+                  <circle cx={cx} cy={cy} r={14} fill="none" stroke={C.textMuted} strokeWidth={2} strokeDasharray="3 2" />
+                  <text x={cx} y={cy + 1} textAnchor="middle" dominantBaseline="middle"
+                    fill={C.textMuted} fontSize="7" fontWeight="700" fontFamily="inherit" letterSpacing="0.5">AVG</text>
+                </g>
+              );
+            }} />
           </ScatterChart>
         </ResponsiveContainer>
     </div>
@@ -784,9 +800,89 @@ const PlateSVG = ({ color }) => (
   </svg>
 );
 
+// ─── Heatmap Canvas renderer ───
+const HeatmapCanvas = ({ pitches, width, height, C }) => {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = width, h = height;
+    canvas.width = w; canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    if (!pitches.length) return;
+    const toCanvasX = (x) => ((x + 2.5) / 5) * w;
+    const toCanvasY = (y) => (1 - y / 5) * h;
+    const gridW = 200, gridH = 200;
+    const grid = new Float32Array(gridW * gridH);
+    const bandwidth = 0.25, bw2 = bandwidth * bandwidth;
+    for (const p of pitches) {
+      if (p.plate_x == null || p.plate_z == null) continue;
+      const gxC = ((p.plate_x + 2.5) / 5) * gridW;
+      const gyC = ((1 - p.plate_z / 5)) * gridH;
+      const rad = Math.ceil((bandwidth / 5) * gridW * 3);
+      for (let gy = Math.max(0, Math.floor(gyC - rad)); gy <= Math.min(gridH - 1, Math.ceil(gyC + rad)); gy++) {
+        for (let gx = Math.max(0, Math.floor(gxC - rad)); gx <= Math.min(gridW - 1, Math.ceil(gxC + rad)); gx++) {
+          const dx = (gx / gridW) * 5 - 2.5 - p.plate_x, dy = (1 - gy / gridH) * 5 - p.plate_z;
+          grid[gy * gridW + gx] += Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
+        }
+      }
+    }
+    let maxVal = 0;
+    for (let i = 0; i < grid.length; i++) if (grid[i] > maxVal) maxVal = grid[i];
+    if (maxVal === 0) return;
+    const colorRamp = (t) => {
+      if (t < 0.2) { const s = t / 0.2; return [0, Math.round(s * 200), 255]; }
+      if (t < 0.4) { const s = (t - 0.2) / 0.2; return [0, 200 + Math.round(55 * s), Math.round(255 * (1 - s))]; }
+      if (t < 0.6) { const s = (t - 0.4) / 0.2; return [Math.round(255 * s), 255, 0]; }
+      if (t < 0.8) { const s = (t - 0.6) / 0.2; return [255, Math.round(255 * (1 - s * 0.5)), 0]; }
+      const s = (t - 0.8) / 0.2; return [255, Math.round(128 * (1 - s)), 0];
+    };
+    const imgData = ctx.createImageData(w, h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const gxf = (px / w) * (gridW - 1), gyf = (py / h) * (gridH - 1);
+        const gx0 = Math.floor(gxf), gy0 = Math.floor(gyf);
+        const gx1 = Math.min(gx0 + 1, gridW - 1), gy1 = Math.min(gy0 + 1, gridH - 1);
+        const fx = gxf - gx0, fy = gyf - gy0;
+        const val = (grid[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + grid[gy0 * gridW + gx1] * fx * (1 - fy) + grid[gy1 * gridW + gx0] * (1 - fx) * fy + grid[gy1 * gridW + gx1] * fx * fy) / maxVal;
+        const idx = (py * w + px) * 4;
+        if (val > 0.015) {
+          const [r, g, b] = colorRamp(Math.pow(Math.min(val, 1), 0.7));
+          imgData.data[idx] = r; imgData.data[idx + 1] = g; imgData.data[idx + 2] = b;
+          imgData.data[idx + 3] = Math.min(Math.pow(val, 0.5) * 1.8, 0.88) * 255;
+        }
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.lineWidth = 2;
+    ctx.strokeRect(toCanvasX(-0.83), toCanvasY(3.5), toCanvasX(0.83) - toCanvasX(-0.83), toCanvasY(1.5) - toCanvasY(3.5));
+    const pcx = toCanvasX(0), pby = toCanvasY(0), phw = (toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
+    ctx.beginPath(); ctx.moveTo(pcx - phw, pby); ctx.lineTo(pcx + phw, pby);
+    ctx.lineTo(pcx + phw * 0.88, pby - 8); ctx.lineTo(pcx, pby - 16); ctx.lineTo(pcx - phw * 0.88, pby - 8);
+    ctx.closePath(); ctx.fillStyle = "rgba(120,120,120,0.15)"; ctx.fill();
+    ctx.strokeStyle = "rgba(120,120,120,0.5)"; ctx.lineWidth = 1.5; ctx.stroke();
+  }, [pitches, width, height]);
+  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
+};
+
 // ─── Pitch Location Plot ───
 const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   const [locHand, setLocHand] = useState("all");
+  const [viewMode, setViewMode] = useState("dots");
+  const [heatPitchFilter, setHeatPitchFilter] = useState("all");
+  const heatContainerRef = useRef(null);
+  const [heatSize, setHeatSize] = useState({ w: 400, h: 400 });
+
+  useEffect(() => {
+    if (!heatContainerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width } = entries[0].contentRect;
+      setHeatSize({ w: Math.round(width), h: Math.round(width) });
+    });
+    ro.observe(heatContainerRef.current);
+    return () => ro.disconnect();
+  }, [viewMode]);
 
   const filtered = useMemo(() => {
     if (!pitchData) return [];
@@ -798,87 +894,84 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
     }));
   }, [pitchData, locHand]);
 
+  const heatFiltered = useMemo(() => {
+    if (!pitchData) return [];
+    let f = locHand === "all" ? pitchData : pitchData.filter(p => p.batter_hand === locHand);
+    if (heatPitchFilter !== "all") f = f.filter(p => p.pitch_type === heatPitchFilter);
+    return f;
+  }, [pitchData, locHand, heatPitchFilter]);
+
   const descLabel = (d) => ({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: "In Play" }[d] || d);
 
-  // From pitcher POV: LHH stands on RIGHT side of plate, RHH on LEFT
-  const batterSide = locHand === "L" ? "right" : locHand === "R" ? "left" : null;
+  const availPitchTypes = useMemo(() => {
+    if (!pitchTypeMetrics) return [];
+    return pitchTypeMetrics.map(pt => ({ code: pt.code || PITCH_ABBREV[pt.name] || "?", name: pt.name, color: pt.color }));
+  }, [pitchTypeMetrics]);
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
-          <div style={{ display: "flex", gap: "4px" }}>
-            {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
-              <button key={t.key} onClick={() => setLocHand(t.key)} style={{
-                background: locHand === t.key ? C.accentGlow : "transparent",
-                border: `1px solid ${locHand === t.key ? C.accent : C.border}`,
-                borderRadius: "4px", padding: "4px 10px",
-                color: locHand === t.key ? C.accent : C.textDim,
-                fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              }}>{t.label}</button>
-            ))}
-          </div>
-        </div>
-        <div style={{ position: "relative" }}>
-          <ResponsiveContainer width="100%" height={480}>
-            <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
-              <CartesianGrid stroke="none" />
-              <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
-              <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
-              {/* Strike zone */}
-              <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
-              {/* Home plate - centered at x=0 using customized SVG */}
-              <ReferenceArea x1={-0.83} x2={0.83} y1={0.4} y2={0.9} fill="none" stroke="none" label={{
-                position: "center",
-                content: (props) => {
-                  const { viewBox } = props;
-                  if (!viewBox) return null;
-                  const cx = viewBox.x + viewBox.width / 2;
-                  const cy = viewBox.y + viewBox.height / 2;
-                  const halfW = viewBox.width / 2;
-                  const tipUp = 18;
-                  const cornerUp = 8;
-                  return (
-                    <polygon
-                      points={`${cx - halfW},${cy} ${cx + halfW},${cy} ${cx + halfW * 0.88},${cy - cornerUp} ${cx},${cy - tipUp} ${cx - halfW * 0.88},${cy - cornerUp}`}
-                      fill={C.textMuted} fillOpacity={0.15}
-                      stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45}
-                      strokeLinejoin="round"
-                    />
-                  );
-                }
-              }} />
-              <Tooltip content={({ payload }) => {
-                if (!payload?.length) return null;
-                const d = payload[0].payload;
-                return (
-                  <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}>
-                    <div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div>
-                    <div style={{ color: C.textMuted, lineHeight: 1.6 }}>
-                      <div>vs. {d.batter} ({d.hand}HH)</div>
-                      <div>Inning {d.inning} · Count: {d.count}</div>
-                      <div>Result: {descLabel(d.description)}</div>
-                    </div>
-                  </div>
-                );
-              }} />
-              <Scatter data={filtered} r={5} opacity={0.8}>
-                {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
-              </Scatter>
-            </ScatterChart>
-          </ResponsiveContainer>
-
-
-        </div>
-        {/* Legend */}
-        <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
-          {pitchTypeMetrics.map(pt => (
-            <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
-              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
-              {PITCH_ABBREV[pt.name] || pt.code}
-            </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+        <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>Pitch Locations</div>
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          <button onClick={() => setViewMode("dots")} style={{ background: viewMode === "dots" ? C.accentGlow : "transparent", border: `1px solid ${viewMode === "dots" ? C.accent : C.border}`, borderRadius: "4px", padding: "4px 10px", color: viewMode === "dots" ? C.accent : C.textDim, fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Dots</button>
+          <button onClick={() => setViewMode("heatmap")} style={{ background: viewMode === "heatmap" ? C.accentGlow : "transparent", border: `1px solid ${viewMode === "heatmap" ? C.accent : C.border}`, borderRadius: "4px", padding: "4px 10px", color: viewMode === "heatmap" ? C.accent : C.textDim, fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Heatmap</button>
+          <span style={{ width: "1px", height: "16px", background: C.border, margin: "0 4px" }} />
+          {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
+            <button key={t.key} onClick={() => setLocHand(t.key)} style={{ background: locHand === t.key ? C.accentGlow : "transparent", border: `1px solid ${locHand === t.key ? C.accent : C.border}`, borderRadius: "4px", padding: "4px 10px", color: locHand === t.key ? C.accent : C.textDim, fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{t.label}</button>
           ))}
         </div>
+      </div>
+
+      {viewMode === "heatmap" && (
+        <div style={{ display: "flex", gap: "4px", marginBottom: "12px", flexWrap: "wrap" }}>
+          <button onClick={() => setHeatPitchFilter("all")} style={{ background: heatPitchFilter === "all" ? C.accentGlow : "transparent", border: `1px solid ${heatPitchFilter === "all" ? C.accent : C.border}`, borderRadius: "4px", padding: "3px 10px", color: heatPitchFilter === "all" ? C.accent : C.textDim, fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>All</button>
+          {availPitchTypes.map(pt => (
+            <button key={pt.code} onClick={() => setHeatPitchFilter(pt.code)} style={{ background: heatPitchFilter === pt.code ? pt.color + "22" : "transparent", border: `1px solid ${heatPitchFilter === pt.code ? pt.color : C.border}`, borderRadius: "4px", padding: "3px 10px", color: heatPitchFilter === pt.code ? pt.color : C.textDim, fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{pt.code}</button>
+          ))}
+          <span style={{ fontSize: "10px", color: C.textDim, alignSelf: "center", marginLeft: "8px" }}>{heatFiltered.length} pitches</span>
+        </div>
+      )}
+
+      {viewMode === "dots" && (
+        <>
+          <div style={{ position: "relative" }}>
+            <ResponsiveContainer width="100%" height={480}>
+              <ScatterChart margin={{ top: 10, right: 40, bottom: 40, left: 40 }}>
+                <CartesianGrid stroke="none" />
+                <XAxis type="number" dataKey="x" domain={[-2.5, 2.5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[-2, -1, 0, 1, 2]} label={{ value: "Feet from Center", position: "bottom", fill: C.textDim, fontSize: 10, dy: 12 }} />
+                <YAxis type="number" dataKey="y" domain={[0, 5]} tick={{ fill: C.textDim, fontSize: 10 }} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Height (ft)", angle: -90, position: "insideLeft", fill: C.textDim, fontSize: 10, dx: -5 }} />
+                <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
+                <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{ position: "center", content: (props) => { const { viewBox } = props; if (!viewBox) return null; const cx = viewBox.x + viewBox.width / 2, bottomY = viewBox.y + viewBox.height, halfW = viewBox.width / 2; return (<polygon points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - 8} ${cx},${bottomY - 18} ${cx - halfW * 0.88},${bottomY - 8}`} fill={C.textMuted} fillOpacity={0.15} stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45} strokeLinejoin="round" />); }}} />
+                <Tooltip content={({ payload }) => { if (!payload?.length) return null; const d = payload[0].payload; return (<div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}><div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div><div style={{ color: C.textMuted, lineHeight: 1.6 }}><div>vs. {d.batter} ({d.hand}HH)</div><div>Inning {d.inning} · Count: {d.count}</div><div>Result: {descLabel(d.description)}</div></div></div>); }} />
+                <Scatter data={filtered} r={5} opacity={0.8}>
+                  {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Scatter>
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap", marginTop: "4px" }}>
+            {pitchTypeMetrics.map(pt => (
+              <div key={pt.name} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: C.textMuted }}>
+                <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: pt.color }} />
+                {PITCH_ABBREV[pt.name] || pt.code}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {viewMode === "heatmap" && (
+        <>
+          <div ref={heatContainerRef} style={{ width: "100%", aspectRatio: "1/1", maxHeight: "500px", position: "relative", background: "#f8f8f8", borderRadius: "6px", overflow: "hidden" }}>
+            <HeatmapCanvas pitches={heatFiltered} width={heatSize.w * 2} height={heatSize.h * 2} C={C} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginTop: "10px" }}>
+            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Least</span>
+            <div style={{ width: "120px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
+            <span style={{ fontSize: "9px", fontWeight: 600, color: C.textDim }}>Most</span>
+          </div>
+        </>
+      )}
     </div>
   );
 };
@@ -1029,7 +1122,7 @@ const normalizeLivePitch = (p) => {
   };
 };
 
-const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type !== "PO");
+const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other");
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
 const computeHistoricalSummary = (pitchData) => {
@@ -1502,7 +1595,7 @@ export default function PitcherTracker() {
         {activePitcher && (
           <>
             {/* View tabs */}
-            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
               {["live", "historical"].map(t => (
                 <button key={t} onClick={() => handleViewSwitch(t)} style={{
                   padding: "10px 24px", fontSize: "11px", fontWeight: 600, letterSpacing: "2px",
@@ -1513,6 +1606,32 @@ export default function PitcherTracker() {
                   {t === "live" ? "Live Game" : "Historical"}
                 </button>
               ))}
+              {view === "live" && gamePk && pitcherId && (
+                <button onClick={async () => {
+                  try {
+                    const raw = await getGamePitches(gamePk, pitcherId);
+                    if (raw.length > 0) {
+                      const normalized = normAndFilter(raw);
+                      setLivePitchData(normalized);
+                      setPitchData(normalized);
+                    }
+                    const pitchers = await getGamePitchers(gamePk);
+                    const me = pitchers.find(p => p.id === pitcherId);
+                    if (me?.game_stats) setPitcherGameStats(me.game_stats);
+                  } catch (e) { console.error("Refresh failed:", e); }
+                }} style={{
+                  background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px",
+                  padding: "4px 10px", marginLeft: "auto", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: "5px", color: C.textDim, fontSize: "10px",
+                  fontWeight: 600, letterSpacing: "0.5px", marginBottom: "2px",
+                }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}
+                >
+                  <span style={{ fontSize: "13px", lineHeight: 1 }}>↻</span> Refresh
+                </button>
+              )}
+            </div>
             </div>
 
             {/* Pitcher Game Line - Live view only */}
@@ -1633,6 +1752,7 @@ export default function PitcherTracker() {
                   <ReleasePointPlot
                     pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
                     avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
+                    pitcherHand={pitcherHand}
                   />
                   <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
                 </div>
