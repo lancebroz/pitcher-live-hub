@@ -453,101 +453,250 @@ MONTH_FILES = [
 @app.get("/api/pitcher/{pitcher_id}/season")
 async def get_season_data(pitcher_id: int):
     """
-    Fetches all 2026 season data for a pitcher from parquet files on GitHub.
+    Fetches all 2026 season data for a pitcher.
+    Combines parquet files (completed games) + today's live data.
     """
     import pandas as pd
     import io
+    from datetime import datetime
 
-    cache_key = f"season:{pitcher_id}"
-    cached = get_cached(cache_key, 300)  # cache 5 minutes (data updates 6x/day)
-    if cached:
-        return cached
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
-    all_dfs = []
-    async with httpx.AsyncClient() as client:
-        for fname in MONTH_FILES:
-            try:
-                resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
-                if resp.status_code == 200:
-                    df = pd.read_parquet(io.BytesIO(resp.content))
-                    # Try matching as both int and string in case of type mismatch
-                    pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
-                    if len(pitcher_df) > 0:
-                        all_dfs.append(pitcher_df)
-                    print(f"{fname}: {len(df)} total rows, {len(pitcher_df)} matched for {pitcher_id}")
+    # ── Part 1: Parquet data (cached 5 min) ──
+    parquet_cache_key = f"season_parquet:{pitcher_id}"
+    parquet_pitches = get_cached(parquet_cache_key, 300)
+
+    if parquet_pitches is None:
+        all_dfs = []
+        async with httpx.AsyncClient() as client:
+            for fname in MONTH_FILES:
+                try:
+                    resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
+                    if resp.status_code == 200:
+                        df = pd.read_parquet(io.BytesIO(resp.content))
+                        pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
+                        if len(pitcher_df) > 0:
+                            all_dfs.append(pitcher_df)
+                except Exception as e:
+                    print(f"Failed to fetch {fname}: {e}")
+                    continue
+
+        parquet_pitches = []
+        if all_dfs:
+            combined = pd.concat(all_dfs, ignore_index=True)
+
+            trajectory_map = {
+                "ground_ball": "ground_ball", "fly_ball": "fly_ball",
+                "line_drive": "line_drive", "popup": "popup",
+            }
+
+            for _, row in combined.iterrows():
+                def safe(col):
+                    val = row.get(col)
+                    if val is None or (isinstance(val, float) and pd.isna(val)):
+                        return None
+                    return float(val) if isinstance(val, (int, float)) else val
+
+                call_desc = str(row.get("call_description", "")).lower()
+                if "swinging" in call_desc and "strike" in call_desc:
+                    desc = "swinging_strike"
+                elif "called" in call_desc and "strike" in call_desc:
+                    desc = "called_strike"
+                elif "foul" in call_desc:
+                    desc = "foul"
+                elif "in play" in call_desc or "hit into play" in call_desc:
+                    desc = "hit_into_play"
                 else:
-                    print(f"{fname}: HTTP {resp.status_code}")
-            except Exception as e:
-                print(f"Failed to fetch {fname}: {e}")
-                continue
+                    desc = "ball"
 
-    if not all_dfs:
-        return []
+                parquet_pitches.append({
+                    "pitch_number": 0,
+                    "pitch_type": str(row.get("pitch_type", "")),
+                    "pitch_name": str(row.get("pitch_name", "")),
+                    "release_speed": safe("start_speed"),
+                    "release_spin_rate": safe("spin_rate"),
+                    "pfx_x": safe("pfx_x"),
+                    "pfx_z": safe("pfx_z"),
+                    "movement_source": "parquet",
+                    "plate_x": safe("plate_x"),
+                    "plate_z": safe("plate_z"),
+                    "release_pos_x": safe("release_x"),
+                    "release_pos_z": safe("release_z"),
+                    "release_extension": safe("extension"),
+                    "zone": safe("zone"),
+                    "description": desc,
+                    "is_in_play": bool(row.get("is_in_play", False)),
+                    "is_strike": bool(row.get("is_strike", False)),
+                    "is_ball": bool(row.get("is_ball", False)),
+                    "launch_speed": safe("launch_speed"),
+                    "launch_angle": safe("launch_angle"),
+                    "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
+                    "batter_name": str(row.get("batter_name", "")),
+                    "batter_hand": str(row.get("batter_hand", "")),
+                    "stand": str(row.get("batter_hand", "")),
+                    "p_throws": str(row.get("pitcher_hand", "")),
+                    "balls": str(row.get("balls", "")),
+                    "strikes": str(row.get("strikes", "")),
+                    "game_date": str(row.get("game_date", "")),
+                    "game_pk": int(row.get("game_pk", 0)) if row.get("game_pk") else 0,
+                    "inning": safe("inning"),
+                    "at_bat_number": safe("at_bat_number"),
+                    "events": str(row.get("events", "")),
+                })
 
-    combined = pd.concat(all_dfs, ignore_index=True)
+        if parquet_pitches:
+            set_cache(parquet_cache_key, parquet_pitches)
 
-    trajectory_map = {
-        "ground_ball": "ground_ball", "fly_ball": "fly_ball",
-        "line_drive": "line_drive", "popup": "popup",
-    }
+    # ── Part 2: Today's live data (cached 30 sec) ──
+    live_cache_key = f"season_live:{pitcher_id}:{today_str}"
+    live_pitches = get_cached(live_cache_key, 30)
 
-    pitches = []
-    for _, row in combined.iterrows():
-        def safe(col):
-            val = row.get(col)
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                return None
-            return float(val) if isinstance(val, (int, float)) else val
+    if live_pitches is None:
+        live_pitches = []
+        try:
+            # Get today's schedule
+            async with httpx.AsyncClient() as client:
+                sched_resp = await client.get(
+                    f"{MLB_BASE}/api/v1/schedule?sportId=1&date={today_str}",
+                    timeout=10,
+                )
+                sched_data = sched_resp.json()
 
-        call_desc = str(row.get("call_description", "")).lower()
-        if "swinging" in call_desc and "strike" in call_desc:
-            desc = "swinging_strike"
-        elif "called" in call_desc and "strike" in call_desc:
-            desc = "called_strike"
-        elif "foul" in call_desc:
-            desc = "foul"
-        elif "in play" in call_desc or "hit into play" in call_desc:
-            desc = "hit_into_play"
-        else:
-            desc = "ball"
+            game_pks = []
+            for date_entry in sched_data.get("dates", []):
+                for game in date_entry.get("games", []):
+                    game_pks.append(game["gamePk"])
 
-        pitches.append({
-            "pitch_number": len(pitches) + 1,
-            "pitch_type": str(row.get("pitch_type", "")),
-            "pitch_name": str(row.get("pitch_name", "")),
-            "release_speed": safe("start_speed"),
-            "release_spin_rate": safe("spin_rate"),
-            "pfx_x": safe("pfx_x"),
-            "pfx_z": safe("pfx_z"),
-            "movement_source": "parquet",
-            "plate_x": safe("plate_x"),
-            "plate_z": safe("plate_z"),
-            "release_pos_x": safe("release_x"),
-            "release_pos_z": safe("release_z"),
-            "release_extension": safe("extension"),
-            "zone": safe("zone"),
-            "description": desc,
-            "is_in_play": bool(row.get("is_in_play", False)),
-            "is_strike": bool(row.get("is_strike", False)),
-            "is_ball": bool(row.get("is_ball", False)),
-            "launch_speed": safe("launch_speed"),
-            "launch_angle": safe("launch_angle"),
-            "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
-            "batter_name": str(row.get("batter_name", "")),
-            "batter_hand": str(row.get("batter_hand", "")),
-            "stand": str(row.get("batter_hand", "")),
-            "p_throws": str(row.get("pitcher_hand", "")),
-            "balls": str(row.get("balls", "")),
-            "strikes": str(row.get("strikes", "")),
-            "game_date": str(row.get("game_date", "")),
-            "inning": safe("inning"),
-            "at_bat_number": safe("at_bat_number"),
-            "events": str(row.get("events", "")),
-        })
+            # Check each game for this pitcher's pitches
+            async with httpx.AsyncClient() as client:
+                for gpk in game_pks:
+                    try:
+                        resp = await client.get(
+                            f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
+                            timeout=10,
+                        )
+                        feed = resp.json()
+                    except Exception:
+                        continue
 
-    if pitches:
-        set_cache(cache_key, pitches)
-    return pitches
+                    all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+                    found = False
+
+                    for play in all_plays:
+                        matchup = play.get("matchup", {})
+                        if matchup.get("pitcher", {}).get("id") != pitcher_id:
+                            continue
+                        found = True
+
+                        about = play.get("about", {})
+                        batter_name = matchup.get("batter", {}).get("fullName", "")
+                        batter_side = matchup.get("batSide", {}).get("code", "R")
+                        pitch_hand = matchup.get("pitchHand", {}).get("code", "")
+                        inning = about.get("inning", 0)
+                        play_result = play.get("result", {})
+                        play_event_type = play_result.get("eventType", "")
+
+                        play_pitches = []
+                        for event in play.get("playEvents", []):
+                            if not event.get("isPitch", True):
+                                continue
+
+                            pitch_data = event.get("pitchData", {})
+                            details = event.get("details", {})
+                            ptype = details.get("type", {})
+                            count_obj = event.get("count", {})
+                            coords = pitch_data.get("coordinates", {})
+                            breaks = pitch_data.get("breaks", {})
+                            hit_data = event.get("hitData", {})
+
+                            raw_ivb = breaks.get("breakVerticalInduced")
+                            raw_hb = breaks.get("breakHorizontal")
+                            pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
+                            pfx_x_ft = raw_hb / -12.0 if raw_hb is not None else None
+
+                            bb_map = {"ground_ball": "ground_ball", "fly_ball": "fly_ball", "line_drive": "line_drive", "popup": "popup"}
+
+                            desc_raw = details.get("description", "").lower()
+                            if "swinging" in desc_raw and "strike" in desc_raw:
+                                desc = "swinging_strike"
+                            elif "called" in desc_raw and "strike" in desc_raw:
+                                desc = "called_strike"
+                            elif "foul" in desc_raw:
+                                desc = "foul"
+                            elif "in play" in desc_raw:
+                                desc = "hit_into_play"
+                            else:
+                                desc = "ball"
+
+                            play_pitches.append({
+                                "pitch_number": 0,
+                                "pitch_type": ptype.get("code", ""),
+                                "pitch_name": ptype.get("description", ""),
+                                "release_speed": pitch_data.get("startSpeed"),
+                                "release_spin_rate": breaks.get("spinRate"),
+                                "pfx_x": pfx_x_ft,
+                                "pfx_z": pfx_z_ft,
+                                "movement_source": "live_feed",
+                                "plate_x": coords.get("pX"),
+                                "plate_z": coords.get("pZ"),
+                                "release_pos_x": coords.get("x0"),
+                                "release_pos_z": coords.get("z0"),
+                                "release_extension": pitch_data.get("extension"),
+                                "zone": pitch_data.get("zone"),
+                                "description": desc,
+                                "is_in_play": details.get("isInPlay", False),
+                                "is_strike": details.get("isStrike", False),
+                                "is_ball": details.get("isBall", False),
+                                "launch_speed": hit_data.get("launchSpeed"),
+                                "launch_angle": hit_data.get("launchAngle"),
+                                "bb_type": bb_map.get(hit_data.get("trajectory", ""), ""),
+                                "batter_name": batter_name,
+                                "batter_hand": batter_side,
+                                "stand": batter_side,
+                                "p_throws": pitch_hand,
+                                "balls": str(count_obj.get("balls", 0)),
+                                "strikes": str(count_obj.get("strikes", 0)),
+                                "game_date": today_str,
+                                "game_pk": gpk,
+                                "inning": inning,
+                                "at_bat_number": play.get("atBatIndex", 0),
+                                "events": "",
+                            })
+
+                        # Set events on last pitch of at-bat
+                        if play_pitches and play_event_type:
+                            play_pitches[-1]["events"] = play_event_type
+
+                        live_pitches.extend(play_pitches)
+
+                    if not found:
+                        continue
+
+        except Exception as e:
+            print(f"Failed to fetch live data: {e}")
+
+        if live_pitches:
+            set_cache(live_cache_key, live_pitches)
+
+    # ── Part 3: Merge with dedup ──
+    # Get game_pks from live data to exclude from parquet
+    live_game_pks = set()
+    for p in live_pitches:
+        if p.get("game_pk"):
+            live_game_pks.add(p["game_pk"])
+
+    # Filter parquet to exclude games that are in live data (prevents double-counting)
+    if live_game_pks:
+        filtered_parquet = [p for p in parquet_pitches if p.get("game_pk", 0) not in live_game_pks]
+    else:
+        filtered_parquet = parquet_pitches
+
+    # Combine and re-number
+    all_pitches = filtered_parquet + live_pitches
+    for i, p in enumerate(all_pitches):
+        p["pitch_number"] = i + 1
+
+    return all_pitches
 
 
 @app.get("/api/debug/parquet")
