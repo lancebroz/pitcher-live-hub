@@ -443,7 +443,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
 
 
 # ─── Route 6: Get 2026 season data from parquet files ───
-PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026"
+PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/monthly"
 MONTH_FILES = [
     "03_march.parquet", "04_april.parquet", "05_may.parquet",
     "06_june.parquet", "07_july.parquet", "08_august.parquet",
