@@ -1460,8 +1460,11 @@ export default function PitcherTracker() {
         setIsLoading(true);
         try {
           const raw = await getSeasonData(pitcherId);
+          console.log("Season auto-load:", raw.length, "pitches");
           if (raw.length > 0) {
+            console.log("Sample:", JSON.stringify(raw[0]));
             const normalized = normAndFilter(raw);
+            console.log("After filter:", normalized.length);
             setHistoricalPitchData(normalized);
             setPitchData(normalized);
             if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
@@ -1710,11 +1713,19 @@ export default function PitcherTracker() {
                   setIsLoading(true);
                   try {
                     const raw = await getSeasonData(pitcherId);
+                    console.log("Season raw:", raw.length, "pitches");
                     if (raw.length > 0) {
+                      console.log("Sample pitch:", JSON.stringify(raw[0]));
                       const normalized = normAndFilter(raw);
+                      console.log("After normAndFilter:", normalized.length, "pitches");
+                      if (normalized.length > 0) {
+                        console.log("Sample normalized:", JSON.stringify(normalized[0]));
+                      }
                       setHistoricalPitchData(normalized);
                       setPitchData(normalized);
                       if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
+                    } else {
+                      console.log("No season data returned");
                     }
                   } catch (e) { console.error("Failed:", e); }
                   setIsLoading(false);
