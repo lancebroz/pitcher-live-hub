@@ -585,7 +585,13 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                 </div>
               );
             }} />
-            {Object.values(grouped).map(g => <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} opacity={0.7} r={5.5} />)}
+            {Object.values(grouped).map(g => (
+              <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={5.5}
+                shape={(props) => (
+                  <circle cx={props.cx} cy={props.cy} r={5.5} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.7} strokeOpacity={0.45} />
+                )}
+              />
+            ))}
             {showAvg && (
               <Scatter name="averages" data={avgDots} fill="#000" opacity={1} r={9} shape={(props) => {
                 const { cx, cy, payload } = props;
@@ -944,7 +950,7 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
                 <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{ position: "center", content: (props) => { const { viewBox } = props; if (!viewBox) return null; const cx = viewBox.x + viewBox.width / 2, bottomY = viewBox.y + viewBox.height, halfW = viewBox.width / 2; return (<polygon points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - 8} ${cx},${bottomY - 18} ${cx - halfW * 0.88},${bottomY - 8}`} fill={C.textMuted} fillOpacity={0.15} stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45} strokeLinejoin="round" />); }}} />
                 <Tooltip content={({ payload }) => { if (!payload?.length) return null; const d = payload[0].payload; return (<div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}><div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div><div style={{ color: C.textMuted, lineHeight: 1.6 }}><div>vs. {d.batter} ({d.hand}HH)</div><div>Inning {d.inning} · Count: {d.count}</div><div>Result: {descLabel(d.description)}</div></div></div>); }} />
                 <Scatter data={filtered} r={5} opacity={0.8}>
-                  {filtered.map((d, i) => <Cell key={i} fill={d.color} />)}
+                  {filtered.map((d, i) => <Cell key={i} fill={d.color} stroke="#000" strokeWidth={0.5} strokeOpacity={0.35} />)}
                 </Scatter>
               </ScatterChart>
             </ResponsiveContainer>
@@ -1245,7 +1251,7 @@ const HistoricalSummaryBox = ({ pitchData, activePitcher, pitcherHand, C }) => {
 };
 
 // ─── Date Picker with Pitched Date Highlights ───
-const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) => {
+const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onAfterSelect }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const parsed = value ? new Date(value + "T12:00:00") : new Date();
@@ -1258,7 +1264,6 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) =
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // Sync view to value when it changes externally
   useEffect(() => {
     if (value) {
       const d = new Date(value + "T12:00:00");
@@ -1267,13 +1272,11 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) =
     }
   }, [value]);
 
+  // Expose open method via ref for auto-jump
+  const openPicker = () => setOpen(true);
+
   const dayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
-  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const cells = [];
-  for (let i = 0; i < firstDay; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   const prevMonth = () => {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
@@ -1284,17 +1287,67 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) =
     else setViewMonth(viewMonth + 1);
   };
 
-  const selectDate = (day) => {
-    const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const selectDate = (day, monthOffset = 0) => {
+    const m = viewMonth + monthOffset;
+    const y = m > 11 ? viewYear + 1 : viewYear;
+    const actualMonth = m > 11 ? m - 12 : m;
+    const dateStr = `${y}-${String(actualMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     onChange(dateStr);
     setOpen(false);
+    if (onAfterSelect) setTimeout(() => onAfterSelect(), 50);
+  };
+
+  const renderMonth = (year, month, monthOffset = 0) => {
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstDay; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+    return (
+      <div style={{ flex: "1", minWidth: "200px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, textAlign: "center", marginBottom: "8px" }}>
+          {monthNames[month]} {year}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px", marginBottom: "4px" }}>
+          {dayNames.map(d => (
+            <div key={d} style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textAlign: "center", padding: "2px 0" }}>{d}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px" }}>
+          {cells.map((day, i) => {
+            if (day === null) return <div key={`e-${i}`} />;
+            const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            const pitched = pitchedDates && pitchedDates.has(dateStr);
+            const isSelected = dateStr === value;
+            return (
+              <div key={dateStr} onClick={() => selectDate(day, monthOffset)} style={{
+                fontSize: "11px", textAlign: "center", padding: "5px 0", borderRadius: "4px", cursor: "pointer",
+                fontWeight: (pitched || isSelected) ? 700 : 400,
+                color: isSelected ? "#fff" : pitched ? C.accent : C.text,
+                background: isSelected ? C.accent : pitched ? (C.accent + "22") : "transparent",
+                border: pitched && !isSelected ? `1px solid ${C.accent}55` : "1px solid transparent",
+                transition: "background 0.15s",
+              }}
+                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.accentGlow; }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = pitched ? (C.accent + "22") : "transparent"; }}
+              >
+                {day}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   const displayVal = value || "Select date";
+  const month2 = viewMonth + 1 > 11 ? 0 : viewMonth + 1;
+  const year2 = viewMonth + 1 > 11 ? viewYear + 1 : viewYear;
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
-      <button onClick={() => setOpen(!open)} style={{
+      <button onClick={() => setOpen(!open)} data-picker-open={openPicker} style={{
         background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px",
         color: C.text, fontSize: "13px", fontFamily: "inherit", cursor: "pointer", minWidth: "130px",
         textAlign: "left", display: "flex", alignItems: "center", gap: "8px",
@@ -1306,48 +1359,21 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label }) =
         <div style={{
           position: "absolute", top: "100%", left: 0, zIndex: 300, marginTop: "4px",
           background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
-          boxShadow: "0 12px 40px rgba(0,0,0,0.25)", padding: "12px", width: "260px",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)", padding: "12px", width: "440px",
         }}>
-          {/* Month/Year nav */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
             <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>‹</button>
-            <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{monthNames[viewMonth]} {viewYear}</span>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{monthNames[viewMonth]} – {monthNames[month2]} {year2}</span>
             <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>›</button>
           </div>
-          {/* Day headers */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px", marginBottom: "4px" }}>
-            {dayNames.map(d => (
-              <div key={d} style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textAlign: "center", padding: "2px 0" }}>{d}</div>
-            ))}
-          </div>
-          {/* Day cells */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px" }}>
-            {cells.map((day, i) => {
-              if (day === null) return <div key={`e-${i}`} />;
-              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-              const pitched = pitchedDates && pitchedDates.has(dateStr);
-              const isSelected = dateStr === value;
-              return (
-                <div key={dateStr} onClick={() => selectDate(day)} style={{
-                  fontSize: "11px", textAlign: "center", padding: "5px 0", borderRadius: "4px", cursor: "pointer",
-                  fontWeight: (pitched || isSelected) ? 700 : 400,
-                  color: isSelected ? "#fff" : pitched ? C.accent : C.text,
-                  background: isSelected ? C.accent : pitched ? (C.accent + "22") : "transparent",
-                  border: pitched && !isSelected ? `1px solid ${C.accent}55` : "1px solid transparent",
-                  transition: "background 0.15s",
-                }}
-                  onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.accentGlow; }}
-                  onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = pitched ? (C.accent + "22") : "transparent"; }}
-                >
-                  {day}
-                </div>
-              );
-            })}
+          <div style={{ display: "flex", gap: "16px" }}>
+            {renderMonth(viewYear, viewMonth, 0)}
+            {renderMonth(year2, month2, 1)}
           </div>
           {pitchedDates && pitchedDates.size > 0 && (
             <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "6px", justifyContent: "center" }}>
               <div style={{ width: "8px", height: "8px", borderRadius: "2px", border: `1px solid ${C.accent}55`, background: C.accent + "22" }} />
-              <span style={{ fontSize: "9px", color: C.textDim }}>Pitched ({pitchedDates.size})</span>
+              <span style={{ fontSize: "9px", color: C.textDim }}>Pitched ({pitchedDates.size} days)</span>
             </div>
           )}
         </div>
@@ -1399,6 +1425,7 @@ export default function PitcherTracker() {
   const [pitcherGameStats, setPitcherGameStats] = useState(null);
   const [teamLogos, setTeamLogos] = useState({});
   const pollRef = useRef(null);
+  const endPickerRef = useRef(null);
 
   // Load team logos on mount
   useEffect(() => { getTeamLogos().then(setTeamLogos); }, []);
@@ -1748,9 +1775,13 @@ export default function PitcherTracker() {
             {view === "historical" && historicalPitchData && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
-                <DatePickerWithHighlights value={seasonStart} onChange={setSeasonStart} pitchedDates={pitchedDates} C={C} label="Start" />
+                <DatePickerWithHighlights value={seasonStart} onChange={setSeasonStart} pitchedDates={pitchedDates} C={C} label="Start"
+                  onAfterSelect={() => { if (endPickerRef.current) endPickerRef.current.querySelector("button").click(); }}
+                />
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
-                <DatePickerWithHighlights value={seasonEnd} onChange={setSeasonEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                <div ref={endPickerRef}>
+                  <DatePickerWithHighlights value={seasonEnd} onChange={setSeasonEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                </div>
                 {pitchData && (
                   <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>
                     {pitchData.length} pitches

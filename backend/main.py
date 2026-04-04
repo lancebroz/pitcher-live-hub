@@ -542,7 +542,7 @@ async def get_season_data(pitcher_id: int):
             "game_date": str(row.get("game_date", "")),
             "inning": safe("inning"),
             "at_bat_number": safe("at_bat_number"),
-            "events": "",
+            "events": str(row.get("events", "")),
         })
 
     if pitches:
