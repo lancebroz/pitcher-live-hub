@@ -470,9 +470,13 @@ async def get_season_data(pitcher_id: int):
                 resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
                 if resp.status_code == 200:
                     df = pd.read_parquet(io.BytesIO(resp.content))
-                    pitcher_df = df[df["pitcher_id"] == pitcher_id]
+                    # Try matching as both int and string in case of type mismatch
+                    pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
                     if len(pitcher_df) > 0:
                         all_dfs.append(pitcher_df)
+                    print(f"{fname}: {len(df)} total rows, {len(pitcher_df)} matched for {pitcher_id}")
+                else:
+                    print(f"{fname}: HTTP {resp.status_code}")
             except Exception as e:
                 print(f"Failed to fetch {fname}: {e}")
                 continue
@@ -482,8 +486,6 @@ async def get_season_data(pitcher_id: int):
 
     combined = pd.concat(all_dfs, ignore_index=True)
 
-    # Map parquet columns to our standard pitch format
-    # Handle bb_type from trajectory field
     trajectory_map = {
         "ground_ball": "ground_ball", "fly_ball": "fly_ball",
         "line_drive": "line_drive", "popup": "popup",
@@ -497,7 +499,6 @@ async def get_season_data(pitcher_id: int):
                 return None
             return float(val) if isinstance(val, (int, float)) else val
 
-        # Map call_description to our description format
         call_desc = str(row.get("call_description", "")).lower()
         if "swinging" in call_desc and "strike" in call_desc:
             desc = "swinging_strike"
@@ -547,6 +548,34 @@ async def get_season_data(pitcher_id: int):
     if pitches:
         set_cache(cache_key, pitches)
     return pitches
+
+
+@app.get("/api/debug/parquet")
+async def debug_parquet():
+    """Diagnostic endpoint to inspect parquet structure."""
+    import pandas as pd
+    import io
+
+    result = {}
+    async with httpx.AsyncClient() as client:
+        for fname in MONTH_FILES:
+            try:
+                resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
+                if resp.status_code == 200:
+                    df = pd.read_parquet(io.BytesIO(resp.content))
+                    sample_ids = df["pitcher_id"].head(5).tolist() if "pitcher_id" in df.columns else []
+                    result[fname] = {
+                        "rows": len(df),
+                        "columns": list(df.columns),
+                        "pitcher_id_dtype": str(df["pitcher_id"].dtype) if "pitcher_id" in df.columns else "MISSING",
+                        "sample_pitcher_ids": sample_ids,
+                        "sample_row": {k: str(v) for k, v in df.iloc[0].to_dict().items()} if len(df) > 0 else {},
+                    }
+                else:
+                    result[fname] = {"error": f"HTTP {resp.status_code}"}
+            except Exception as e:
+                result[fname] = {"error": str(e)}
+    return result
 
 
 # ─── Health check ───
