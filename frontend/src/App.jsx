@@ -1388,8 +1388,9 @@ export default function PitcherTracker() {
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  const [startDate, setStartDate] = useState("2025-03-27");
-  const [endDate, setEndDate] = useState("2025-09-28");
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [seasonStart, setSeasonStart] = useState("2026-03-26");
+  const [seasonEnd, setSeasonEnd] = useState(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
   const [handFilter, setHandFilter] = useState("all");
@@ -1412,6 +1413,16 @@ export default function PitcherTracker() {
     if (!historicalPitchData) return new Set();
     return new Set(historicalPitchData.filter(p => p.game_date).map(p => p.game_date));
   }, [historicalPitchData]);
+
+  // Filter season data by date range whenever dates change
+  useEffect(() => {
+    if (view !== "historical" || !historicalPitchData) return;
+    const filtered = historicalPitchData.filter(p => {
+      if (!p.game_date) return true;
+      return p.game_date >= seasonStart && p.game_date <= seasonEnd;
+    });
+    setPitchData(filtered);
+  }, [seasonStart, seasonEnd, historicalPitchData, view]);
 
   // Live polling: re-fetch pitch data every 15 seconds during live games
   useEffect(() => {
@@ -1455,18 +1466,16 @@ export default function PitcherTracker() {
     } else {
       // 2026 Season: restore cached or auto-load
       if (historicalPitchData) {
-        setPitchData(historicalPitchData);
+        // pitchData will be set by the useEffect date filter
       } else if (pitcherId) {
         setIsLoading(true);
         try {
           const raw = await getSeasonData(pitcherId);
           console.log("Season auto-load:", raw.length, "pitches");
           if (raw.length > 0) {
-            console.log("Sample:", JSON.stringify(raw[0]));
             const normalized = normAndFilter(raw);
-            console.log("After filter:", normalized.length);
             setHistoricalPitchData(normalized);
-            setPitchData(normalized);
+            // pitchData will be set by the useEffect date filter
             if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
           }
         } catch (e) { console.error("Failed to load season data:", e); }
@@ -1587,7 +1596,7 @@ export default function PitcherTracker() {
                   <span style={{ margin: "0 2px" }}>·</span> {currentGame.inning || currentGame.detailed_status}
                 </span>
               )}
-              {view === "historical" && "2026 Season"}
+              {view === "historical" && `${seasonStart} → ${seasonEnd}`}
               {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
             </div>
           </div>
@@ -1713,19 +1722,10 @@ export default function PitcherTracker() {
                   setIsLoading(true);
                   try {
                     const raw = await getSeasonData(pitcherId);
-                    console.log("Season raw:", raw.length, "pitches");
                     if (raw.length > 0) {
-                      console.log("Sample pitch:", JSON.stringify(raw[0]));
                       const normalized = normAndFilter(raw);
-                      console.log("After normAndFilter:", normalized.length, "pitches");
-                      if (normalized.length > 0) {
-                        console.log("Sample normalized:", JSON.stringify(normalized[0]));
-                      }
                       setHistoricalPitchData(normalized);
-                      setPitchData(normalized);
                       if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
-                    } else {
-                      console.log("No season data returned");
                     }
                   } catch (e) { console.error("Failed:", e); }
                   setIsLoading(false);
@@ -1745,8 +1745,22 @@ export default function PitcherTracker() {
               </div>
             )}
 
-            {view === "historical" && historicalPitchData && activePitcher && (
-              <HistoricalSummaryBox pitchData={historicalPitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
+            {view === "historical" && historicalPitchData && (
+              <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
+                <DatePickerWithHighlights value={seasonStart} onChange={setSeasonStart} pitchedDates={pitchedDates} C={C} label="Start" />
+                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
+                <DatePickerWithHighlights value={seasonEnd} onChange={setSeasonEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                {pitchData && (
+                  <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>
+                    {pitchData.length} pitches
+                  </span>
+                )}
+              </div>
+            )}
+
+            {view === "historical" && pitchData && pitchData.length > 0 && activePitcher && (
+              <HistoricalSummaryBox pitchData={pitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
             )}
 
             {stuffMetrics && (
