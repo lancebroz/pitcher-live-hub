@@ -73,3 +73,9 @@ export async function getStatcast(pitcherId, startDate, endDate) {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function getSeasonData(pitcherId) {
+  const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/season`);
+  if (!res.ok) return [];
+  return res.json();
+}

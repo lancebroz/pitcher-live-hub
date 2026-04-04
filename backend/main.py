@@ -442,6 +442,113 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     return pitches
 
 
+# ─── Route 6: Get 2026 season data from parquet files ───
+PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026"
+MONTH_FILES = [
+    "03_march.parquet", "04_april.parquet", "05_may.parquet",
+    "06_june.parquet", "07_july.parquet", "08_august.parquet",
+    "09_september.parquet", "10_october.parquet",
+]
+
+@app.get("/api/pitcher/{pitcher_id}/season")
+async def get_season_data(pitcher_id: int):
+    """
+    Fetches all 2026 season data for a pitcher from parquet files on GitHub.
+    """
+    import pandas as pd
+    import io
+
+    cache_key = f"season:{pitcher_id}"
+    cached = get_cached(cache_key, 300)  # cache 5 minutes (data updates 6x/day)
+    if cached:
+        return cached
+
+    all_dfs = []
+    async with httpx.AsyncClient() as client:
+        for fname in MONTH_FILES:
+            try:
+                resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
+                if resp.status_code == 200:
+                    df = pd.read_parquet(io.BytesIO(resp.content))
+                    pitcher_df = df[df["pitcher_id"] == pitcher_id]
+                    if len(pitcher_df) > 0:
+                        all_dfs.append(pitcher_df)
+            except Exception as e:
+                print(f"Failed to fetch {fname}: {e}")
+                continue
+
+    if not all_dfs:
+        return []
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+
+    # Map parquet columns to our standard pitch format
+    # Handle bb_type from trajectory field
+    trajectory_map = {
+        "ground_ball": "ground_ball", "fly_ball": "fly_ball",
+        "line_drive": "line_drive", "popup": "popup",
+    }
+
+    pitches = []
+    for _, row in combined.iterrows():
+        def safe(col):
+            val = row.get(col)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return None
+            return float(val) if isinstance(val, (int, float)) else val
+
+        # Map call_description to our description format
+        call_desc = str(row.get("call_description", "")).lower()
+        if "swinging" in call_desc and "strike" in call_desc:
+            desc = "swinging_strike"
+        elif "called" in call_desc and "strike" in call_desc:
+            desc = "called_strike"
+        elif "foul" in call_desc:
+            desc = "foul"
+        elif "in play" in call_desc or "hit into play" in call_desc:
+            desc = "hit_into_play"
+        else:
+            desc = "ball"
+
+        pitches.append({
+            "pitch_number": len(pitches) + 1,
+            "pitch_type": str(row.get("pitch_type", "")),
+            "pitch_name": str(row.get("pitch_name", "")),
+            "release_speed": safe("start_speed"),
+            "release_spin_rate": safe("spin_rate"),
+            "pfx_x": safe("pfx_x"),
+            "pfx_z": safe("pfx_z"),
+            "movement_source": "parquet",
+            "plate_x": safe("plate_x"),
+            "plate_z": safe("plate_z"),
+            "release_pos_x": safe("release_x"),
+            "release_pos_z": safe("release_z"),
+            "release_extension": safe("extension"),
+            "zone": safe("zone"),
+            "description": desc,
+            "is_in_play": bool(row.get("is_in_play", False)),
+            "is_strike": bool(row.get("is_strike", False)),
+            "is_ball": bool(row.get("is_ball", False)),
+            "launch_speed": safe("launch_speed"),
+            "launch_angle": safe("launch_angle"),
+            "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
+            "batter_name": str(row.get("batter_name", "")),
+            "batter_hand": str(row.get("batter_hand", "")),
+            "stand": str(row.get("batter_hand", "")),
+            "p_throws": str(row.get("pitcher_hand", "")),
+            "balls": str(row.get("balls", "")),
+            "strikes": str(row.get("strikes", "")),
+            "game_date": str(row.get("game_date", "")),
+            "inning": safe("inning"),
+            "at_bat_number": safe("at_bat_number"),
+            "events": "",
+        })
+
+    if pitches:
+        set_cache(cache_key, pitches)
+    return pitches
+
+
 # ─── Health check ───
 @app.get("/")
 async def root():

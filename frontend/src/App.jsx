@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos, getSeasonData } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -1453,9 +1453,21 @@ export default function PitcherTracker() {
         setPitchData(livePitchData);
       }
     } else {
-      // Historical: restore cached historical data if available
+      // 2026 Season: restore cached or auto-load
       if (historicalPitchData) {
         setPitchData(historicalPitchData);
+      } else if (pitcherId) {
+        setIsLoading(true);
+        try {
+          const raw = await getSeasonData(pitcherId);
+          if (raw.length > 0) {
+            const normalized = normAndFilter(raw);
+            setHistoricalPitchData(normalized);
+            setPitchData(normalized);
+            if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
+          }
+        } catch (e) { console.error("Failed to load season data:", e); }
+        setIsLoading(false);
       } else {
         setPitchData(null);
       }
@@ -1572,7 +1584,7 @@ export default function PitcherTracker() {
                   <span style={{ margin: "0 2px" }}>·</span> {currentGame.inning || currentGame.detailed_status}
                 </span>
               )}
-              {view === "historical" && `${startDate} → ${endDate}`}
+              {view === "historical" && "2026 Season"}
               {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
             </div>
           </div>
@@ -1603,7 +1615,7 @@ export default function PitcherTracker() {
                   background: "transparent", border: "none", fontFamily: "inherit", cursor: "pointer",
                   borderBottom: view === t ? `2px solid ${C.accent}` : "2px solid transparent",
                 }}>
-                  {t === "live" ? "Live Game" : "Historical"}
+                  {t === "live" ? "Live Game" : "2026 Season"}
                 </button>
               ))}
               {view === "live" && gamePk && pitcherId && (
@@ -1692,19 +1704,33 @@ export default function PitcherTracker() {
               );
             })()}
 
-            {view === "historical" && (
-              <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
-                <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start" />
-                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>To</span>
-                <DatePickerWithHighlights value={endDate} onChange={setEndDate} pitchedDates={pitchedDates} C={C} label="End" />
-                <button onClick={handleLoadHistorical} style={{
+            {view === "historical" && !historicalPitchData && !isLoading && pitcherId && (
+              <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center" }}>
+                <button onClick={async () => {
+                  setIsLoading(true);
+                  try {
+                    const raw = await getSeasonData(pitcherId);
+                    if (raw.length > 0) {
+                      const normalized = normAndFilter(raw);
+                      setHistoricalPitchData(normalized);
+                      setPitchData(normalized);
+                      if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
+                    }
+                  } catch (e) { console.error("Failed:", e); }
+                  setIsLoading(false);
+                }} style={{
                   background: C.accent, border: "none", borderRadius: "6px", padding: "10px 20px",
                   color: "#fff", fontSize: "12px", fontWeight: 600, letterSpacing: "1px",
                   textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit",
                 }}>
-                  {isLoading ? "Loading..." : "Fetch Data"}
+                  Load 2026 Season Data
                 </button>
+              </div>
+            )}
+
+            {view === "historical" && isLoading && (
+              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+                Loading 2026 season data...
               </div>
             )}
 
