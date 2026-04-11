@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos, getSeasonData } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos, getSeasonData, getStartersToday } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -361,7 +361,13 @@ const LiveGameSelector = ({ onSelectPitcher, C, logos }) => {
   const [games, setGames] = useState([]);
   const [pitchers, setPitchers] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [selectedDate, setSelectedDate] = useState(() => {
+    // Roll over at 8am Central Time
+    const now = new Date();
+    const ctNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+    if (ctNow.getHours() < 8) ctNow.setDate(ctNow.getDate() - 1);
+    return `${ctNow.getFullYear()}-${String(ctNow.getMonth() + 1).padStart(2, "0")}-${String(ctNow.getDate()).padStart(2, "0")}`;
+  });
   const ref = useRef(null);
 
   useEffect(() => {
@@ -419,7 +425,12 @@ const LiveGameSelector = ({ onSelectPitcher, C, logos }) => {
     return order(a) - order(b);
   });
   const allGames = sortedGames.length > 0 ? sortedGames : [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = (() => {
+    const now = new Date();
+    const ctNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+    if (ctNow.getHours() < 8) ctNow.setDate(ctNow.getDate() - 1);
+    return `${ctNow.getFullYear()}-${String(ctNow.getMonth() + 1).padStart(2, "0")}-${String(ctNow.getDate()).padStart(2, "0")}`;
+  })();
   const isToday = selectedDate === today;
 
   // Format display date
@@ -519,10 +530,12 @@ const SortIcon = ({ active, dir }) => (
 // ─── Movement Plot ───
 const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
   const [showAvg, setShowAvg] = useState(false);
+  const [mvHand, setMvHand] = useState("all");
   const grouped = {};
   let maxAbs = 0;
   pitchTypeMetrics.forEach(pt => {
     pt.rawPitches.forEach(p => {
+      if (mvHand !== "all" && p.batter_hand !== mvHand) return;
       if (!grouped[p.pitch_name]) grouped[p.pitch_name] = { name: p.pitch_name, abbrev: PITCH_ABBREV[p.pitch_name] || p.pitch_type, color: pt.color, data: [] };
       grouped[p.pitch_name].data.push({
         x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color,
@@ -547,7 +560,20 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
   const ticks = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "20px" }}>
-      <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>Pitch Movement Profile</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim }}>Pitch Movement Profile</div>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {[{ key: "all", label: "All" }, { key: "L", label: "vs LHH" }, { key: "R", label: "vs RHH" }].map(t => (
+            <button key={t.key} onClick={() => setMvHand(t.key)} style={{
+              background: mvHand === t.key ? C.accentGlow : "transparent",
+              border: `1px solid ${mvHand === t.key ? C.accent : C.border}`,
+              borderRadius: "4px", padding: "4px 10px",
+              color: mvHand === t.key ? C.accent : C.textDim,
+              fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            }}>{t.label}</button>
+          ))}
+        </div>
+      </div>
       <div style={{ width: "100%", aspectRatio: "1/1", maxHeight: "440px" }}>
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 15 }}>
@@ -586,9 +612,9 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
               );
             }} />
             {Object.values(grouped).map(g => (
-              <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={5.5}
+              <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={2.75}
                 shape={(props) => (
-                  <circle cx={props.cx} cy={props.cy} r={5.5} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.7} strokeOpacity={0.45} />
+                  <circle cx={props.cx} cy={props.cy} r={2.75} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45} />
                 )}
               />
             ))}
@@ -1401,6 +1427,97 @@ const PERF_COLS = [
   { key: "fbRate", label: "FB%" }, { key: "barrelRate", label: "Barrel%" },
 ];
 
+// ─── Starters Grid (home page) ───
+const StartersGrid = ({ C, logos, onSelect, isMobile }) => {
+  const [starters, setStarters] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const data = await getStartersToday();
+        if (alive) { setStarters(data); setLoading(false); }
+      } catch { if (alive) setLoading(false); }
+    };
+    load();
+    const iv = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+
+  const statusBadge = (s) => {
+    if (s.game_status === "Live") return <span style={{ fontSize: "9px", fontWeight: 700, color: "#10b981", letterSpacing: "1px" }}>● LIVE {s.inning}</span>;
+    if (s.game_status === "Final") return <span style={{ fontSize: "9px", fontWeight: 700, color: "#ef4444", letterSpacing: "1px" }}>FINAL</span>;
+    return <span style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, letterSpacing: "1px" }}>{s.detailed_status || "SCHED"}</span>;
+  };
+
+  const cols = ["IP", "H", "R", "ER", "BB", "K", "P", "Str%", "SwStr%"];
+
+  return (
+    <div style={{ padding: isMobile ? "16px 0" : "24px 0" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "16px" }}>
+        Starting Pitchers Today
+      </div>
+      {loading && <div style={{ color: C.textDim, fontSize: "12px", padding: "20px 0" }}>Loading…</div>}
+      {!loading && starters && starters.length === 0 && <div style={{ color: C.textDim, fontSize: "12px" }}>No games today.</div>}
+      {!loading && starters && starters.length > 0 && (
+        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: "8px", background: C.surface }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+            <thead>
+              <tr style={{ background: C.accentGlow }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>Pitcher</th>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>Matchup</th>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>Status</th>
+                {cols.map(c => (
+                  <th key={c} style={{ padding: "10px 10px", textAlign: "right", fontSize: "10px", fontWeight: 700, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {starters.map((s, i) => (
+                <tr key={`${s.game_pk}-${s.side}-${i}`}
+                  onClick={() => {
+                    if (!s.pitcher_id || s.game_status === "Preview") return;
+                    onSelect(
+                      { id: s.pitcher_id, name: s.pitcher_name, throws: "" },
+                      { game_pk: s.game_pk, home_team: s.side === "home" ? s.team : s.opponent, away_team: s.side === "away" ? s.team : s.opponent, detailed_status: s.detailed_status, inning: s.inning }
+                    );
+                  }}
+                  style={{ cursor: s.game_status !== "Preview" ? "pointer" : "default", borderBottom: `1px solid ${C.border}` }}
+                  onMouseEnter={e => { if (s.game_status !== "Preview") e.currentTarget.style.background = C.accentGlow; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                >
+                  <td style={{ padding: "10px 12px", color: C.text, fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {s.pitcher_name}{s.is_current && <span style={{ marginLeft: "6px", fontSize: "8px", color: "#10b981", fontWeight: 700 }}>●</span>}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: C.textMuted, fontSize: "11px", whiteSpace: "nowrap" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <TeamLogo abbr={s.team} logos={logos} size={14} /> {s.team} vs <TeamLogo abbr={s.opponent} logos={logos} size={14} /> {s.opponent}
+                    </span>
+                  </td>
+                  <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>{statusBadge(s)}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.ip}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.h}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.r}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.er}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.bb}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.k}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.pitches}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.strike_pct}</td>
+                  <td style={{ padding: "10px 10px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{s.swstr_pct}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: "10px", color: C.textDim, marginTop: "10px", textAlign: "center" }}>
+        Click any live or final row to load that pitcher • Updates every 15s
+      </div>
+    </div>
+  );
+};
+
 // ─── Main App ───
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
@@ -1414,6 +1531,7 @@ export default function PitcherTracker() {
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
+  const [season2025PitchData, setSeason2025PitchData] = useState(null);
   const todayStr = new Date().toISOString().split("T")[0];
   const [seasonStart, setSeasonStart] = useState("2026-03-26");
   const [seasonEnd, setSeasonEnd] = useState(todayStr);
@@ -1490,6 +1608,28 @@ export default function PitcherTracker() {
       } else if (livePitchData) {
         setPitchData(livePitchData);
       }
+    } else if (newView === "season2025") {
+      // 2025 Season: load from Savant
+      if (season2025PitchData) {
+        setPitchData(season2025PitchData);
+      } else if (pitcherId) {
+        setIsLoading(true);
+        try {
+          const raw = await getStatcast(pitcherId, "2025-03-27", "2025-09-28");
+          console.log("2025 load:", raw.length, "pitches");
+          if (raw.length > 0) {
+            const normalized = normAndFilter(raw);
+            setSeason2025PitchData(normalized);
+            setPitchData(normalized);
+            if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
+          } else {
+            setPitchData(null);
+          }
+        } catch (e) { console.error("Failed to load 2025:", e); }
+        setIsLoading(false);
+      } else {
+        setPitchData(null);
+      }
     } else {
       // 2026 Season: restore cached or auto-load
       if (historicalPitchData) {
@@ -1502,7 +1642,6 @@ export default function PitcherTracker() {
           if (raw.length > 0) {
             const normalized = normAndFilter(raw);
             setHistoricalPitchData(normalized);
-            // pitchData will be set by the useEffect date filter
             if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
           }
         } catch (e) { console.error("Failed to load season data:", e); }
@@ -1527,6 +1666,7 @@ export default function PitcherTracker() {
     setPitchData(null);
     setLivePitchData(null);
     setHistoricalPitchData(null);
+    setSeason2025PitchData(null);
     setActiveGame(null);
     setGamePk(null);
   };
@@ -1542,6 +1682,7 @@ export default function PitcherTracker() {
     setPitcherGameStats(pitcher.game_stats || null);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
+    setSeason2025PitchData(null);
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
@@ -1606,7 +1747,7 @@ export default function PitcherTracker() {
               </svg>
               {isMobile ? "Substack" : "Subscribe to my Substack!"}
             </a>
-            {view === "live" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />}
+            <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />
           </div>
         </div>
         {activePitcher && (
@@ -1624,6 +1765,7 @@ export default function PitcherTracker() {
                 </span>
               )}
               {view === "historical" && `${seasonStart} → ${seasonEnd}`}
+              {view === "season2025" && "2025 Regular Season"}
               {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
             </div>
           </div>
@@ -1647,14 +1789,18 @@ export default function PitcherTracker() {
           <>
             {/* View tabs */}
             <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
-              {["live", "historical"].map(t => (
-                <button key={t} onClick={() => handleViewSwitch(t)} style={{
+              {[
+                { key: "live", label: "Live Game" },
+                { key: "season2025", label: "2025 Season" },
+                { key: "historical", label: "2026 Season" },
+              ].map(t => (
+                <button key={t.key} onClick={() => handleViewSwitch(t.key)} style={{
                   padding: "10px 24px", fontSize: "11px", fontWeight: 600, letterSpacing: "2px",
-                  textTransform: "uppercase", color: view === t ? C.accent : C.textDim,
+                  textTransform: "uppercase", color: view === t.key ? C.accent : C.textDim,
                   background: "transparent", border: "none", fontFamily: "inherit", cursor: "pointer",
-                  borderBottom: view === t ? `2px solid ${C.accent}` : "2px solid transparent",
+                  borderBottom: view === t.key ? `2px solid ${C.accent}` : "2px solid transparent",
                 }}>
-                  {t === "live" ? "Live Game" : "2026 Season"}
+                  {t.label}
                 </button>
               ))}
               {view === "live" && gamePk && pitcherId && (
@@ -1772,6 +1918,33 @@ export default function PitcherTracker() {
               </div>
             )}
 
+            {view === "season2025" && isLoading && (
+              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+                Loading 2025 season data from Baseball Savant...
+              </div>
+            )}
+
+            {view === "season2025" && !isLoading && !season2025PitchData && pitcherId && (
+              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+                No 2025 data available for this pitcher.
+              </div>
+            )}
+
+            {view === "season2025" && season2025PitchData && (
+              <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center" }}>
+                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>2025 Regular Season</span>
+                {pitchData && (
+                  <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>
+                    {pitchData.length} pitches
+                  </span>
+                )}
+              </div>
+            )}
+
+            {view === "season2025" && pitchData && pitchData.length > 0 && activePitcher && (
+              <HistoricalSummaryBox pitchData={pitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
+            )}
+
             {view === "historical" && historicalPitchData && (
               <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>From</span>
@@ -1843,13 +2016,7 @@ export default function PitcherTracker() {
         )}
 
         {!activePitcher && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "80px 40px", textAlign: "center" }}>
-            <div style={{ fontSize: "48px", marginBottom: "16px", opacity: 0.3 }}>⚾</div>
-            <div style={{ fontSize: "14px", fontWeight: 600, color: C.textMuted, marginBottom: "8px" }}>No Pitcher Selected</div>
-            <div style={{ fontSize: "12px", color: C.textDim, maxWidth: "400px", lineHeight: 1.6 }}>
-              Enter a pitcher's name above, or click "Live Games" to select a pitcher from an active game.
-            </div>
-          </div>
+          <StartersGrid C={C} logos={teamLogos} onSelect={handleSelectFromGame} isMobile={isMobile} />
         )}
       </div>
 

@@ -79,3 +79,10 @@ export async function getSeasonData(pitcherId) {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function getStartersToday(gameDate) {
+  const params = gameDate ? `?game_date=${gameDate}` : "";
+  const res = await fetch(`${API_BASE}/api/starters/today${params}`);
+  if (!res.ok) return [];
+  return res.json();
+}

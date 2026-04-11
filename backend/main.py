@@ -699,6 +699,132 @@ async def get_season_data(pitcher_id: int):
     return all_pitches
 
 
+@app.get("/api/starters/today")
+async def get_starters_today(game_date: str = None):
+    """Returns starting pitchers for today with stat lines and game status."""
+    from datetime import datetime
+    if not game_date:
+        game_date = datetime.now().strftime("%Y-%m-%d")
+
+    cache_key = f"starters:{game_date}"
+    cached = get_cached(cache_key, 15)
+    if cached:
+        return cached
+
+    async with httpx.AsyncClient() as client:
+        sched = await client.get(
+            f"{MLB_BASE}/api/v1/schedule?sportId=1&date={game_date}&hydrate=probablePitcher,linescore,team",
+            timeout=10,
+        )
+        data = sched.json()
+
+    results = []
+    game_list = []
+    for date_entry in data.get("dates", []):
+        for game in date_entry.get("games", []):
+            game_list.append(game)
+
+    async with httpx.AsyncClient() as client:
+        for game in game_list:
+            game_pk = game["gamePk"]
+            status = game.get("status", {}).get("abstractGameState", "")  # Preview, Live, Final
+            detailed = game.get("status", {}).get("detailedState", "")
+            home = game.get("teams", {}).get("home", {})
+            away = game.get("teams", {}).get("away", {})
+            home_abbr = home.get("team", {}).get("abbreviation", "")
+            away_abbr = away.get("team", {}).get("abbreviation", "")
+            inning = ""
+            ls = game.get("linescore", {})
+            if status == "Live":
+                inning_half = ls.get("inningHalf", "")
+                inning_num = ls.get("currentInning", "")
+                if inning_num:
+                    inning = f"{inning_half[:3]} {inning_num}"
+
+            # Get probable pitchers for Preview games
+            for side, team_obj in [("home", home), ("away", away)]:
+                prob = team_obj.get("probablePitcher") or {}
+                prob_id = prob.get("id")
+                prob_name = prob.get("fullName", "")
+                team_abbr = home_abbr if side == "home" else away_abbr
+                opp_abbr = away_abbr if side == "home" else home_abbr
+
+                starter_data = {
+                    "game_pk": game_pk, "game_status": status, "detailed_status": detailed,
+                    "inning": inning, "team": team_abbr, "opponent": opp_abbr, "side": side,
+                    "pitcher_id": prob_id, "pitcher_name": prob_name,
+                    "ip": "0.0", "h": 0, "r": 0, "er": 0, "bb": 0, "k": 0,
+                    "pitches": 0, "strikes": 0, "swstr_pct": "0.0", "strike_pct": "0.0",
+                    "is_current": False,
+                }
+
+                if status in ("Live", "Final"):
+                    # Fetch boxscore to get stat line for the starter
+                    try:
+                        box = await client.get(f"{MLB_BASE}/api/v1/game/{game_pk}/boxscore", timeout=10)
+                        box_data = box.json()
+                        team_key = "home" if side == "home" else "away"
+                        players = box_data.get("teams", {}).get(team_key, {}).get("players", {})
+                        # Find the starting pitcher (first pitcher in pitchers list)
+                        pitchers_list = box_data.get("teams", {}).get(team_key, {}).get("pitchers", [])
+                        if pitchers_list:
+                            starter_pid = pitchers_list[0]
+                            pdata = players.get(f"ID{starter_pid}", {})
+                            p_info = pdata.get("person", {})
+                            stats = pdata.get("stats", {}).get("pitching", {})
+                            starter_data["pitcher_id"] = p_info.get("id")
+                            starter_data["pitcher_name"] = p_info.get("fullName", "")
+                            starter_data["ip"] = stats.get("inningsPitched", "0.0")
+                            starter_data["h"] = stats.get("hits", 0)
+                            starter_data["r"] = stats.get("runs", 0)
+                            starter_data["er"] = stats.get("earnedRuns", 0)
+                            starter_data["bb"] = stats.get("baseOnBalls", 0)
+                            starter_data["k"] = stats.get("strikeOuts", 0)
+                            starter_data["pitches"] = stats.get("numberOfPitches", 0)
+                            starter_data["strikes"] = stats.get("strikes", 0)
+                            # Strike %
+                            if starter_data["pitches"] > 0:
+                                starter_data["strike_pct"] = f"{(starter_data['strikes'] / starter_data['pitches'] * 100):.1f}"
+                            # SwStr% - need to parse play events for swinging strikes
+                            # For now, approximate using strikeOuts as proxy or leave at 0
+                            # Better: fetch feed/live and count
+                            try:
+                                feed = await client.get(f"{MLB_BASE}/api/v1.1/game/{game_pk}/feed/live", timeout=10)
+                                fd = feed.json()
+                                swstr = 0
+                                total_pitches_seen = 0
+                                for play in fd.get("liveData", {}).get("plays", {}).get("allPlays", []):
+                                    if play.get("matchup", {}).get("pitcher", {}).get("id") != starter_pid:
+                                        continue
+                                    for ev in play.get("playEvents", []):
+                                        if ev.get("isPitch"):
+                                            total_pitches_seen += 1
+                                            call = ev.get("details", {}).get("description", "").lower()
+                                            if "swinging strike" in call:
+                                                swstr += 1
+                                if total_pitches_seen > 0:
+                                    starter_data["swstr_pct"] = f"{(swstr / total_pitches_seen * 100):.1f}"
+                            except Exception:
+                                pass
+                            # Check if currently pitching
+                            if status == "Live":
+                                current_pitcher = ls.get("defense", {}).get("pitcher", {}).get("id")
+                                if current_pitcher == starter_pid:
+                                    starter_data["is_current"] = True
+                    except Exception as e:
+                        print(f"Failed boxscore for {game_pk}: {e}")
+
+                if starter_data["pitcher_id"]:
+                    results.append(starter_data)
+
+    # Sort: Live first, then Preview, then Final
+    status_order = {"Live": 0, "Preview": 1, "Final": 2}
+    results.sort(key=lambda r: status_order.get(r["game_status"], 3))
+
+    set_cache(cache_key, results)
+    return results
+
+
 @app.get("/api/debug/parquet")
 async def debug_parquet():
     """Diagnostic endpoint to inspect parquet structure."""
