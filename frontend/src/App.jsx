@@ -613,6 +613,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
             }} />
             {Object.values(grouped).map(g => (
               <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={2.75}
+                isAnimationActive={false}
                 shape={(props) => (
                   <circle cx={props.cx} cy={props.cy} r={2.75} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45} />
                 )}
@@ -975,7 +976,7 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
                 <ReferenceArea x1={-0.83} x2={0.83} y1={1.5} y2={3.5} fill="none" stroke={C.textMuted} strokeWidth={2} />
                 <ReferenceArea x1={-0.83} x2={0.83} y1={0} y2={0.5} fill="none" stroke="none" label={{ position: "center", content: (props) => { const { viewBox } = props; if (!viewBox) return null; const cx = viewBox.x + viewBox.width / 2, bottomY = viewBox.y + viewBox.height, halfW = viewBox.width / 2; return (<polygon points={`${cx - halfW},${bottomY} ${cx + halfW},${bottomY} ${cx + halfW * 0.88},${bottomY - 8} ${cx},${bottomY - 18} ${cx - halfW * 0.88},${bottomY - 8}`} fill={C.textMuted} fillOpacity={0.15} stroke={C.textMuted} strokeWidth={2} strokeOpacity={0.45} strokeLinejoin="round" />); }}} />
                 <Tooltip content={({ payload }) => { if (!payload?.length) return null; const d = payload[0].payload; return (<div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px", fontSize: "11px", minWidth: "180px" }}><div style={{ color: d.color, fontWeight: 700, marginBottom: "4px" }}>{d.name} — {d.velo} mph</div><div style={{ color: C.textMuted, lineHeight: 1.6 }}><div>vs. {d.batter} ({d.hand}HH)</div><div>Inning {d.inning} · Count: {d.count}</div><div>Result: {descLabel(d.description)}</div></div></div>); }} />
-                <Scatter data={filtered} r={5} opacity={0.8}>
+                <Scatter data={filtered} r={5} opacity={0.8} isAnimationActive={false}>
                   {filtered.map((d, i) => <Cell key={i} fill={d.color} stroke="#000" strokeWidth={0.5} strokeOpacity={0.35} />)}
                 </Scatter>
               </ScatterChart>
