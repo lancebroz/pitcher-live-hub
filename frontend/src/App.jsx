@@ -540,6 +540,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
       grouped[p.pitch_name].data.push({
         x: p.pfx_x, y: p.pfx_z, name: p.pitch_name, color: pt.color,
         velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
+        description: p.description, events: p.events,
         game_date: p.game_date || "",
       });
       if (Math.abs(p.pfx_x) > maxAbs) maxAbs = Math.abs(p.pfx_x);
@@ -607,6 +608,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                     {d.batter && <div>vs. {d.batter}</div>}
                     {d.game_date && <div>{d.game_date}</div>}
                     <div>Inning {d.inning} · Count: {d.count}</div>
+                    {d.description && <div>Result: {({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: d.events ? d.events.replace(/_/g, " ") : "In Play" }[d.description] || d.description)}</div>}
                   </div>
                 </div>
               );
@@ -1433,11 +1435,19 @@ const StartersGrid = ({ C, logos, onSelect, isMobile }) => {
   const [starters, setStarters] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Compute the current "active date" using 8am CT rollover
+  const getActiveDate = () => {
+    const now = new Date();
+    const ctNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+    if (ctNow.getHours() < 8) ctNow.setDate(ctNow.getDate() - 1);
+    return `${ctNow.getFullYear()}-${String(ctNow.getMonth() + 1).padStart(2, "0")}-${String(ctNow.getDate()).padStart(2, "0")}`;
+  };
+
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const data = await getStartersToday();
+        const data = await getStartersToday(getActiveDate());
         if (alive) { setStarters(data); setLoading(false); }
       } catch { if (alive) setLoading(false); }
     };
