@@ -444,6 +444,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
 
 # ─── Route 6: Get 2026 season data from parquet files ───
 PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/monthly"
+DAILY_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/daily"
 MONTH_FILES = [
     "03_march.parquet", "04_april.parquet", "05_may.parquet",
     "06_june.parquet", "07_july.parquet", "08_august.parquet",
@@ -467,18 +468,29 @@ async def get_season_data(pitcher_id: int):
     parquet_pitches = get_cached(parquet_cache_key, 300)
 
     if parquet_pitches is None:
+        # Generate list of daily file URLs from March 26 to today
+        from datetime import timedelta
+        start = datetime(2026, 3, 26)
+        end = datetime.now()
+        daily_urls = []
+        cur = start
+        while cur <= end:
+            date_str = cur.strftime("%Y-%m-%d")
+            daily_urls.append((date_str, f"{DAILY_BASE}/{date_str}.parquet"))
+            cur += timedelta(days=1)
+
         all_dfs = []
         async with httpx.AsyncClient() as client:
-            for fname in MONTH_FILES:
+            for date_str, url in daily_urls:
                 try:
-                    resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=30)
+                    resp = await client.get(url, timeout=15)
                     if resp.status_code == 200:
                         df = pd.read_parquet(io.BytesIO(resp.content))
                         pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
                         if len(pitcher_df) > 0:
                             all_dfs.append(pitcher_df)
                 except Exception as e:
-                    print(f"Failed to fetch {fname}: {e}")
+                    print(f"Failed to fetch {date_str}: {e}")
                     continue
 
         parquet_pitches = []

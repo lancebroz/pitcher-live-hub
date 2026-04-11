@@ -1531,7 +1531,6 @@ export default function PitcherTracker() {
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
-  const [season2025PitchData, setSeason2025PitchData] = useState(null);
   const todayStr = new Date().toISOString().split("T")[0];
   const [seasonStart, setSeasonStart] = useState("2026-03-26");
   const [seasonEnd, setSeasonEnd] = useState(todayStr);
@@ -1608,28 +1607,6 @@ export default function PitcherTracker() {
       } else if (livePitchData) {
         setPitchData(livePitchData);
       }
-    } else if (newView === "season2025") {
-      // 2025 Season: load from Savant
-      if (season2025PitchData) {
-        setPitchData(season2025PitchData);
-      } else if (pitcherId) {
-        setIsLoading(true);
-        try {
-          const raw = await getStatcast(pitcherId, "2025-03-27", "2025-09-28");
-          console.log("2025 load:", raw.length, "pitches");
-          if (raw.length > 0) {
-            const normalized = normAndFilter(raw);
-            setSeason2025PitchData(normalized);
-            setPitchData(normalized);
-            if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
-          } else {
-            setPitchData(null);
-          }
-        } catch (e) { console.error("Failed to load 2025:", e); }
-        setIsLoading(false);
-      } else {
-        setPitchData(null);
-      }
     } else {
       // 2026 Season: restore cached or auto-load
       if (historicalPitchData) {
@@ -1666,7 +1643,6 @@ export default function PitcherTracker() {
     setPitchData(null);
     setLivePitchData(null);
     setHistoricalPitchData(null);
-    setSeason2025PitchData(null);
     setActiveGame(null);
     setGamePk(null);
   };
@@ -1682,7 +1658,6 @@ export default function PitcherTracker() {
     setPitcherGameStats(pitcher.game_stats || null);
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
-    setSeason2025PitchData(null);
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
@@ -1765,7 +1740,6 @@ export default function PitcherTracker() {
                 </span>
               )}
               {view === "historical" && `${seasonStart} → ${seasonEnd}`}
-              {view === "season2025" && "2025 Regular Season"}
               {stuffMetrics && <span style={{ marginLeft: "12px", color: C.accent }}>{stuffMetrics.total} pitches</span>}
             </div>
           </div>
@@ -1791,7 +1765,6 @@ export default function PitcherTracker() {
             <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
               {[
                 { key: "live", label: "Live Game" },
-                { key: "season2025", label: "2025 Season" },
                 { key: "historical", label: "2026 Season" },
               ].map(t => (
                 <button key={t.key} onClick={() => handleViewSwitch(t.key)} style={{
@@ -1916,33 +1889,6 @@ export default function PitcherTracker() {
               <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
                 Loading 2026 season data...
               </div>
-            )}
-
-            {view === "season2025" && isLoading && (
-              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
-                Loading 2025 season data from Baseball Savant...
-              </div>
-            )}
-
-            {view === "season2025" && !isLoading && !season2025PitchData && pitcherId && (
-              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
-                No 2025 data available for this pitcher.
-              </div>
-            )}
-
-            {view === "season2025" && season2025PitchData && (
-              <div style={{ display: "flex", gap: "12px", marginBottom: "20px", alignItems: "center" }}>
-                <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>2025 Regular Season</span>
-                {pitchData && (
-                  <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>
-                    {pitchData.length} pitches
-                  </span>
-                )}
-              </div>
-            )}
-
-            {view === "season2025" && pitchData && pitchData.length > 0 && activePitcher && (
-              <HistoricalSummaryBox pitchData={pitchData} activePitcher={activePitcher} pitcherHand={pitcherHand} C={C} />
             )}
 
             {view === "historical" && historicalPitchData && (
