@@ -74,6 +74,14 @@ export async function getStatcast(pitcherId, startDate, endDate) {
   return res.json();
 }
 
+export async function getStatcastSampled(pitcherId, startDate, endDate, sampleSize = 50) {
+  const res = await fetch(
+    `${API_BASE}/api/pitcher/${pitcherId}/statcast-sampled?start_date=${startDate}&end_date=${endDate}&sample_per_type=${sampleSize}`
+  );
+  if (!res.ok) return { sampled: [], aggregates: [], total_pitches: 0, p_throws: "" };
+  return res.json();
+}
+
 export async function getSeasonData(pitcherId) {
   const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/season`);
   if (!res.ok) return [];

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getTeamLogos, getSeasonData, getStartersToday } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -1620,19 +1620,19 @@ export default function PitcherTracker() {
         setPitchData(livePitchData);
       }
     } else if (newView === "season2025") {
-      // 2025 Season from Baseball Savant
+      // 2025 Season from Baseball Savant (SAMPLED for performance)
       if (season2025PitchData) {
         setPitchData(season2025PitchData);
       } else if (pitcherId) {
         setIsLoading(true);
         try {
-          const raw = await getStatcast(pitcherId, "2025-03-27", "2025-09-28");
-          console.log("2025 load:", raw.length, "pitches");
-          if (raw.length > 0) {
-            const normalized = normAndFilter(raw);
+          const result = await getStatcastSampled(pitcherId, "2025-03-27", "2025-09-28", 50);
+          console.log(`2025 load: ${result.total_pitches} total, ${result.sampled.length} sampled`);
+          if (result.sampled && result.sampled.length > 0) {
+            const normalized = normAndFilter(result.sampled);
             setSeason2025PitchData(normalized);
             setPitchData(normalized);
-            if (!pitcherHand && raw[0]?.p_throws) setPitcherHand(raw[0].p_throws);
+            if (!pitcherHand && result.p_throws) setPitcherHand(result.p_throws);
           } else {
             setPitchData(null);
           }
@@ -2012,15 +2012,17 @@ export default function PitcherTracker() {
                   />
                 )}
 
-                {/* Release Point + Pitch Locations */}
-                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
-                  <ReleasePointPlot
-                    pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
-                    avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
-                    pitcherHand={pitcherHand}
-                  />
-                  <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
-                </div>
+                {/* Release Point + Pitch Locations (hidden on 2025 view since samples would be misleading) */}
+                {view !== "season2025" && (
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
+                    <ReleasePointPlot
+                      pitchTypeMetrics={stuffMetrics.pitchTypeMetrics}
+                      avgRelH={stuffMetrics.avgRelH} avgRelS={stuffMetrics.avgRelS} avgExt={stuffMetrics.avgExt} C={C}
+                      pitcherHand={pitcherHand}
+                    />
+                    <PitchLocationPlot pitchData={pitchData} pitchTypeMetrics={stuffMetrics.pitchTypeMetrics} C={C} />
+                  </div>
+                )}
               </>
             )}
           </>

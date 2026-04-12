@@ -442,6 +442,85 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     return pitches
 
 
+@app.get("/api/pitcher/{pitcher_id}/statcast-sampled")
+async def get_statcast_sampled(pitcher_id: int, start_date: str, end_date: str, sample_per_type: int = 50):
+    """
+    Same as statcast but samples up to N pitches per pitch type to keep
+    response size manageable for large datasets (full seasons).
+    Also includes full pitch list for computing accurate aggregate stats.
+    """
+    import random
+    from collections import defaultdict
+
+    cache_key = f"statcast_sampled:{pitcher_id}:{start_date}:{end_date}:{sample_per_type}"
+    cached = get_cached(cache_key, 3600)
+    if cached:
+        return cached
+
+    # Reuse the main statcast fetch
+    all_pitches = await get_statcast(pitcher_id, start_date, end_date)
+    if not all_pitches:
+        return {"sampled": [], "aggregates": [], "total_pitches": 0, "p_throws": ""}
+
+    # Group by pitch type and sample
+    by_type = defaultdict(list)
+    for p in all_pitches:
+        pt = p.get("pitch_type") or "UNK"
+        by_type[pt].append(p)
+
+    # Deterministic seed per pitcher so re-fetch gives same sample
+    random.seed(pitcher_id)
+
+    sampled = []
+    aggregates = []
+    for pt, pitches in by_type.items():
+        # Sample
+        if len(pitches) <= sample_per_type:
+            sampled.extend(pitches)
+        else:
+            sampled.extend(random.sample(pitches, sample_per_type))
+
+        # Compute aggregate stats for this pitch type from ALL pitches
+        def _avg(key):
+            vals = [p.get(key) for p in pitches if p.get(key) is not None]
+            return sum(vals) / len(vals) if vals else None
+
+        swstr = sum(1 for p in pitches if "swinging_strike" in (p.get("description") or "").lower())
+        called_strike = sum(1 for p in pitches if "called_strike" in (p.get("description") or "").lower())
+        foul = sum(1 for p in pitches if "foul" in (p.get("description") or "").lower())
+        in_play = sum(1 for p in pitches if p.get("is_in_play"))
+        whiffs_plus_swings = sum(1 for p in pitches if (p.get("description") or "").lower() in ("swinging_strike", "foul", "hit_into_play", "foul_tip"))
+
+        aggregates.append({
+            "pitch_type": pt,
+            "pitch_name": pitches[0].get("pitch_name", ""),
+            "count": len(pitches),
+            "avg_velo": _avg("release_speed"),
+            "avg_spin": _avg("release_spin_rate"),
+            "avg_ivb": _avg("pfx_z"),
+            "avg_hb": _avg("pfx_x"),
+            "avg_extension": _avg("release_extension"),
+            "avg_release_pos_x": _avg("release_pos_x"),
+            "avg_release_pos_z": _avg("release_pos_z"),
+            "swstr": swstr,
+            "called_strike": called_strike,
+            "foul": foul,
+            "in_play": in_play,
+            "whiffs_plus_swings": whiffs_plus_swings,
+        })
+
+    p_throws = all_pitches[0].get("p_throws", "") if all_pitches else ""
+
+    result = {
+        "sampled": sampled,
+        "aggregates": aggregates,
+        "total_pitches": len(all_pitches),
+        "p_throws": p_throws,
+    }
+    set_cache(cache_key, result)
+    return result
+
+
 # ─── Route 6: Get 2026 season data from parquet files ───
 PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/monthly"
 DAILY_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/daily"
