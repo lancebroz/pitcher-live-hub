@@ -462,6 +462,20 @@ async def get_statcast_sampled(pitcher_id: int, start_date: str, end_date: str, 
     if not all_pitches:
         return {"sampled": [], "aggregates": [], "total_pitches": 0, "p_throws": ""}
 
+    # Fill in missing pitch_type from pitch_name (Savant sometimes omits the code)
+    PITCH_NAME_MAP = {
+        "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
+        "Sinker": "SI", "Cutter": "FC",
+        "Slider": "SL", "Sweeper": "ST", "Slurve": "SV",
+        "Curveball": "CU", "Knuckle Curve": "KC",
+        "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS",
+        "Screwball": "SC", "Forkball": "FO", "Knuckleball": "KN",
+        "Eephus": "EP",
+    }
+    for p in all_pitches:
+        if not p.get("pitch_type") and p.get("pitch_name"):
+            p["pitch_type"] = PITCH_NAME_MAP.get(p["pitch_name"], p["pitch_name"][:2].upper() or "UN")
+
     # Group by pitch type and sample
     by_type = defaultdict(list)
     for p in all_pitches:
