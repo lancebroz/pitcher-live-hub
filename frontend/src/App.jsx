@@ -1140,10 +1140,26 @@ const normalizeLivePitch = (p) => {
     is_fly_ball: p.bb_type === "fly_ball" || (!p.bb_type && p.launch_angle != null && p.launch_angle >= 25 && isInPlay),
     is_line_drive: p.bb_type === "line_drive",
     is_popup: p.bb_type === "popup",
-    is_barrel: (p.launch_speed != null && p.launch_angle != null && isInPlay &&
-      p.launch_speed >= 98 && p.launch_angle >= 26 && p.launch_angle <= 30) ||
-      (p.launch_speed != null && p.launch_angle != null && isInPlay &&
-      p.launch_speed >= 98 + (p.launch_angle - 26) * 0.5 && p.launch_angle > 30 && p.launch_angle <= 50),
+    // Exact Statcast barrel definition (per MLB.com glossary).
+    // Each integer mph of EV from 98 to 116+ has its own LA window.
+    // Source: https://www.mlb.com/glossary/statcast/barrel
+    is_barrel: (() => {
+      if (!isInPlay || p.launch_speed == null || p.launch_angle == null) return false;
+      const ev = p.launch_speed, la = p.launch_angle;
+      if (ev < 98) return false;
+      // Hand-coded table: [lowerLA, upperLA] per integer mph from 98 to 116+
+      const table = {
+        98:  [26, 30], 99:  [25, 31], 100: [24, 33], 101: [23, 34],
+        102: [22, 35], 103: [21, 36], 104: [20, 37], 105: [19, 38],
+        106: [18, 39], 107: [17, 40], 108: [16, 41], 109: [15, 42],
+        110: [14, 43], 111: [13, 44], 112: [12, 45], 113: [11, 46],
+        114: [10, 47], 115: [9, 48],  116: [8, 50],
+      };
+      const evInt = Math.min(Math.floor(ev), 116);
+      const window = table[evInt];
+      if (!window) return false;
+      return la >= window[0] && la <= window[1];
+    })(),
     batter_hand: p.batter_hand || p.stand || "R",
     count: p.count || `${p.balls || 0}-${p.strikes || 0}`,
     batter_name: p.batter_name || "",
