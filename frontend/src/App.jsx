@@ -1577,20 +1577,42 @@ const computeSummaryStats = (rawPitches, hand) => {
 
   // Categorize PA outcomes
   let so = 0, bb = 0, hbp = 0, ibb = 0;
-  let earnedRuns = 0, runsInPlay = 0;
   let outs = 0;
   let gb = 0, fb = 0, pu = 0;
-  const isOut = ev => ["field_out","fieldout","flyout","groundout","lineout","pop_out","force_out","forceout","sac_fly","sac_bunt","sac_fly_double_play","fielders_choice","fielders_choice_out","field_error","catcher_interf"].includes(ev);
-  for (const p of paPitches) {
-    const ev = (p.events || "").toLowerCase();
-    if (ev.includes("strikeout")) { so += 1; outs += (ev === "strikeout_double_play" ? 2 : 1); }
+  // Robust out detection: catches all single-out events including common edge cases.
+  const isSingleOut = (ev) => {
+    if (!ev) return false;
+    if (ev === "field_out" || ev === "fieldout" || ev === "flyout" || ev === "groundout" ||
+        ev === "lineout" || ev === "pop_out" || ev === "force_out" || ev === "forceout" ||
+        ev === "sac_fly" || ev === "sac_bunt" || ev === "fielders_choice" ||
+        ev === "fielders_choice_out") return true;
+    return false;
+  };
+  // Iterate over ALL pitches (not just paPitches) to capture baserunning outs like caught_stealing
+  // that can occur mid-at-bat and don't end the PA but still consume an out.
+  for (const p of pitches) {
+    const ev = (p.events || "").toLowerCase().trim();
+    if (!ev) continue;
+    if (ev.includes("strikeout")) {
+      // Only count strikeout PA once (these end the at-bat)
+      if (ev === "strikeout_double_play") outs += 2;
+      else outs += 1;
+    } else if (isSingleOut(ev)) {
+      outs += 1;
+    } else if (ev === "double_play" || ev === "grounded_into_double_play" || ev === "sac_bunt_double_play" || ev === "sac_fly_double_play") {
+      outs += 2;
+    } else if (ev === "triple_play") {
+      outs += 3;
+    } else if (ev === "caught_stealing_2b" || ev === "caught_stealing_3b" || ev === "caught_stealing_home" ||
+               ev === "pickoff_1b" || ev === "pickoff_2b" || ev === "pickoff_3b" ||
+               ev === "pickoff_caught_stealing_2b" || ev === "pickoff_caught_stealing_3b" || ev === "pickoff_caught_stealing_home") {
+      outs += 1;
+    }
+    // PA-ending events (mutually exclusive with baserunning events above)
+    if (ev.includes("strikeout")) so += 1;
     else if (ev === "walk") bb += 1;
     else if (ev === "intent_walk") { bb += 1; ibb += 1; }
     else if (ev === "hit_by_pitch") hbp += 1;
-    else if (ev === "double_play" || ev === "grounded_into_double_play") outs += 2;
-    else if (ev === "triple_play") outs += 3;
-    else if (ev === "sac_bunt_double_play") outs += 2;
-    else if (isOut(ev)) outs += 1;
   }
   // Count GB/FB/PU from in-play pitches (using bb_type)
   for (const p of pitches) {
@@ -1642,20 +1664,60 @@ const computeSummaryStats = (rawPitches, hand) => {
   };
 };
 
-const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride }) => {
+const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStats }) => {
   const stats = useMemo(() => computeSummaryStats(rawPitches, hand), [rawPitches, hand]);
   if (!stats) return null;
-  // ERA from boxscores is unaffected by hand filter (it's a season-total stat),
-  // so we display the override only when hand === "all" to avoid misleading numbers.
+  // When hand="all" and we have boxscore truth-source numbers, use them. They are season totals
+  // (not split by hand), so they shouldn't be used when filtering by batter handedness.
+  const useBox = hand === "all" && boxStats && boxStats.batters_faced > 0;
   const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : stats.era;
+  const ipDisplay = (hand === "all" && ipOverride != null) ? ipOverride.toFixed(1) : stats.ip;
+  const gsDisplay = useBox ? boxStats.games_started : stats.gs;
+  let kPctDisplay = stats.kPct, bbPctDisplay = stats.bbPct, kbbPctDisplay = stats.kbbPct;
+  if (useBox) {
+    const bf = boxStats.batters_faced;
+    const k = boxStats.strikeouts;
+    const bb = boxStats.walks + boxStats.hit_batsmen; // BB% includes HBP per SIERA convention
+    const kPct = (k / bf) * 100;
+    const bbPct = (bb / bf) * 100;
+    kPctDisplay = `${kPct.toFixed(1)}%`;
+    bbPctDisplay = `${bbPct.toFixed(1)}%`;
+    kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
+  }
+  // SIERA needs accurate PA + GB/FB/PU. Recompute with boxscore PA when available.
+  let sieraDisplay = stats.siera;
+  if (useBox) {
+    // Use pitch-level GB/FB/PU counts (those are reliable from pitch data) but with boxscore PA
+    const filtered = rawPitches.filter(p => p.is_in_play);
+    let gb = 0, fb = 0, pu = 0;
+    for (const p of filtered) {
+      if (p.bb_type === "ground_ball") gb += 1;
+      else if (p.bb_type === "fly_ball") fb += 1;
+      else if (p.bb_type === "popup") pu += 1;
+    }
+    const bf = boxStats.batters_faced;
+    const kPct = boxStats.strikeouts / bf;
+    const bbPct = (boxStats.walks + boxStats.hit_batsmen) / bf;
+    const gbDiff = (gb - fb - pu) / bf;
+    const sign = gbDiff >= 0 ? 1 : -1;
+    const siera = 6.145
+                - 16.986 * kPct
+                + 11.434 * bbPct
+                -  1.858 * gbDiff
+                +  7.653 * (kPct * kPct)
+                + sign * 6.664 * (gbDiff * gbDiff)
+                + 10.130 * kPct * gbDiff
+                -  5.195 * bbPct * gbDiff;
+    sieraDisplay = siera.toFixed(2);
+  }
   const cells = [
-    { l: "GS", v: stats.gs },
-    { l: "IP", v: stats.ip },
+    { l: "GS", v: gsDisplay },
+    { l: "IP", v: ipDisplay },
     { l: "ERA", v: eraDisplay },
-    { l: "SIERA", v: stats.siera },
-    { l: "K%", v: stats.kPct },
-    { l: "BB%", v: stats.bbPct },
-    { l: "K-BB%", v: stats.kbbPct },
+    { l: "SIERA", v: sieraDisplay },
+    { l: "K%", v: kPctDisplay },
+    { l: "BB%", v: bbPctDisplay },
+    { l: "K-BB%", v: kbbPctDisplay },
   ];
   return (
     <div style={{ display: "flex", gap: "0", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "0", marginBottom: "12px", overflow: "hidden" }}>
@@ -1675,6 +1737,8 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride }) => {
 const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed }) => {
   const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
   const [era, setEra] = useState(null);
+  const [ipFromBox, setIpFromBox] = useState(null);
+  const [boxStats, setBoxStats] = useState(null);
 
   // Apply pitchOrder if provided: sort matching pitch types into the top table's order,
   // then append any additional pitch types not in the order at the bottom.
@@ -1694,21 +1758,30 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
     return ordered;
   }, [metrics, pitchOrder]);
 
-  // Bubble up the pitch order so the parent can pass it to the comparison table
+  // Always publish the canonical order based on the FULL pitch usage (hand="all"),
+  // not the currently filtered view, so toggling hand on the top table doesn't reshuffle the bottom.
+  const orderMetrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, "all") : null, [rawPitches]);
   useEffect(() => {
-    if (onComputed && metrics?.pitchTypeMetrics) {
-      onComputed(metrics.pitchTypeMetrics.map(r => r.name));
+    if (onComputed && orderMetrics?.pitchTypeMetrics) {
+      onComputed(orderMetrics.pitchTypeMetrics.map(r => r.name));
     }
-  }, [metrics]);
+  }, [orderMetrics]);
 
-  // Fetch real ERA from boxscores whenever the underlying pitch set changes
+  // Fetch real ERA + IP from boxscores whenever the underlying pitch set changes
   useEffect(() => {
     setEra(null);
+    setIpFromBox(null);
+    setBoxStats(null);
     if (!rawPitches || !pitcherId) return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
-    getPitcherEra(pitcherId, gamePks).then(r => { if (alive) setEra(r?.era ?? null); }).catch(() => {});
+    getPitcherEra(pitcherId, gamePks).then(r => {
+      if (!alive) return;
+      setEra(r?.era ?? null);
+      setIpFromBox(r?.innings ?? null);
+      setBoxStats(r ?? null);
+    }).catch(() => {});
     return () => { alive = false; };
   }, [rawPitches, pitcherId]);
 
@@ -1734,7 +1807,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
           ))}
         </div>
       </div>
-      <SummaryStatsBar rawPitches={rawPitches} hand={hand} C={C} eraOverride={era} />
+      <SummaryStatsBar rawPitches={rawPitches} hand={hand} C={C} eraOverride={era} ipOverride={ipFromBox} boxStats={boxStats} />
       {!allRow ? (
         <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No pitches match this filter.</div>
       ) : (

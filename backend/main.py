@@ -595,6 +595,11 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
     earned_runs = 0
     outs = 0
     games_with_data = 0
+    strikeouts = 0
+    walks = 0
+    hit_batsmen = 0
+    batters_faced = 0
+    games_started = 0
 
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(*[fetch_box(client, gpk) for gpk in pks])
@@ -622,6 +627,12 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
                 game_outs = 0
             earned_runs += int(er)
             outs += game_outs
+            strikeouts += int(stats.get("strikeOuts") or 0)
+            walks += int(stats.get("baseOnBalls") or 0)
+            hit_batsmen += int(stats.get("hitBatsmen") or 0)
+            batters_faced += int(stats.get("battersFaced") or 0)
+            if stats.get("gamesStarted"):
+                games_started += int(stats.get("gamesStarted"))
             games_with_data += 1
             break  # pitcher only on one side
 
@@ -634,6 +645,11 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
         "outs": outs,
         "innings": round(innings, 1),
         "games": games_with_data,
+        "games_started": games_started,
+        "strikeouts": strikeouts,
+        "walks": walks,
+        "hit_batsmen": hit_batsmen,
+        "batters_faced": batters_faced,
     }
     set_cache(cache_key, result)
     return result
