@@ -1533,6 +1533,312 @@ const StartersGrid = ({ C, logos, onSelect, isMobile }) => {
   );
 };
 
+// ─── Compare Page (full-season + comparison row) ───
+// All columns shown in one wide row. Order matches the user's requested layout.
+const COMPARE_COLS = [
+  { key: "name", label: "Pitch", align: "left", w: 130 },
+  { key: "count", label: "#", w: 50 },
+  { key: "avgVelo", label: "Velo", w: 55 },
+  { key: "maxVelo", label: "Max", w: 55 },
+  { key: "avgSpin", label: "Spin", w: 60 },
+  { key: "avgIVB", label: "IVB", w: 55 },
+  { key: "avgHB", label: "HB", w: 55 },
+  { key: "avgRelH", label: "RelH", w: 55 },
+  { key: "avgRelS", label: "RelS", w: 55 },
+  { key: "avgExt", label: "Ext", w: 55 },
+  { key: "strikeRate", label: "Strike%", w: 65 },
+  { key: "zoneRate", label: "Zone%", w: 60 },
+  { key: "cswRate", label: "CSW%", w: 60 },
+  { key: "calledStrikeRate", label: "CStr%", w: 60 },
+  { key: "swStrRate", label: "SwStr%", w: 65 },
+  { key: "whiffRate", label: "Whiff%", w: 65 },
+  { key: "chaseRate", label: "Chase%", w: 65 },
+  { key: "zoneWhiffRate", label: "ZWhiff%", w: 65 },
+  { key: "bipCount", label: "BIP", w: 50 },
+  { key: "gbRate", label: "GB%", w: 55 },
+  { key: "fbRate", label: "FB%", w: 55 },
+  { key: "barrelRate", label: "Barrel%", w: 65 },
+];
+
+const CompareTable = ({ metrics, label, sublabel, C, isMobile }) => {
+  if (!metrics) return null;
+  const allRow = metrics.allRow;
+  if (!allRow) return null;
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px", overflowX: "auto" }}>
+      <div style={{ marginBottom: "12px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>{label}</div>
+        {sublabel && <div style={{ fontSize: "11px", color: C.textDim, marginTop: "2px" }}>{sublabel}</div>}
+      </div>
+      <table style={{ width: "100%", minWidth: "1400px", borderCollapse: "collapse", fontSize: "12px" }}>
+        <thead>
+          <tr style={{ background: C.accentGlow }}>
+            {COMPARE_COLS.map(c => (
+              <th key={c.key} style={{
+                padding: "8px 6px",
+                textAlign: c.align || "right",
+                fontSize: "9.5px",
+                fontWeight: 700,
+                color: C.textDim,
+                letterSpacing: "0.5px",
+                textTransform: "uppercase",
+                borderBottom: `1px solid ${C.border}`,
+                whiteSpace: "nowrap",
+                width: c.w,
+              }}>{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.accentGlow + "33" }}>
+            {COMPARE_COLS.map(c => (
+              <td key={c.key} style={{
+                padding: "10px 6px",
+                textAlign: c.align || "right",
+                color: c.key === "name" ? C.accent : C.text,
+                fontWeight: c.key === "name" ? 700 : 500,
+                fontVariantNumeric: "tabular-nums",
+                whiteSpace: "nowrap",
+              }}>
+                {c.key === "name" ? "All" : (allRow[c.key] != null ? allRow[c.key] : "—")}
+              </td>
+            ))}
+          </tr>
+          {metrics.pitchTypeMetrics.map((row, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+              {COMPARE_COLS.map(c => (
+                <td key={c.key} style={{
+                  padding: "8px 6px",
+                  textAlign: c.align || "right",
+                  color: C.text,
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                }}>
+                  {c.key === "name"
+                    ? <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: row.color }} />
+                        {row.name}
+                      </span>
+                    : (row[c.key] != null ? row[c.key] : "—")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const ComparePage = ({ C, isMobile, teamLogos }) => {
+  const [searchValue, setSearchValue] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [pitcher, setPitcher] = useState(null); // { id, name, throws }
+  const [topData, setTopData] = useState(null);   // 2026 full season raw pitches
+  const [cmpData, setCmpData] = useState(null);   // comparison raw pitches
+  const [topLoading, setTopLoading] = useState(false);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [cmpMode, setCmpMode] = useState("2025"); // "2025" | "2026range"
+  const [cmpStart, setCmpStart] = useState("2026-03-26");
+  const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [errMsg, setErrMsg] = useState("");
+  const searchRef = useRef(null);
+
+  // Pitcher search
+  useEffect(() => {
+    if (searchValue.trim().length < 2) { setSearchResults([]); return; }
+    let alive = true;
+    const t = setTimeout(async () => {
+      try {
+        const data = await searchPitchers(searchValue);
+        if (alive) { setSearchResults(data || []); setSearchOpen(true); }
+      } catch { if (alive) setSearchResults([]); }
+    }, 200);
+    return () => { alive = false; clearTimeout(t); };
+  }, [searchValue]);
+
+  useEffect(() => {
+    const h = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) setSearchOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const loadPitcher = async (p) => {
+    setPitcher(p);
+    setSearchValue(p.name);
+    setSearchOpen(false);
+    setTopData(null);
+    setCmpData(null);
+    setErrMsg("");
+
+    setTopLoading(true);
+    try {
+      const raw = await getSeasonData(p.id); // parquet+live merged
+      setTopData(normAndFilter(raw || []));
+    } catch (e) {
+      console.error("Top load failed", e);
+      setErrMsg("Failed to load 2026 season data.");
+    }
+    setTopLoading(false);
+  };
+
+  const loadComparison = async () => {
+    if (!pitcher) return;
+    setCmpLoading(true);
+    setErrMsg("");
+    try {
+      if (cmpMode === "2025") {
+        // Use sampled endpoint to avoid timeouts on large 2025 seasons.
+        // Aggregates returned from server are not used here — we compute from sampled raw
+        // for column consistency with the top row. Sample size is large enough for reliable rates.
+        const result = await getStatcastSampled(pitcher.id, "2025-03-27", "2025-09-28", 200);
+        if (result.sampled && result.sampled.length > 0) {
+          setCmpData(normAndFilter(result.sampled));
+        } else {
+          setCmpData([]);
+          setErrMsg("No 2025 data available for this pitcher.");
+        }
+      } else {
+        // 2026 custom range — filter the already-loaded top data
+        if (!topData) return;
+        const filtered = topData.filter(p => p.game_date && p.game_date >= cmpStart && p.game_date <= cmpEnd);
+        setCmpData(filtered);
+      }
+    } catch (e) {
+      console.error("Comparison load failed", e);
+      setErrMsg("Comparison failed to load. Try again.");
+      setCmpData(null);
+    }
+    setCmpLoading(false);
+  };
+
+  const topMetrics = useMemo(() => topData ? computeMetrics(topData, "all") : null, [topData]);
+  const cmpMetrics = useMemo(() => cmpData ? computeMetrics(cmpData, "all") : null, [cmpData]);
+
+  const cmpLabel = cmpMode === "2025" ? "2025 Full Season (sampled)" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
+
+  return (
+    <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "20px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px" }}>Pitcher Compare</div>
+        <div style={{ fontSize: "12px", color: C.textDim }}>Search a pitcher to load their full 2026 stats, then compare to 2025 or a custom 2026 date range.</div>
+      </div>
+
+      {/* Search bar */}
+      <div ref={searchRef} style={{ position: "relative", marginBottom: "24px", maxWidth: "400px" }}>
+        <input
+          value={searchValue}
+          onChange={e => setSearchValue(e.target.value)}
+          onFocus={() => searchResults.length > 0 && setSearchOpen(true)}
+          placeholder="Search pitcher..."
+          style={{
+            width: "100%", padding: "10px 14px", fontSize: "13px",
+            background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+            color: C.text, fontFamily: "inherit",
+          }}
+        />
+        {searchOpen && searchResults.length > 0 && (
+          <div style={{
+            position: "absolute", top: "100%", left: 0, right: 0, marginTop: "4px",
+            background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+            maxHeight: "300px", overflowY: "auto", zIndex: 200,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+          }}>
+            {searchResults.slice(0, 12).map((r, i) => (
+              <div key={i} onClick={() => loadPitcher(r)} style={{
+                padding: "10px 14px", cursor: "pointer", fontSize: "12px", color: C.text,
+                borderBottom: i < searchResults.length - 1 ? `1px solid ${C.border}` : "none",
+              }} onMouseEnter={e => e.currentTarget.style.background = C.accentGlow}
+                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <strong>{r.name}</strong>
+                {r.team && <span style={{ color: C.textDim, marginLeft: "8px" }}>{r.team}</span>}
+                {r.throws && <span style={{ color: C.textDim, marginLeft: "8px" }}>({r.throws}HP)</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {pitcher && (
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ fontSize: "20px", fontWeight: 700, color: C.text }}>
+            {pitcher.name} {pitcher.throws && <span style={{ fontSize: "12px", color: C.textDim, marginLeft: "8px" }}>{pitcher.throws}HP</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Top section: full 2026 */}
+      {pitcher && topLoading && <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>Loading 2026 full season...</div>}
+      {pitcher && !topLoading && topData && topData.length === 0 && (
+        <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No 2026 data available for this pitcher.</div>
+      )}
+      {pitcher && !topLoading && topMetrics && (
+        <CompareTable
+          metrics={topMetrics}
+          label="Full 2026 Season (parquet + live)"
+          sublabel={`${topData.length} pitches`}
+          C={C}
+          isMobile={isMobile}
+        />
+      )}
+
+      {/* Bottom section: comparison */}
+      {pitcher && topData && (
+        <>
+          <div style={{ marginTop: "32px", marginBottom: "12px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim }}>Compare To</div>
+          </div>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "16px", flexWrap: "wrap" }}>
+            <select
+              value={cmpMode}
+              onChange={e => { setCmpMode(e.target.value); setCmpData(null); setErrMsg(""); }}
+              style={{
+                padding: "8px 12px", fontSize: "12px",
+                background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+                color: C.text, fontFamily: "inherit", cursor: "pointer",
+              }}
+            >
+              <option value="2025">Full 2025 Season</option>
+              <option value="2026range">Custom 2026 Range</option>
+            </select>
+            {cmpMode === "2026range" && (
+              <>
+                <input type="date" value={cmpStart} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
+                  onChange={e => setCmpStart(e.target.value)}
+                  style={{ padding: "8px 12px", fontSize: "12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", color: C.text, fontFamily: "inherit" }} />
+                <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
+                <input type="date" value={cmpEnd} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
+                  onChange={e => setCmpEnd(e.target.value)}
+                  style={{ padding: "8px 12px", fontSize: "12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", color: C.text, fontFamily: "inherit" }} />
+              </>
+            )}
+            <button onClick={loadComparison} disabled={cmpLoading} style={{
+              padding: "8px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "1px",
+              textTransform: "uppercase", background: C.accent, color: "#fff",
+              border: "none", borderRadius: "6px", cursor: cmpLoading ? "wait" : "pointer", fontFamily: "inherit",
+            }}>
+              {cmpLoading ? "Loading..." : "Load Comparison"}
+            </button>
+          </div>
+
+          {errMsg && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
+          {cmpLoading && <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>Loading comparison...</div>}
+          {!cmpLoading && cmpMetrics && (
+            <CompareTable
+              metrics={cmpMetrics}
+              label={cmpLabel}
+              sublabel={`${cmpData.length} pitches`}
+              C={C}
+              isMobile={isMobile}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
 // ─── Main App ───
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
@@ -1542,6 +1848,7 @@ export default function PitcherTracker() {
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
+  const [page, setPage] = useState("tracker"); // "tracker" | "compare"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
@@ -1750,6 +2057,15 @@ export default function PitcherTracker() {
             {!isMobile && <div style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px" }}>Live Statcast Tracking & Analytics</div>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
+              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }].map(p => (
+                <button key={p.k} onClick={() => setPage(p.k)} style={{
+                  padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
+                  background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
+                  border: "none", borderRadius: "4px", cursor: "pointer", fontFamily: "inherit",
+                }}>{p.l}</button>
+              ))}
+            </div>
             <a href="https://lancebroz.substack.com/subscribe" target="_blank" rel="noopener noreferrer" style={{
               display: "inline-flex", alignItems: "center", gap: "6px", background: "#FF6719", color: "#fff",
               fontSize: "10px", fontWeight: 700, letterSpacing: "0.5px", padding: isMobile ? "6px 10px" : "8px 16px", borderRadius: "6px",
@@ -1765,7 +2081,7 @@ export default function PitcherTracker() {
             <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />
           </div>
         </div>
-        {activePitcher && (
+        {page === "tracker" && activePitcher && (
           <div style={{ maxWidth: "1440px", margin: "0 auto", marginTop: "8px", textAlign: isMobile ? "left" : "right" }}>
             <div style={{ fontSize: isMobile ? "14px" : "16px", fontWeight: 700, color: C.text }}>
               {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
@@ -1800,7 +2116,7 @@ export default function PitcherTracker() {
           </button>
         </div>
 
-        {activePitcher && (
+        {page === "tracker" && activePitcher && (
           <>
             {/* View tabs */}
             <div style={{ display: "flex", marginBottom: "24px", borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
@@ -2032,8 +2348,11 @@ export default function PitcherTracker() {
           </>
         )}
 
-        {!activePitcher && (
+        {page === "tracker" && !activePitcher && (
           <StartersGrid C={C} logos={teamLogos} onSelect={handleSelectFromGame} isMobile={isMobile} />
+        )}
+        {page === "compare" && (
+          <ComparePage C={C} isMobile={isMobile} teamLogos={teamLogos} />
         )}
       </div>
 
