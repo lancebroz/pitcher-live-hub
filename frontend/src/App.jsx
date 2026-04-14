@@ -1672,9 +1672,34 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride }) => {
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId }) => {
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed }) => {
   const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
   const [era, setEra] = useState(null);
+
+  // Apply pitchOrder if provided: sort matching pitch types into the top table's order,
+  // then append any additional pitch types not in the order at the bottom.
+  const orderedPitchTypes = useMemo(() => {
+    if (!metrics?.pitchTypeMetrics) return [];
+    if (!pitchOrder || pitchOrder.length === 0) return metrics.pitchTypeMetrics;
+    const byName = new Map(metrics.pitchTypeMetrics.map(r => [r.name, r]));
+    const ordered = [];
+    const used = new Set();
+    for (const name of pitchOrder) {
+      if (byName.has(name)) { ordered.push(byName.get(name)); used.add(name); }
+    }
+    // Append pitches not in the top table's order
+    for (const r of metrics.pitchTypeMetrics) {
+      if (!used.has(r.name)) ordered.push(r);
+    }
+    return ordered;
+  }, [metrics, pitchOrder]);
+
+  // Bubble up the pitch order so the parent can pass it to the comparison table
+  useEffect(() => {
+    if (onComputed && metrics?.pitchTypeMetrics) {
+      onComputed(metrics.pitchTypeMetrics.map(r => r.name));
+    }
+  }, [metrics]);
 
   // Fetch real ERA from boxscores whenever the underlying pitch set changes
   useEffect(() => {
@@ -1749,7 +1774,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
               </td>
             ))}
           </tr>
-          {metrics.pitchTypeMetrics.map((row, i) => (
+          {orderedPitchTypes.map((row, i) => (
             <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
               {COMPARE_COLS.map(c => (
                 <td key={c.key} style={{
@@ -1793,6 +1818,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [errMsg, setErrMsg] = useState("");
   const [topHand, setTopHand] = useState("all");
   const [cmpHand, setCmpHand] = useState("all");
+  const [topPitchOrder, setTopPitchOrder] = useState([]);
   const searchRef = useRef(null);
 
   // Pitcher search
@@ -1839,12 +1865,12 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setErrMsg("");
     try {
       if (cmpMode === "2025") {
-        // Use sampled endpoint to avoid timeouts on large 2025 seasons.
-        // Aggregates returned from server are not used here — we compute from sampled raw
-        // for column consistency with the top row. Sample size is large enough for reliable rates.
-        const result = await getStatcastSampled(pitcher.id, "2025-03-27", "2025-09-28", 200);
-        if (result.sampled && result.sampled.length > 0) {
-          setCmpData(normAndFilter(result.sampled));
+        // Use FULL statcast data (not sampled). Compare tab only renders one wide
+        // row of aggregated numbers, so 3000+ pitches don't overload anything —
+        // and sampling distorts PA-derived stats like K%, BB%, IP, SIERA.
+        const raw = await getStatcast(pitcher.id, "2025-03-27", "2025-09-28");
+        if (raw && raw.length > 0) {
+          setCmpData(normAndFilter(raw));
         } else {
           setCmpData([]);
           setErrMsg("No 2025 data available for this pitcher.");
@@ -1933,6 +1959,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           hand={topHand}
           onHandChange={setTopHand}
           pitcherId={pitcher.id}
+          onComputed={setTopPitchOrder}
         />
       )}
 
@@ -1987,6 +2014,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hand={cmpHand}
               onHandChange={setCmpHand}
               pitcherId={pitcher.id}
+              pitchOrder={topPitchOrder}
             />
           )}
         </>
