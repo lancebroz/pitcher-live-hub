@@ -874,6 +874,10 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
       const s = (t - 0.8) / 0.2; return [255, Math.round(128 * (1 - s)), 0];
     };
     const imgData = ctx.createImageData(w, h);
+    // Fill background with deep blue (matches low-frequency areas in reference image)
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      imgData.data[i] = 0; imgData.data[i + 1] = 0; imgData.data[i + 2] = 200; imgData.data[i + 3] = 200;
+    }
     for (let py = 0; py < h; py++) {
       for (let px = 0; px < w; px++) {
         const gxf = (px / w) * (gridW - 1), gyf = (py / h) * (gridH - 1);
@@ -882,11 +886,11 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
         const fx = gxf - gx0, fy = gyf - gy0;
         const val = (grid[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + grid[gy0 * gridW + gx1] * fx * (1 - fy) + grid[gy1 * gridW + gx0] * (1 - fx) * fy + grid[gy1 * gridW + gx1] * fx * fy) / maxVal;
         const idx = (py * w + px) * 4;
-        if (val > 0.015) {
-          const [r, g, b] = colorRamp(Math.pow(Math.min(val, 1), 0.7));
-          imgData.data[idx] = r; imgData.data[idx + 1] = g; imgData.data[idx + 2] = b;
-          imgData.data[idx + 3] = Math.min(Math.pow(val, 0.5) * 1.8, 0.88) * 255;
-        }
+        // Always paint with the ramp — low values get blue, higher values warm up
+        const t = Math.pow(Math.min(val, 1), 0.7);
+        const [r, g, b] = colorRamp(t);
+        imgData.data[idx] = r; imgData.data[idx + 1] = g; imgData.data[idx + 2] = b;
+        imgData.data[idx + 3] = 220;
       }
     }
     ctx.putImageData(imgData, 0, 0);
