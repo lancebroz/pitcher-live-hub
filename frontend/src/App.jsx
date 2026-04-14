@@ -1863,6 +1863,11 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     if (!pitcher) return;
     setCmpLoading(true);
     setErrMsg("");
+    // Hard timeout: if a fetch takes more than 60s, give up so the spinner doesn't hang forever.
+    const timeoutId = setTimeout(() => {
+      setCmpLoading(false);
+      setErrMsg("Comparison fetch timed out after 60s. Try again or pick a smaller range.");
+    }, 60000);
     try {
       if (cmpMode === "2025") {
         // Use FULL statcast data (not sampled). Compare tab only renders one wide
@@ -1886,6 +1891,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       setErrMsg("Comparison failed to load. Try again.");
       setCmpData(null);
     }
+    clearTimeout(timeoutId);
     setCmpLoading(false);
   };
 

@@ -439,6 +439,20 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "swing_length": safe_float("swing_length"),
         })
 
+    # Fill in missing pitch_type from pitch_name (Savant sometimes returns blank codes)
+    PITCH_NAME_MAP = {
+        "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
+        "Sinker": "SI", "Cutter": "FC",
+        "Slider": "SL", "Sweeper": "ST", "Slurve": "SV",
+        "Curveball": "CU", "Knuckle Curve": "KC",
+        "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS",
+        "Screwball": "SC", "Forkball": "FO", "Knuckleball": "KN",
+        "Eephus": "EP",
+    }
+    for p in pitches:
+        if not p.get("pitch_type") and p.get("pitch_name"):
+            p["pitch_type"] = PITCH_NAME_MAP.get(p["pitch_name"], (p["pitch_name"][:2].upper() if p["pitch_name"] else "UN"))
+
     set_cache(cache_key, pitches)
     return pitches
 
