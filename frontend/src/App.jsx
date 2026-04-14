@@ -1734,7 +1734,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed }) => {
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode }) => {
   const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
@@ -1852,9 +1852,31 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
               </td>
             ))}
           </tr>
-          {orderedPitchTypes.map((row, i) => (
-            <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
-              {COMPARE_COLS.map(c => (
+          {orderedPitchTypes.map((row, i) => {
+            const code = PITCH_ABBREV[row.name] || row.name;
+            const isHovered = hoveredCode === code;
+            // Convert hex color to rgba with 20% opacity for highlight wash
+            const hexToRgba = (hex, a) => {
+              if (!hex || hex[0] !== "#") return `rgba(0,0,0,${a})`;
+              const h = hex.length === 4 ? hex.replace(/(.)/g, "$1$1") : hex;
+              const r = parseInt(h.slice(1, 3), 16);
+              const g = parseInt(h.slice(3, 5), 16);
+              const b = parseInt(h.slice(5, 7), 16);
+              return `rgba(${r},${g},${b},${a})`;
+            };
+            return (
+              <tr
+                key={i}
+                onMouseEnter={() => onHoverCode && onHoverCode(code)}
+                onMouseLeave={() => onHoverCode && onHoverCode(null)}
+                style={{
+                  borderBottom: `1px solid ${C.border}`,
+                  background: isHovered ? hexToRgba(row.color, 0.2) : "transparent",
+                  transition: "background 0.12s ease",
+                  cursor: "default",
+                }}
+              >
+                {COMPARE_COLS.map(c => (
                 <td key={c.key} style={{
                   padding: "8px 6px",
                   textAlign: c.align || "right",
@@ -1872,8 +1894,9 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                     : (row[c.key] != null ? row[c.key] : "—")}
                 </td>
               ))}
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       )}
@@ -1897,6 +1920,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [topHand, setTopHand] = useState("all");
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
+  const [hoveredCode, setHoveredCode] = useState(null);
   const searchRef = useRef(null);
 
   // Pitcher search
@@ -2044,6 +2068,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           onHandChange={setTopHand}
           pitcherId={pitcher.id}
           onComputed={setTopPitchOrder}
+          hoveredCode={hoveredCode}
+          onHoverCode={setHoveredCode}
         />
       )}
 
@@ -2099,6 +2125,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               onHandChange={setCmpHand}
               pitcherId={pitcher.id}
               pitchOrder={topPitchOrder}
+              hoveredCode={hoveredCode}
+              onHoverCode={setHoveredCode}
             />
           )}
         </>
@@ -2115,6 +2143,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [pitcher, setPitcher] = useState(null);
   const [year, setYear] = useState("2026");
   const [hand, setHand] = useState("all");
+  const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -2180,15 +2209,26 @@ const HeatmapsPage = ({ C, isMobile }) => {
     setSearchOpen(false);
   };
 
-  // Filter pitch data by hand and date range, then group by pitch_name
+  // Filter pitch data by hand, date range, and mode (frequency/whiffs/damage), then group by pitch_name
   const filteredGroups = useMemo(() => {
     if (!pitchData) return null;
+    const isXBH = (ev) => {
+      const e = (ev || "").toLowerCase();
+      return e === "double" || e === "triple" || e === "home_run";
+    };
+    const passesMode = (p) => {
+      if (hmMode === "frequency") return true;
+      if (hmMode === "whiffs") return (p.description || "").toLowerCase() === "swinging_strike";
+      if (hmMode === "damage") return isXBH(p.events);
+      return true;
+    };
     const filtered = pitchData.filter(p => {
       if (hand !== "all" && p.batter_hand !== hand) return false;
       if (year === "2026" && p.game_date) {
         if (p.game_date < startDate || p.game_date > endDate) return false;
       }
-      return p.plate_x != null && p.plate_z != null;
+      if (p.plate_x == null || p.plate_z == null) return false;
+      return passesMode(p);
     });
     const groups = new Map();
     for (const p of filtered) {
@@ -2196,14 +2236,13 @@ const HeatmapsPage = ({ C, isMobile }) => {
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push(p);
     }
-    // Sort by count descending so most-thrown pitch is first
     return Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length).map(([name, pitches]) => ({
       name,
       code: PITCH_ABBREV[name] || pitches[0]?.pitch_type || "—",
       color: getPitchColor(name),
       pitches,
     }));
-  }, [pitchData, hand, year, startDate, endDate]);
+  }, [pitchData, hand, year, startDate, endDate, hmMode]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
 
@@ -2287,6 +2326,19 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
+          {/* Mode toggle */}
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ k: "frequency", l: "Frequency" }, { k: "whiffs", l: "Whiffs" }, { k: "damage", l: "Damage" }].map(t => (
+              <button key={t.k} onClick={() => setHmMode(t.k)} style={{
+                background: hmMode === t.k ? C.accentGlow : "transparent",
+                border: `1px solid ${hmMode === t.k ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "6px 14px",
+                color: hmMode === t.k ? C.accent : C.textDim,
+                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.l}</button>
+            ))}
+          </div>
+
           {/* Date pickers (2026 only) */}
           {year === "2026" && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -2326,7 +2378,9 @@ const HeatmapsPage = ({ C, isMobile }) => {
       {/* Legend */}
       {filteredGroups && filteredGroups.length > 0 && (
         <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim }}>FREQUENCY</span>
+          <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
+            {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density" : "Extra-Base Hit Density"}
+          </span>
           <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
           <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
           <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
