@@ -430,6 +430,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "balls": row.get("balls", ""),
             "strikes": row.get("strikes", ""),
             "game_date": row.get("game_date", ""),
+            "game_pk": int(row.get("game_pk", "0")) if str(row.get("game_pk", "")).strip().isdigit() else 0,
             "inning": safe_float("inning"),
             "at_bat_number": safe_float("at_bat_number"),
             "events": row.get("events", ""),
@@ -543,6 +544,86 @@ MONTH_FILES = [
     "06_june.parquet", "07_july.parquet", "08_august.parquet",
     "09_september.parquet", "10_october.parquet",
 ]
+
+@app.get("/api/pitcher/{pitcher_id}/era")
+async def get_pitcher_era(pitcher_id: int, game_pks: str):
+    """
+    Computes ERA for a pitcher across the given game_pks (comma-separated).
+    Fetches each boxscore in parallel and sums earned runs / outs for this pitcher.
+    Cached per (pitcher_id, game_pks) for 5 minutes; per-game boxscores cached longer below.
+    """
+    import asyncio
+
+    cache_key = f"era:{pitcher_id}:{game_pks}"
+    cached = get_cached(cache_key, 300)
+    if cached:
+        return cached
+
+    pks = [int(x) for x in game_pks.split(",") if x.strip().isdigit()]
+    if not pks:
+        return {"era": None, "earned_runs": 0, "outs": 0, "innings": 0.0, "games": 0}
+
+    async def fetch_box(client, gpk):
+        # Per-game boxscore cache (3-day TTL since boxscores rarely change after Final)
+        bk = f"box:{gpk}"
+        b = get_cached(bk, 60 * 60 * 24 * 3)
+        if b:
+            return b
+        try:
+            r = await client.get(f"{MLB_BASE}/api/v1/game/{gpk}/boxscore", timeout=10)
+            data = r.json()
+            set_cache(bk, data)
+            return data
+        except Exception as e:
+            print(f"Boxscore fetch failed for {gpk}: {e}")
+            return None
+
+    earned_runs = 0
+    outs = 0
+    games_with_data = 0
+
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(*[fetch_box(client, gpk) for gpk in pks])
+
+    for box in results:
+        if not box:
+            continue
+        for side in ("home", "away"):
+            players = box.get("teams", {}).get(side, {}).get("players", {})
+            pdata = players.get(f"ID{pitcher_id}")
+            if not pdata:
+                continue
+            stats = pdata.get("stats", {}).get("pitching", {})
+            if not stats:
+                continue
+            er = stats.get("earnedRuns")
+            ip_str = stats.get("inningsPitched", "0.0")
+            if er is None:
+                continue
+            # Convert IP "X.Y" to outs (Y is 0/1/2)
+            try:
+                whole, rem = ip_str.split(".")
+                game_outs = int(whole) * 3 + int(rem)
+            except Exception:
+                game_outs = 0
+            earned_runs += int(er)
+            outs += game_outs
+            games_with_data += 1
+            break  # pitcher only on one side
+
+    innings = outs / 3.0
+    era = (earned_runs * 9.0 / innings) if innings > 0 else None
+
+    result = {
+        "era": round(era, 2) if era is not None else None,
+        "earned_runs": earned_runs,
+        "outs": outs,
+        "innings": round(innings, 1),
+        "games": games_with_data,
+    }
+    set_cache(cache_key, result)
+    return result
+
 
 @app.get("/api/pitcher/{pitcher_id}/season")
 async def get_season_data(pitcher_id: int):

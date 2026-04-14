@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -1538,6 +1538,7 @@ const StartersGrid = ({ C, logos, onSelect, isMobile }) => {
 const COMPARE_COLS = [
   { key: "name", label: "Pitch", align: "left", w: 130 },
   { key: "count", label: "#", w: 50 },
+  { key: "pitchPct", label: "Pitch%", w: 60 },
   { key: "avgVelo", label: "Velo", w: 55 },
   { key: "maxVelo", label: "Max", w: 55 },
   { key: "avgSpin", label: "Spin", w: 60 },
@@ -1560,16 +1561,158 @@ const COMPARE_COLS = [
   { key: "barrelRate", label: "Barrel%", w: 65 },
 ];
 
-const CompareTable = ({ metrics, label, sublabel, C, isMobile }) => {
-  if (!metrics) return null;
-  const allRow = metrics.allRow;
-  if (!allRow) return null;
+// Compute high-level pitcher stats (GS, IP, ERA, SIERA, K%, BB%, K-BB%) from raw pitches.
+// Filtered by batter handedness if hand !== "all".
+const computeSummaryStats = (rawPitches, hand) => {
+  if (!rawPitches || rawPitches.length === 0) return null;
+  const pitches = hand === "all" ? rawPitches : rawPitches.filter(p => p.batter_hand === hand);
+  if (pitches.length === 0) return null;
+
+  // Distinct game dates as a proxy for games started
+  const gs = new Set(pitches.filter(p => p.game_date).map(p => p.game_date)).size;
+
+  // Plate appearance ending pitches have a non-empty events field
+  const paPitches = pitches.filter(p => p.events && p.events.trim() !== "");
+  const pa = paPitches.length;
+
+  // Categorize PA outcomes
+  let so = 0, bb = 0, hbp = 0, ibb = 0;
+  let earnedRuns = 0, runsInPlay = 0;
+  let outs = 0;
+  let gb = 0, fb = 0, pu = 0;
+  const isOut = ev => ["field_out","fieldout","flyout","groundout","lineout","pop_out","force_out","forceout","sac_fly","sac_bunt","sac_fly_double_play","fielders_choice","fielders_choice_out","field_error","catcher_interf"].includes(ev);
+  for (const p of paPitches) {
+    const ev = (p.events || "").toLowerCase();
+    if (ev.includes("strikeout")) { so += 1; outs += (ev === "strikeout_double_play" ? 2 : 1); }
+    else if (ev === "walk") bb += 1;
+    else if (ev === "intent_walk") { bb += 1; ibb += 1; }
+    else if (ev === "hit_by_pitch") hbp += 1;
+    else if (ev === "double_play" || ev === "grounded_into_double_play") outs += 2;
+    else if (ev === "triple_play") outs += 3;
+    else if (ev === "sac_bunt_double_play") outs += 2;
+    else if (isOut(ev)) outs += 1;
+  }
+  // Count GB/FB/PU from in-play pitches (using bb_type)
+  for (const p of pitches) {
+    if (!p.is_in_play) continue;
+    if (p.bb_type === "ground_ball") gb += 1;
+    else if (p.bb_type === "fly_ball") fb += 1;
+    else if (p.bb_type === "popup") pu += 1;
+  }
+
+  const ipNum = outs / 3;
+  const ipWhole = Math.floor(ipNum);
+  const ipRem = outs % 3;
+  const ipStr = `${ipWhole}.${ipRem}`;
+
+  // We don't have earned runs directly. Use HR and run-scoring events as a rough proxy.
+  // Fall back to "—" for ERA since accurate ER tracking would need boxscore lookups.
+  const era = "—";
+
+  // Rates (BB% includes IBB and HBP per SIERA convention)
+  const bbAll = bb + hbp;
+  const kPct = pa > 0 ? (so / pa) : 0;
+  const bbPct = pa > 0 ? (bbAll / pa) : 0;
+  const kbbPct = kPct - bbPct;
+
+  // SIERA — classic Eric Seidman formula
+  let siera = null;
+  if (pa >= 1) {
+    const gbDiff = (gb - fb - pu) / pa;
+    const sign = gbDiff >= 0 ? 1 : -1;
+    siera = 6.145
+          - 16.986 * kPct
+          + 11.434 * bbPct
+          -  1.858 * gbDiff
+          +  7.653 * (kPct * kPct)
+          + sign * 6.664 * (gbDiff * gbDiff)
+          + 10.130 * kPct * gbDiff
+          -  5.195 * bbPct * gbDiff;
+  }
+
+  return {
+    gs,
+    ip: ipStr,
+    era,
+    siera: siera != null ? siera.toFixed(2) : "—",
+    kPct: pa > 0 ? `${(kPct * 100).toFixed(1)}%` : "—",
+    bbPct: pa > 0 ? `${(bbPct * 100).toFixed(1)}%` : "—",
+    kbbPct: pa > 0 ? `${(kbbPct * 100).toFixed(1)}%` : "—",
+    pa,
+  };
+};
+
+const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride }) => {
+  const stats = useMemo(() => computeSummaryStats(rawPitches, hand), [rawPitches, hand]);
+  if (!stats) return null;
+  // ERA from boxscores is unaffected by hand filter (it's a season-total stat),
+  // so we display the override only when hand === "all" to avoid misleading numbers.
+  const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : stats.era;
+  const cells = [
+    { l: "GS", v: stats.gs },
+    { l: "IP", v: stats.ip },
+    { l: "ERA", v: eraDisplay },
+    { l: "SIERA", v: stats.siera },
+    { l: "K%", v: stats.kPct },
+    { l: "BB%", v: stats.bbPct },
+    { l: "K-BB%", v: stats.kbbPct },
+  ];
+  return (
+    <div style={{ display: "flex", gap: "0", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "0", marginBottom: "12px", overflow: "hidden" }}>
+      {cells.map((c, i) => (
+        <div key={c.l} style={{
+          flex: 1, padding: "12px 10px", textAlign: "center",
+          borderRight: i < cells.length - 1 ? `1px solid ${C.border}` : "none",
+        }}>
+          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "4px" }}>{c.l}</div>
+          <div style={{ fontSize: "16px", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{c.v}</div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId }) => {
+  const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
+  const [era, setEra] = useState(null);
+
+  // Fetch real ERA from boxscores whenever the underlying pitch set changes
+  useEffect(() => {
+    setEra(null);
+    if (!rawPitches || !pitcherId) return;
+    const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
+    if (gamePks.length === 0) return;
+    let alive = true;
+    getPitcherEra(pitcherId, gamePks).then(r => { if (alive) setEra(r?.era ?? null); }).catch(() => {});
+    return () => { alive = false; };
+  }, [rawPitches, pitcherId]);
+
+  if (!rawPitches) return null;
+  const allRow = metrics?.allRow;
+  const filteredCount = metrics ? (hand === "all" ? rawPitches.length : rawPitches.filter(p => p.batter_hand === hand).length) : 0;
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px", overflowX: "auto" }}>
-      <div style={{ marginBottom: "12px" }}>
-        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>{label}</div>
-        {sublabel && <div style={{ fontSize: "11px", color: C.textDim, marginTop: "2px" }}>{sublabel}</div>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px", gap: "12px", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>{label}</div>
+          {sublabel && <div style={{ fontSize: "11px", color: C.textDim, marginTop: "2px" }}>{sublabel} {hand !== "all" && `(${filteredCount} vs ${hand}HH)`}</div>}
+        </div>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {[{ k: "all", l: "All" }, { k: "L", l: "vs LHH" }, { k: "R", l: "vs RHH" }].map(t => (
+            <button key={t.k} onClick={() => onHandChange(t.k)} style={{
+              background: hand === t.k ? C.accentGlow : "transparent",
+              border: `1px solid ${hand === t.k ? C.accent : C.border}`,
+              borderRadius: "4px", padding: "4px 10px",
+              color: hand === t.k ? C.accent : C.textDim,
+              fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            }}>{t.l}</button>
+          ))}
+        </div>
       </div>
+      <SummaryStatsBar rawPitches={rawPitches} hand={hand} C={C} eraOverride={era} />
+      {!allRow ? (
+        <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No pitches match this filter.</div>
+      ) : (
       <table style={{ width: "100%", minWidth: "1400px", borderCollapse: "collapse", fontSize: "12px" }}>
         <thead>
           <tr style={{ background: C.accentGlow }}>
@@ -1590,17 +1733,19 @@ const CompareTable = ({ metrics, label, sublabel, C, isMobile }) => {
           </tr>
         </thead>
         <tbody>
-          <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.accentGlow + "33" }}>
+          <tr style={{ borderBottom: `2px solid ${C.accent}`, background: C.accentGlow }}>
             {COMPARE_COLS.map(c => (
               <td key={c.key} style={{
-                padding: "10px 6px",
+                padding: "12px 6px",
                 textAlign: c.align || "right",
                 color: c.key === "name" ? C.accent : C.text,
-                fontWeight: c.key === "name" ? 700 : 500,
+                fontWeight: 700,
                 fontVariantNumeric: "tabular-nums",
                 whiteSpace: "nowrap",
               }}>
-                {c.key === "name" ? "All" : (allRow[c.key] != null ? allRow[c.key] : "—")}
+                {c.key === "name" ? "All"
+                  : c.key === "pitchPct" ? "100%"
+                  : (allRow[c.key] != null ? allRow[c.key] : "—")}
               </td>
             ))}
           </tr>
@@ -1619,6 +1764,8 @@ const CompareTable = ({ metrics, label, sublabel, C, isMobile }) => {
                         <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: row.color }} />
                         {row.name}
                       </span>
+                    : c.key === "pitchPct"
+                    ? (allRow.count > 0 ? `${Math.round((row.count / allRow.count) * 100)}%` : "—")
                     : (row[c.key] != null ? row[c.key] : "—")}
                 </td>
               ))}
@@ -1626,6 +1773,7 @@ const CompareTable = ({ metrics, label, sublabel, C, isMobile }) => {
           ))}
         </tbody>
       </table>
+      )}
     </div>
   );
 };
@@ -1643,6 +1791,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpStart, setCmpStart] = useState("2026-03-26");
   const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
   const [errMsg, setErrMsg] = useState("");
+  const [topHand, setTopHand] = useState("all");
+  const [cmpHand, setCmpHand] = useState("all");
   const searchRef = useRef(null);
 
   // Pitcher search
@@ -1773,13 +1923,16 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       {pitcher && !topLoading && topData && topData.length === 0 && (
         <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No 2026 data available for this pitcher.</div>
       )}
-      {pitcher && !topLoading && topMetrics && (
+      {pitcher && !topLoading && topData && topData.length > 0 && (
         <CompareTable
-          metrics={topMetrics}
+          rawPitches={topData}
           label="Full 2026 Season (parquet + live)"
           sublabel={`${topData.length} pitches`}
           C={C}
           isMobile={isMobile}
+          hand={topHand}
+          onHandChange={setTopHand}
+          pitcherId={pitcher.id}
         />
       )}
 
@@ -1824,13 +1977,16 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
 
           {errMsg && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
           {cmpLoading && <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>Loading comparison...</div>}
-          {!cmpLoading && cmpMetrics && (
+          {!cmpLoading && cmpData && cmpData.length > 0 && (
             <CompareTable
-              metrics={cmpMetrics}
+              rawPitches={cmpData}
               label={cmpLabel}
               sublabel={`${cmpData.length} pitches`}
               C={C}
               isMobile={isMobile}
+              hand={cmpHand}
+              onHandChange={setCmpHand}
+              pitcherId={pitcher.id}
             />
           )}
         </>
