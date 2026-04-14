@@ -1742,28 +1742,33 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
 
   // Apply pitchOrder if provided: sort matching pitch types into the top table's order,
   // then append any additional pitch types not in the order at the bottom.
+  // Match by canonical abbreviation (e.g. "FF") rather than display name, so that
+  // "Four-Seam Fastball" (parquet) and "4-Seam Fastball" (Savant) align correctly.
   const orderedPitchTypes = useMemo(() => {
     if (!metrics?.pitchTypeMetrics) return [];
     if (!pitchOrder || pitchOrder.length === 0) return metrics.pitchTypeMetrics;
-    const byName = new Map(metrics.pitchTypeMetrics.map(r => [r.name, r]));
+    const canon = (name) => PITCH_ABBREV[name] || name;
+    const byCode = new Map(metrics.pitchTypeMetrics.map(r => [canon(r.name), r]));
     const ordered = [];
     const used = new Set();
-    for (const name of pitchOrder) {
-      if (byName.has(name)) { ordered.push(byName.get(name)); used.add(name); }
+    for (const code of pitchOrder) {
+      if (byCode.has(code)) { ordered.push(byCode.get(code)); used.add(code); }
     }
     // Append pitches not in the top table's order
     for (const r of metrics.pitchTypeMetrics) {
-      if (!used.has(r.name)) ordered.push(r);
+      const code = canon(r.name);
+      if (!used.has(code)) ordered.push(r);
     }
     return ordered;
   }, [metrics, pitchOrder]);
 
   // Always publish the canonical order based on the FULL pitch usage (hand="all"),
   // not the currently filtered view, so toggling hand on the top table doesn't reshuffle the bottom.
+  // Publish abbreviation codes (FF, SL, etc.) so different display name spellings still match.
   const orderMetrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, "all") : null, [rawPitches]);
   useEffect(() => {
     if (onComputed && orderMetrics?.pitchTypeMetrics) {
-      onComputed(orderMetrics.pitchTypeMetrics.map(r => r.name));
+      onComputed(orderMetrics.pitchTypeMetrics.map(r => PITCH_ABBREV[r.name] || r.name));
     }
   }, [orderMetrics]);
 
