@@ -2023,6 +2023,263 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   );
 };
 
+// ─── Heatmaps Page (per-pitch-type heatmap grid) ───
+const HeatmapsPage = ({ C, isMobile }) => {
+  const [searchValue, setSearchValue] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [pitcher, setPitcher] = useState(null);
+  const [year, setYear] = useState("2026");
+  const [hand, setHand] = useState("all");
+  const [pitchData, setPitchData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
+  // 2026 date range filter
+  const [startDate, setStartDate] = useState("2026-03-26");
+  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const searchRef = useRef(null);
+
+  // Search
+  useEffect(() => {
+    if (searchValue.trim().length < 2) { setSearchResults([]); return; }
+    let alive = true;
+    const t = setTimeout(async () => {
+      try {
+        const data = await searchPitchers(searchValue);
+        if (alive) { setSearchResults(data || []); setSearchOpen(true); }
+      } catch { if (alive) setSearchResults([]); }
+    }, 200);
+    return () => { alive = false; clearTimeout(t); };
+  }, [searchValue]);
+
+  useEffect(() => {
+    const h = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) setSearchOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // Load data when pitcher or year changes
+  useEffect(() => {
+    if (!pitcher) return;
+    let alive = true;
+    const load = async () => {
+      setLoading(true);
+      setErrMsg("");
+      setPitchData(null);
+      try {
+        let raw = [];
+        if (year === "2026") {
+          raw = await getSeasonData(pitcher.id);
+        } else {
+          raw = await getStatcast(pitcher.id, "2025-03-27", "2025-09-28");
+        }
+        if (!alive) return;
+        if (raw && raw.length > 0) {
+          setPitchData(normAndFilter(raw));
+        } else {
+          setPitchData([]);
+          setErrMsg(`No ${year} data available for this pitcher.`);
+        }
+      } catch (e) {
+        console.error("Heatmaps load failed", e);
+        if (alive) setErrMsg("Failed to load data.");
+      }
+      if (alive) setLoading(false);
+    };
+    load();
+    return () => { alive = false; };
+  }, [pitcher, year]);
+
+  const loadPitcher = (p) => {
+    setPitcher(p);
+    setSearchValue(p.name);
+    setSearchOpen(false);
+  };
+
+  // Filter pitch data by hand and date range, then group by pitch_name
+  const filteredGroups = useMemo(() => {
+    if (!pitchData) return null;
+    const filtered = pitchData.filter(p => {
+      if (hand !== "all" && p.batter_hand !== hand) return false;
+      if (year === "2026" && p.game_date) {
+        if (p.game_date < startDate || p.game_date > endDate) return false;
+      }
+      return p.plate_x != null && p.plate_z != null;
+    });
+    const groups = new Map();
+    for (const p of filtered) {
+      const name = p.pitch_name || "Unknown";
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(p);
+    }
+    // Sort by count descending so most-thrown pitch is first
+    return Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length).map(([name, pitches]) => ({
+      name,
+      code: PITCH_ABBREV[name] || pitches[0]?.pitch_type || "—",
+      color: getPitchColor(name),
+      pitches,
+    }));
+  }, [pitchData, hand, year, startDate, endDate]);
+
+  const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
+
+  return (
+    <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "20px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px" }}>Heatmaps</div>
+        <div style={{ fontSize: "12px", color: C.textDim }}>Per-pitch-type pitch location heatmaps. Search a pitcher to load.</div>
+      </div>
+
+      {/* Search */}
+      <div ref={searchRef} style={{ position: "relative", marginBottom: "20px", maxWidth: "400px" }}>
+        <input
+          value={searchValue}
+          onChange={e => setSearchValue(e.target.value)}
+          onFocus={() => searchResults.length > 0 && setSearchOpen(true)}
+          placeholder="Search pitcher..."
+          style={{
+            width: "100%", padding: "10px 14px", fontSize: "13px",
+            background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+            color: C.text, fontFamily: "inherit",
+          }}
+        />
+        {searchOpen && searchResults.length > 0 && (
+          <div style={{
+            position: "absolute", top: "100%", left: 0, right: 0, marginTop: "4px",
+            background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+            maxHeight: "300px", overflowY: "auto", zIndex: 200,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+          }}>
+            {searchResults.slice(0, 12).map((r, i) => (
+              <div key={i} onClick={() => loadPitcher(r)} style={{
+                padding: "10px 14px", cursor: "pointer", fontSize: "12px", color: C.text,
+                borderBottom: i < searchResults.length - 1 ? `1px solid ${C.border}` : "none",
+              }} onMouseEnter={e => e.currentTarget.style.background = C.accentGlow}
+                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <strong>{r.name}</strong>
+                {r.team && <span style={{ color: C.textDim, marginLeft: "8px" }}>{r.team}</span>}
+                {r.throws && <span style={{ color: C.textDim, marginLeft: "8px" }}>({r.throws}HP)</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Pitcher header */}
+      {pitcher && (
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ fontSize: "20px", fontWeight: 700, color: C.text }}>
+            {pitcher.name}{pitcher.throws && <span style={{ fontSize: "12px", color: C.textDim, marginLeft: "8px" }}>{pitcher.throws}HP</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      {pitcher && (
+        <div style={{ display: "flex", gap: "16px", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
+          {/* Year toggle */}
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ k: "2026", l: "2026" }, { k: "2025", l: "2025" }].map(t => (
+              <button key={t.k} onClick={() => setYear(t.k)} style={{
+                background: year === t.k ? C.accentGlow : "transparent",
+                border: `1px solid ${year === t.k ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "6px 14px",
+                color: year === t.k ? C.accent : C.textDim,
+                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.l}</button>
+            ))}
+          </div>
+
+          {/* Hand toggle */}
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ k: "all", l: "All" }, { k: "L", l: "vs LHH" }, { k: "R", l: "vs RHH" }].map(t => (
+              <button key={t.k} onClick={() => setHand(t.k)} style={{
+                background: hand === t.k ? C.accentGlow : "transparent",
+                border: `1px solid ${hand === t.k ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "6px 14px",
+                color: hand === t.k ? C.accent : C.textDim,
+                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.l}</button>
+            ))}
+          </div>
+
+          {/* Date pickers (2026 only) */}
+          {year === "2026" && (
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Range</span>
+              <input type="date" value={startDate} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
+                onChange={e => setStartDate(e.target.value)}
+                style={{ padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px", color: C.text, fontFamily: "inherit" }} />
+              <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
+              <input type="date" value={endDate} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
+                onChange={e => setEndDate(e.target.value)}
+                style={{ padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px", color: C.text, fontFamily: "inherit" }} />
+            </div>
+          )}
+
+          {totalPitchCount > 0 && (
+            <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>{totalPitchCount} pitches</span>
+          )}
+        </div>
+      )}
+
+      {/* Loading / errors */}
+      {loading && <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>Loading {year} data...</div>}
+      {errMsg && !loading && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
+      {!loading && pitchData && totalPitchCount === 0 && pitcher && !errMsg && (
+        <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>No pitches match the current filters.</div>
+      )}
+
+      {/* Heatmap grid: max 4 across, additional rows wrap */}
+      {filteredGroups && filteredGroups.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
+          {filteredGroups.map(g => (
+            <HeatmapTile key={g.name} group={g} C={C} />
+          ))}
+        </div>
+      )}
+
+      {/* Legend */}
+      {filteredGroups && filteredGroups.length > 0 && (
+        <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim }}>FREQUENCY</span>
+          <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
+          <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
+          <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const HeatmapTile = ({ group, C }) => {
+  const containerRef = useRef(null);
+  const [size, setSize] = useState({ w: 220, h: 220 });
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0].contentRect;
+      setSize({ w: Math.floor(r.width * 2), h: Math.floor(r.width * 2) });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: group.color }} />
+          <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{group.name}</span>
+        </div>
+        <span style={{ fontSize: "10px", color: C.textDim, fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
+      </div>
+      <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
+        <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
+      </div>
+    </div>
+  );
+};
+
 // ─── Main App ───
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
@@ -2032,7 +2289,7 @@ export default function PitcherTracker() {
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
-  const [page, setPage] = useState("tracker"); // "tracker" | "compare"
+  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
@@ -2242,7 +2499,7 @@ export default function PitcherTracker() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
-              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }].map(p => (
+              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "heatmaps", l: "Heatmaps" }].map(p => (
                 <button key={p.k} onClick={() => setPage(p.k)} style={{
                   padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
                   background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
@@ -2262,7 +2519,7 @@ export default function PitcherTracker() {
               </svg>
               {isMobile ? "Substack" : "Subscribe to my Substack!"}
             </a>
-            <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />
+            {page === "tracker" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />}
           </div>
         </div>
         {page === "tracker" && activePitcher && (
@@ -2537,6 +2794,9 @@ export default function PitcherTracker() {
         )}
         {page === "compare" && (
           <ComparePage C={C} isMobile={isMobile} teamLogos={teamLogos} />
+        )}
+        {page === "heatmaps" && (
+          <HeatmapsPage C={C} isMobile={isMobile} />
         )}
       </div>
 
