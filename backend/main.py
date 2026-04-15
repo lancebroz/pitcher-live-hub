@@ -663,9 +663,17 @@ async def get_season_data(pitcher_id: int):
     """
     import pandas as pd
     import io
-    from datetime import datetime
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # Use Central Time with 8am rollover to match the frontend's date logic.
+    ct = ZoneInfo("America/Chicago")
+    ct_now = datetime.now(ct)
+    if ct_now.hour < 8:
+        ct_now = ct_now - timedelta(days=1)
+    today_str = ct_now.strftime("%Y-%m-%d")
+    # Also check yesterday's games in case a game spanned the rollover
+    yesterday_str = (ct_now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # ── Part 1: Parquet data (cached 5 min) ──
     parquet_cache_key = f"season_parquet:{pitcher_id}"
@@ -764,24 +772,30 @@ async def get_season_data(pitcher_id: int):
             set_cache(parquet_cache_key, parquet_pitches)
 
     # ── Part 2: Today's live data (cached 30 sec) ──
-    live_cache_key = f"season_live:{pitcher_id}:{today_str}"
+    live_cache_key = f"season_live:{pitcher_id}:{today_str}:{yesterday_str}"
     live_pitches = get_cached(live_cache_key, 30)
 
     if live_pitches is None:
         live_pitches = []
         try:
-            # Get today's schedule
-            async with httpx.AsyncClient() as client:
-                sched_resp = await client.get(
-                    f"{MLB_BASE}/api/v1/schedule?sportId=1&date={today_str}",
-                    timeout=10,
-                )
-                sched_data = sched_resp.json()
-
+            # Get today's AND yesterday's schedule (covers timezone edge cases
+            # where the server clock is ahead of local time)
             game_pks = []
-            for date_entry in sched_data.get("dates", []):
-                for game in date_entry.get("games", []):
-                    game_pks.append(game["gamePk"])
+            async with httpx.AsyncClient() as client:
+                for check_date in [today_str, yesterday_str]:
+                    try:
+                        sched_resp = await client.get(
+                            f"{MLB_BASE}/api/v1/schedule?sportId=1&date={check_date}",
+                            timeout=10,
+                        )
+                        sched_data = sched_resp.json()
+                        for date_entry in sched_data.get("dates", []):
+                            for game in date_entry.get("games", []):
+                                gpk = game["gamePk"]
+                                if gpk not in game_pks:
+                                    game_pks.append(gpk)
+                    except Exception:
+                        pass
 
             # Check each game for this pitcher's pitches
             async with httpx.AsyncClient() as client:
