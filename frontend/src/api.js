@@ -91,6 +91,12 @@ export async function getPitcherEra(pitcherId, gamePks) {
   return res.json();
 }
 
+export async function getPitcherInfo(pitcherId) {
+  const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/info`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function getSeasonData(pitcherId) {
   const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/season`);
   if (!res.ok) return [];

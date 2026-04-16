@@ -316,6 +316,72 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
     return pitches
 
 
+# ─── Route: Get pitcher bio info (height, weight, hand, etc) ───
+@app.get("/api/pitcher/{pitcher_id}/info")
+async def get_pitcher_info(pitcher_id: int):
+    """
+    Fetches biographical info for a pitcher from MLB's Stats API.
+    Returns height (both formatted string and total inches), weight, throwing hand,
+    batting side, birth date, age, primary position, and jersey number.
+    Cached for 7 days since this data rarely changes.
+    """
+    cache_key = f"pitcher_info:{pitcher_id}"
+    cached = get_cached(cache_key, 60 * 60 * 24 * 7)  # 7 days
+    if cached:
+        return cached
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{MLB_BASE}/api/v1/people/{pitcher_id}",
+                timeout=10,
+            )
+            data = resp.json()
+    except Exception as e:
+        print(f"Pitcher info fetch failed for {pitcher_id}: {e}")
+        return {"error": "Failed to fetch pitcher info", "id": pitcher_id}
+
+    people = data.get("people", [])
+    if not people:
+        return {"error": "Pitcher not found", "id": pitcher_id}
+
+    p = people[0]
+
+    # Parse height "6' 5\"" into total inches
+    height_str = p.get("height", "")
+    height_inches = None
+    try:
+        # Height can be like "6' 5\"" or "6'5\"" — handle both
+        cleaned = height_str.replace('"', '').replace("\\", "").strip()
+        if "'" in cleaned:
+            feet_part, inches_part = cleaned.split("'", 1)
+            height_inches = int(feet_part.strip()) * 12 + int(inches_part.strip() or "0")
+    except Exception:
+        height_inches = None
+
+    result = {
+        "id": p.get("id"),
+        "full_name": p.get("fullName"),
+        "first_name": p.get("firstName"),
+        "last_name": p.get("lastName"),
+        "jersey_number": p.get("primaryNumber"),
+        "height": height_str,           # formatted string like "6' 5\""
+        "height_inches": height_inches, # numeric total inches for math
+        "weight": p.get("weight"),      # integer pounds
+        "birth_date": p.get("birthDate"),
+        "birth_city": p.get("birthCity"),
+        "birth_country": p.get("birthCountry"),
+        "age": p.get("currentAge"),
+        "pitch_hand": (p.get("pitchHand") or {}).get("code"),       # "L" or "R"
+        "bat_side": (p.get("batSide") or {}).get("code"),           # "L", "R", or "S"
+        "position": (p.get("primaryPosition") or {}).get("abbreviation"),
+        "position_name": (p.get("primaryPosition") or {}).get("name"),
+        "active": p.get("active"),
+    }
+    set_cache(cache_key, result)
+    return result
+
+
 # ─── Route 5: Get Statcast data for historical queries ───
 @app.get("/api/pitcher/{pitcher_id}/statcast")
 async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
@@ -660,6 +726,22 @@ async def get_season_data(pitcher_id: int):
     """
     Fetches all 2026 season data for a pitcher.
     Combines parquet files (completed games) + today's live data.
+    Wrapped in a top-level try/except so any unexpected error returns an empty
+    list with a 200 rather than a 500, so one bad pitcher doesn't break the UI.
+    """
+    try:
+        return await _get_season_data_impl(pitcher_id)
+    except Exception as e:
+        import traceback
+        print(f"Season endpoint failed for pitcher {pitcher_id}: {e}")
+        traceback.print_exc()
+        return []
+
+
+async def _get_season_data_impl(pitcher_id: int):
+    """
+    Fetches all 2026 season data for a pitcher.
+    Combines parquet files (completed games) + today's live data.
     """
     import pandas as pd
     import io
@@ -707,7 +789,11 @@ async def get_season_data(pitcher_id: int):
 
         parquet_pitches = []
         if all_dfs:
-            combined = pd.concat(all_dfs, ignore_index=True)
+            try:
+                combined = pd.concat(all_dfs, ignore_index=True)
+            except Exception as e:
+                print(f"pd.concat failed for pitcher {pitcher_id}: {e}")
+                combined = pd.DataFrame()
 
             trajectory_map = {
                 "ground_ball": "ground_ball", "fly_ball": "fly_ball",
@@ -715,58 +801,71 @@ async def get_season_data(pitcher_id: int):
             }
 
             for _, row in combined.iterrows():
-                def safe(col):
-                    val = row.get(col)
-                    if val is None or (isinstance(val, float) and pd.isna(val)):
-                        return None
-                    return float(val) if isinstance(val, (int, float)) else val
+                try:
+                    def safe(col):
+                        val = row.get(col)
+                        if val is None or (isinstance(val, float) and pd.isna(val)):
+                            return None
+                        return float(val) if isinstance(val, (int, float)) else val
 
-                call_desc = str(row.get("call_description", "")).lower()
-                if "swinging" in call_desc and "strike" in call_desc:
-                    desc = "swinging_strike"
-                elif "called" in call_desc and "strike" in call_desc:
-                    desc = "called_strike"
-                elif "foul" in call_desc:
-                    desc = "foul"
-                elif "in play" in call_desc or "hit into play" in call_desc:
-                    desc = "hit_into_play"
-                else:
-                    desc = "ball"
+                    # Safe int coercion for game_pk (NaN → 0)
+                    gpk_raw = row.get("game_pk")
+                    if gpk_raw is None or (isinstance(gpk_raw, float) and pd.isna(gpk_raw)):
+                        game_pk_int = 0
+                    else:
+                        try: game_pk_int = int(gpk_raw)
+                        except Exception: game_pk_int = 0
 
-                parquet_pitches.append({
-                    "pitch_number": 0,
-                    "pitch_type": str(row.get("pitch_type", "")),
-                    "pitch_name": str(row.get("pitch_name", "")),
-                    "release_speed": safe("start_speed"),
-                    "release_spin_rate": safe("spin_rate"),
-                    "pfx_x": safe("pfx_x"),
-                    "pfx_z": safe("pfx_z"),
-                    "movement_source": "parquet",
-                    "plate_x": safe("plate_x"),
-                    "plate_z": safe("plate_z"),
-                    "release_pos_x": safe("release_x"),
-                    "release_pos_z": safe("release_z"),
-                    "release_extension": safe("extension"),
-                    "zone": safe("zone"),
-                    "description": desc,
-                    "is_in_play": bool(row.get("is_in_play", False)),
-                    "is_strike": bool(row.get("is_strike", False)),
-                    "is_ball": bool(row.get("is_ball", False)),
-                    "launch_speed": safe("launch_speed"),
-                    "launch_angle": safe("launch_angle"),
-                    "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
-                    "batter_name": str(row.get("batter_name", "")),
-                    "batter_hand": str(row.get("batter_hand", "")),
-                    "stand": str(row.get("batter_hand", "")),
-                    "p_throws": str(row.get("pitcher_hand", "")),
-                    "balls": str(row.get("balls", "")),
-                    "strikes": str(row.get("strikes", "")),
-                    "game_date": str(row.get("game_date", "")),
-                    "game_pk": int(row.get("game_pk", 0)) if row.get("game_pk") else 0,
-                    "inning": safe("inning"),
-                    "at_bat_number": safe("at_bat_number"),
-                    "events": str(row.get("events", "")),
-                })
+                    call_desc = str(row.get("call_description", "")).lower()
+                    if "swinging" in call_desc and "strike" in call_desc:
+                        desc = "swinging_strike"
+                    elif "called" in call_desc and "strike" in call_desc:
+                        desc = "called_strike"
+                    elif "foul" in call_desc:
+                        desc = "foul"
+                    elif "in play" in call_desc or "hit into play" in call_desc:
+                        desc = "hit_into_play"
+                    else:
+                        desc = "ball"
+
+                    parquet_pitches.append({
+                        "pitch_number": 0,
+                        "pitch_type": str(row.get("pitch_type", "")),
+                        "pitch_name": str(row.get("pitch_name", "")),
+                        "release_speed": safe("start_speed"),
+                        "release_spin_rate": safe("spin_rate"),
+                        "pfx_x": safe("pfx_x"),
+                        "pfx_z": safe("pfx_z"),
+                        "movement_source": "parquet",
+                        "plate_x": safe("plate_x"),
+                        "plate_z": safe("plate_z"),
+                        "release_pos_x": safe("release_x"),
+                        "release_pos_z": safe("release_z"),
+                        "release_extension": safe("extension"),
+                        "zone": safe("zone"),
+                        "description": desc,
+                        "is_in_play": bool(row.get("is_in_play", False)),
+                        "is_strike": bool(row.get("is_strike", False)),
+                        "is_ball": bool(row.get("is_ball", False)),
+                        "launch_speed": safe("launch_speed"),
+                        "launch_angle": safe("launch_angle"),
+                        "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
+                        "batter_name": str(row.get("batter_name", "")),
+                        "batter_hand": str(row.get("batter_hand", "")),
+                        "stand": str(row.get("batter_hand", "")),
+                        "p_throws": str(row.get("pitcher_hand", "")),
+                        "balls": str(row.get("balls", "")),
+                        "strikes": str(row.get("strikes", "")),
+                        "game_date": str(row.get("game_date", "")),
+                        "game_pk": game_pk_int,
+                        "inning": safe("inning"),
+                        "at_bat_number": safe("at_bat_number"),
+                        "events": str(row.get("events", "")),
+                    })
+                except Exception as row_err:
+                    # Skip malformed rows rather than crashing the whole endpoint
+                    print(f"Skipping row for pitcher {pitcher_id}: {row_err}")
+                    continue
 
         if parquet_pitches:
             set_cache(parquet_cache_key, parquet_pitches)
