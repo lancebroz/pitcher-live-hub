@@ -97,6 +97,18 @@ export async function getPitcherInfo(pitcherId) {
   return res.json();
 }
 
+export async function getPitcherDataQuality(pitcherId) {
+  const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/data-quality`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function getLeaderboard(batterHand = "all", pitchType = "all") {
+  const res = await fetch(`${API_BASE}/api/leaderboard?batter_hand=${batterHand}&pitch_type=${pitchType}`);
+  if (!res.ok) return { pitchers: [], pitch_types: [] };
+  return res.json();
+}
+
 export async function getSeasonData(pitcherId) {
   const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/season`);
   if (!res.ok) return [];

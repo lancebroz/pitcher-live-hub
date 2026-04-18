@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -2434,6 +2434,244 @@ const HeatmapTile = ({ group, C }) => {
   );
 };
 
+// ─── Leaderboard Page ───
+const LB_COLS = [
+  { key: "pitcher_name", label: "Pitcher", align: "left", w: 150, noSort: true },
+  { key: "pitcher_hand", label: "Th", w: 30, noSort: true },
+  { key: "total_pitches", label: "#", w: 45 },
+  { key: "avg_velo", label: "Velo", w: 50 },
+  { key: "max_velo", label: "Max", w: 50 },
+  { key: "avg_spin", label: "Spin", w: 55 },
+  { key: "avg_ivb", label: "IVB", w: 45 },
+  { key: "avg_hb", label: "HB", w: 45 },
+  { key: "strike_rate", label: "Str%", w: 50 },
+  { key: "zone_rate", label: "Zone%", w: 55 },
+  { key: "csw_rate", label: "CSW%", w: 55 },
+  { key: "cstr_rate", label: "CStr%", w: 55 },
+  { key: "swstr_rate", label: "SwStr%", w: 58 },
+  { key: "whiff_rate", label: "Whiff%", w: 58 },
+  { key: "chase_rate", label: "Chase%", w: 58 },
+  { key: "zone_whiff_rate", label: "ZWhiff%", w: 62 },
+  { key: "gb_rate", label: "GB%", w: 45 },
+  { key: "fb_rate", label: "FB%", w: 45 },
+  { key: "barrel_rate", label: "Barrel%", w: 60 },
+];
+
+const LeaderboardPage = ({ C, isMobile }) => {
+  const [data, setData] = useState(null);
+  const [pitchTypes, setPitchTypes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [pitcherHand, setPitcherHand] = useState("all");
+  const [batterHand, setBatterHand] = useState("all");
+  const [pitchType, setPitchType] = useState("all");
+  const [minPitches, setMinPitches] = useState(100);
+  const [role, setRole] = useState("all");
+  const [showAll, setShowAll] = useState(false);
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState(null); // "desc" | "asc" | null
+
+  // Fetch when backend-affecting filters change
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setShowAll(false);
+    getLeaderboard(batterHand, pitchType)
+      .then(r => {
+        if (!alive) return;
+        setData(r.pitchers || []);
+        setPitchTypes(r.pitch_types || []);
+      })
+      .catch(() => { if (alive) setData([]); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [batterHand, pitchType]);
+
+  // Client-side filter + sort
+  const displayData = useMemo(() => {
+    if (!data) return [];
+    let f = data;
+    if (pitcherHand !== "all") f = f.filter(p => p.pitcher_hand === pitcherHand);
+    if (role === "SP") f = f.filter(p => p.is_starter);
+    else if (role === "RP") f = f.filter(p => !p.is_starter);
+    f = f.filter(p => p.total_pitches >= minPitches);
+    if (sortCol && sortDir) {
+      f = [...f].sort((a, b) => {
+        const av = a[sortCol] ?? -Infinity;
+        const bv = b[sortCol] ?? -Infinity;
+        return sortDir === "desc" ? bv - av : av - bv;
+      });
+    }
+    return f;
+  }, [data, pitcherHand, role, minPitches, sortCol, sortDir]);
+
+  const shown = showAll ? displayData : displayData.slice(0, 50);
+  const totalCount = displayData.length;
+
+  const handleSort = (col) => {
+    if (sortCol !== col) { setSortCol(col); setSortDir("desc"); }
+    else if (sortDir === "desc") { setSortDir("asc"); }
+    else { setSortCol(null); setSortDir(null); }
+  };
+
+  const sortArrow = (col) => {
+    if (sortCol !== col) return "";
+    return sortDir === "desc" ? " ▼" : " ▲";
+  };
+
+  const pillBtn = (active, onClick, label) => (
+    <button onClick={onClick} style={{
+      background: active ? C.accentGlow : "transparent",
+      border: `1px solid ${active ? C.accent : C.border}`,
+      borderRadius: "4px", padding: "6px 12px",
+      color: active ? C.accent : C.textDim,
+      fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+    }}>{label}</button>
+  );
+
+  return (
+    <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1800px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "20px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px" }}>Leaderboard</div>
+        <div style={{ fontSize: "12px", color: C.textDim }}>2026 season pitcher stats from parquet data. Sortable columns, filterable by hand, role, pitch type.</div>
+      </div>
+
+      {/* Filter controls */}
+      <div style={{ display: "flex", gap: "16px", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
+        {/* Role */}
+        <div style={{ display: "flex", gap: "4px" }}>
+          {[{ k: "all", l: "All" }, { k: "SP", l: "SP" }, { k: "RP", l: "RP" }].map(t => (
+            <span key={t.k}>{pillBtn(role === t.k, () => setRole(t.k), t.l)}</span>
+          ))}
+        </div>
+
+        {/* Pitcher hand */}
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          <span style={{ fontSize: "10px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", marginRight: "2px" }}>Throws</span>
+          {[{ k: "all", l: "All" }, { k: "L", l: "LHP" }, { k: "R", l: "RHP" }].map(t => (
+            <span key={t.k}>{pillBtn(pitcherHand === t.k, () => setPitcherHand(t.k), t.l)}</span>
+          ))}
+        </div>
+
+        {/* Batter hand */}
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          <span style={{ fontSize: "10px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", marginRight: "2px" }}>vs</span>
+          {[{ k: "all", l: "All" }, { k: "L", l: "LHH" }, { k: "R", l: "RHH" }].map(t => (
+            <span key={t.k}>{pillBtn(batterHand === t.k, () => setBatterHand(t.k), t.l)}</span>
+          ))}
+        </div>
+
+        {/* Pitch type */}
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          <span style={{ fontSize: "10px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", marginRight: "2px" }}>Pitch</span>
+          <select value={pitchType} onChange={e => setPitchType(e.target.value)} style={{
+            padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: "4px", color: C.text, fontFamily: "inherit", cursor: "pointer",
+          }}>
+            <option value="all">All Types</option>
+            {pitchTypes.map(pt => <option key={pt} value={pt}>{pt}</option>)}
+          </select>
+        </div>
+
+        {/* Min pitches */}
+        <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+          <span style={{ fontSize: "10px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase", marginRight: "2px" }}>Min</span>
+          <select value={minPitches} onChange={e => setMinPitches(Number(e.target.value))} style={{
+            padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: "4px", color: C.text, fontFamily: "inherit", cursor: "pointer",
+          }}>
+            {[25, 50, 100, 200, 500].map(v => <option key={v} value={v}>{v} pitches</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Loading */}
+      {loading && <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>Loading leaderboard data...</div>}
+
+      {/* Table */}
+      {!loading && data && (
+        <>
+          <div style={{ fontSize: "11px", color: C.textDim, marginBottom: "8px" }}>
+            Showing {shown.length} of {totalCount} pitchers
+            {!showAll && totalCount > 50 && (
+              <span onClick={() => setShowAll(true)} style={{
+                color: C.accent, cursor: "pointer", marginLeft: "8px", textDecoration: "underline",
+              }}>Show all</span>
+            )}
+            {showAll && totalCount > 50 && (
+              <span onClick={() => setShowAll(false)} style={{
+                color: C.accent, cursor: "pointer", marginLeft: "8px", textDecoration: "underline",
+              }}>Show top 50</span>
+            )}
+          </div>
+
+          <div style={{ overflowX: "auto", borderRadius: "8px", border: `1px solid ${C.border}` }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", fontFamily: "inherit", minWidth: "1100px" }}>
+              <thead>
+                <tr style={{ background: C.surface }}>
+                  <th style={{ padding: "8px 6px", textAlign: "center", color: C.textDim, fontSize: "10px", fontWeight: 700, width: "30px", borderBottom: `2px solid ${C.accent}` }}>#</th>
+                  {LB_COLS.map(c => (
+                    <th key={c.key} onClick={() => !c.noSort && handleSort(c.key)} style={{
+                      padding: "8px 6px",
+                      textAlign: c.align || "right",
+                      color: sortCol === c.key ? C.accent : C.textDim,
+                      fontSize: "10px", fontWeight: 700, letterSpacing: "0.5px",
+                      cursor: c.noSort ? "default" : "pointer",
+                      whiteSpace: "nowrap",
+                      borderBottom: `2px solid ${C.accent}`,
+                      userSelect: "none",
+                      minWidth: `${c.w}px`,
+                    }}>
+                      {c.label}{!c.noSort && sortArrow(c.key)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((p, i) => (
+                  <tr key={p.pitcher_id} style={{
+                    borderBottom: `1px solid ${C.border}`,
+                    background: i % 2 === 0 ? "transparent" : `${C.surface}44`,
+                  }}>
+                    <td style={{ padding: "7px 6px", textAlign: "center", color: C.textDim, fontSize: "10px", fontVariantNumeric: "tabular-nums" }}>{i + 1}</td>
+                    {LB_COLS.map(c => (
+                      <td key={c.key} style={{
+                        padding: "7px 6px",
+                        textAlign: c.align || "right",
+                        color: C.text,
+                        fontVariantNumeric: "tabular-nums",
+                        whiteSpace: "nowrap",
+                        fontWeight: c.key === "pitcher_name" ? 600 : 400,
+                      }}>
+                        {c.key === "pitcher_name" ? p.pitcher_name
+                          : c.key === "pitcher_hand" ? p.pitcher_hand
+                          : (p[c.key] != null ? p[c.key] : "—")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!showAll && totalCount > 50 && (
+            <div style={{ textAlign: "center", marginTop: "12px" }}>
+              <button onClick={() => setShowAll(true)} style={{
+                padding: "8px 24px", fontSize: "11px", fontWeight: 600,
+                background: C.accentGlow, border: `1px solid ${C.accent}`,
+                borderRadius: "4px", color: C.accent, cursor: "pointer", fontFamily: "inherit",
+              }}>Show All {totalCount} Pitchers</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {!loading && data && totalCount === 0 && (
+        <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>No pitchers match the current filters.</div>
+      )}
+    </div>
+  );
+};
+
 // ─── Main App ───
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
@@ -2443,7 +2681,7 @@ export default function PitcherTracker() {
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
-  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps"
+  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps" | "leaderboard"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
@@ -2653,7 +2891,7 @@ export default function PitcherTracker() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
-              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "heatmaps", l: "Heatmaps" }].map(p => (
+              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
                 <button key={p.k} onClick={() => setPage(p.k)} style={{
                   padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
                   background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
@@ -2951,6 +3189,9 @@ export default function PitcherTracker() {
         )}
         {page === "heatmaps" && (
           <HeatmapsPage C={C} isMobile={isMobile} />
+        )}
+        {page === "leaderboard" && (
+          <LeaderboardPage C={C} isMobile={isMobile} />
         )}
       </div>
 

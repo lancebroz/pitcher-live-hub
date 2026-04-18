@@ -800,6 +800,10 @@ async def _get_season_data_impl(pitcher_id: int):
                 "line_drive": "line_drive", "popup": "popup",
             }
 
+            total_rows = len(combined)
+            skipped_rows = 0
+            skip_reasons = {}  # error_type_str -> count
+
             for _, row in combined.iterrows():
                 try:
                     def safe(col):
@@ -864,8 +868,17 @@ async def _get_season_data_impl(pitcher_id: int):
                     })
                 except Exception as row_err:
                     # Skip malformed rows rather than crashing the whole endpoint
-                    print(f"Skipping row for pitcher {pitcher_id}: {row_err}")
+                    skipped_rows += 1
+                    reason = f"{type(row_err).__name__}: {str(row_err)[:100]}"
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                     continue
+
+            # Log summary if any rows were skipped
+            if skipped_rows > 0:
+                pct = (skipped_rows / total_rows * 100) if total_rows > 0 else 0
+                print(f"[DATA QUALITY] Pitcher {pitcher_id}: skipped {skipped_rows}/{total_rows} rows ({pct:.1f}%)")
+                for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+                    print(f"  - {count}x: {reason}")
 
         if parquet_pitches:
             set_cache(parquet_cache_key, parquet_pitches)
@@ -1152,6 +1165,237 @@ async def get_starters_today(game_date: str = None):
 
     set_cache(cache_key, results)
     return results
+
+
+@app.get("/api/leaderboard")
+async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
+    """
+    Aggregated pitcher stats leaderboard for the 2026 season.
+    Reads all daily parquet files, groups by pitcher, computes rate stats.
+    Returns { pitchers: [...], pitch_types: [...] }.
+    """
+    import pandas as pd
+    import io
+    import asyncio
+    from datetime import datetime, timedelta
+
+    # ── Step 1: Load all parquet data (cached 10 min) ──
+    raw_key = "leaderboard_raw"
+    all_df = get_cached(raw_key, 600)
+
+    if all_df is None:
+        start = datetime(2026, 3, 26)
+        end = datetime.now()
+        dates = []
+        cur = start
+        while cur <= end:
+            dates.append(cur.strftime("%Y-%m-%d"))
+            cur += timedelta(days=1)
+
+        async def fetch_day(client, d):
+            try:
+                r = await client.get(f"{DAILY_BASE}/{d}.parquet", timeout=15)
+                if r.status_code == 200:
+                    return pd.read_parquet(io.BytesIO(r.content))
+            except Exception:
+                pass
+            return None
+
+        async with httpx.AsyncClient() as client:
+            raw_results = await asyncio.gather(*[fetch_day(client, d) for d in dates])
+
+        dfs = [df for df in raw_results if df is not None and len(df) > 0]
+        all_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        set_cache(raw_key, all_df)
+
+    if len(all_df) == 0:
+        return {"pitchers": [], "pitch_types": []}
+
+    # Available pitch types (before filtering)
+    all_pitch_types = sorted([str(pt) for pt in all_df["pitch_type"].dropna().unique() if str(pt).strip()])
+
+    # ── Step 2: Apply filters ──
+    df = all_df
+    if batter_hand != "all" and "batter_hand" in df.columns:
+        df = df[df["batter_hand"] == batter_hand]
+    if pitch_type != "all" and "pitch_type" in df.columns:
+        df = df[df["pitch_type"] == pitch_type]
+
+    if len(df) == 0:
+        return {"pitchers": [], "pitch_types": all_pitch_types}
+
+    # ── Step 3: Pre-compute columns ──
+    desc = df["call_description"].fillna("").str.lower()
+    df = df.copy()
+    df["_is_swing"] = desc.str.contains("swinging|foul|in play|missed", regex=True)
+    df["_is_swstr"] = desc.str.contains("swinging") & desc.str.contains("strike")
+    df["_is_cstr"] = desc.str.contains("called") & desc.str.contains("strike")
+
+    zone = pd.to_numeric(df["zone"], errors="coerce")
+    df["_in_zone"] = zone.isin(range(1, 10))
+    df["_out_zone"] = zone.isin(range(11, 15))
+    df["_is_chase"] = df["_out_zone"] & df["_is_swing"]
+    df["_zone_swing"] = df["_in_zone"] & df["_is_swing"]
+    df["_zone_swstr"] = df["_in_zone"] & df["_is_swstr"]
+    df["_is_ip"] = df["is_in_play"].fillna(False).astype(bool)
+
+    # Barrel detection
+    BARREL_TABLE = {
+        98:(26,30), 99:(25,31), 100:(24,33), 101:(23,34), 102:(22,35),
+        103:(21,36), 104:(20,37), 105:(19,38), 106:(18,39), 107:(17,40),
+        108:(16,41), 109:(15,42), 110:(14,43), 111:(13,44), 112:(12,45),
+        113:(11,46), 114:(10,47), 115:(9,48), 116:(8,50),
+    }
+    def _barrel(r):
+        if not r["_is_ip"]:
+            return False
+        ev, la = r.get("launch_speed"), r.get("launch_angle")
+        try:
+            if pd.isna(ev) or pd.isna(la) or ev < 98:
+                return False
+            w = BARREL_TABLE.get(min(int(ev), 116))
+            return w[0] <= la <= w[1] if w else False
+        except Exception:
+            return False
+    df["_is_barrel"] = df.apply(_barrel, axis=1)
+
+    traj = df["trajectory"].fillna("")
+    df["_is_gb"] = traj == "ground_ball"
+    df["_is_fb"] = traj == "fly_ball"
+
+    # ── Step 4: Group and aggregate ──
+    grouped = df.groupby("pitcher_id")
+    pitchers = []
+    for pid, g in grouped:
+        try:
+            n = len(g)
+            swings = int(g["_is_swing"].sum())
+            swstr = int(g["_is_swstr"].sum())
+            cstr = int(g["_is_cstr"].sum())
+            out_zone = int(g["_out_zone"].sum())
+            chases = int(g["_is_chase"].sum())
+            zone_swings = int(g["_zone_swing"].sum())
+            zone_swstr = int(g["_zone_swstr"].sum())
+            bip = int(g["_is_ip"].sum())
+            gb = int(g["_is_gb"].sum())
+            fb = int(g["_is_fb"].sum())
+            barrels = int(g["_is_barrel"].sum())
+
+            inning_col = pd.to_numeric(g["inning"], errors="coerce")
+            started_games = int(g.loc[inning_col == 1.0, "game_pk"].nunique()) if "game_pk" in g.columns else 0
+
+            velo = g["start_speed"].dropna()
+            spin = g["spin_rate"].dropna()
+            ivb = g["pfx_z"].dropna()
+            hb = g["pfx_x"].dropna()
+
+            pitchers.append({
+                "pitcher_id": int(pid),
+                "pitcher_name": str(g["pitcher_name"].iloc[0]) if "pitcher_name" in g.columns else "",
+                "pitcher_hand": str(g["pitcher_hand"].iloc[0]) if "pitcher_hand" in g.columns else "",
+                "total_pitches": n,
+                "games": int(g["game_pk"].nunique()) if "game_pk" in g.columns else 0,
+                "games_started": int(started_games),
+                "is_starter": started_games > 0,
+                "avg_velo": round(float(velo.mean()), 1) if len(velo) > 0 else None,
+                "max_velo": round(float(velo.max()), 1) if len(velo) > 0 else None,
+                "avg_spin": int(round(float(spin.mean()))) if len(spin) > 0 else None,
+                "avg_ivb": round(float(ivb.mean()), 1) if len(ivb) > 0 else None,
+                "avg_hb": round(float(hb.mean()), 1) if len(hb) > 0 else None,
+                "strike_rate": round(float(g["is_strike"].fillna(False).astype(bool).sum()) / n * 100, 1) if n > 0 else None,
+                "zone_rate": round(int(g["_in_zone"].sum()) / n * 100, 1) if n > 0 else None,
+                "csw_rate": round((cstr + swstr) / n * 100, 1) if n > 0 else None,
+                "cstr_rate": round(cstr / n * 100, 1) if n > 0 else None,
+                "swstr_rate": round(swstr / n * 100, 1) if n > 0 else None,
+                "whiff_rate": round(swstr / swings * 100, 1) if swings > 0 else None,
+                "chase_rate": round(chases / out_zone * 100, 1) if out_zone > 0 else None,
+                "zone_whiff_rate": round(zone_swstr / zone_swings * 100, 1) if zone_swings > 0 else None,
+                "bip": bip,
+                "gb_rate": round(gb / bip * 100, 1) if bip > 0 else None,
+                "fb_rate": round(fb / bip * 100, 1) if bip > 0 else None,
+                "barrel_rate": round(barrels / bip * 100, 1) if bip > 0 else None,
+            })
+        except Exception as e:
+            print(f"Leaderboard: skipping pitcher {pid}: {e}")
+            continue
+
+    pitchers.sort(key=lambda x: x["total_pitches"], reverse=True)
+    return {"pitchers": pitchers, "pitch_types": all_pitch_types}
+
+
+@app.get("/api/pitcher/{pitcher_id}/data-quality")
+async def get_data_quality(pitcher_id: int):
+    """
+    Returns data quality info for a pitcher's 2026 parquet data:
+    total rows in parquet vs. rows that would be skipped due to parse errors.
+    Useful for verifying that pitch counts are complete.
+    """
+    import pandas as pd
+    import io
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    ct = ZoneInfo("America/Chicago")
+    ct_now = datetime.now(ct)
+    start = datetime(2026, 3, 26)
+    end = ct_now.replace(tzinfo=None)
+
+    total_rows = 0
+    skipped_rows = 0
+    skip_reasons = {}
+    files_checked = 0
+    files_missing = 0
+
+    cur = start
+    async with httpx.AsyncClient() as client:
+        while cur <= end:
+            date_str = cur.strftime("%Y-%m-%d")
+            cur += timedelta(days=1)
+            try:
+                resp = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=15)
+                if resp.status_code != 200:
+                    files_missing += 1
+                    continue
+                files_checked += 1
+                df = pd.read_parquet(io.BytesIO(resp.content))
+                pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
+                if len(pitcher_df) == 0:
+                    continue
+
+                for _, row in pitcher_df.iterrows():
+                    total_rows += 1
+                    try:
+                        # Mirror the critical coercions from the season endpoint
+                        gpk_raw = row.get("game_pk")
+                        if gpk_raw is not None and not (isinstance(gpk_raw, float) and pd.isna(gpk_raw)):
+                            int(gpk_raw)
+                        # Try the numeric safe() coercion on key fields
+                        for col in ("start_speed", "spin_rate", "pfx_x", "pfx_z",
+                                    "plate_x", "plate_z", "release_x", "release_z",
+                                    "extension", "launch_speed", "launch_angle",
+                                    "inning", "at_bat_number", "zone"):
+                            val = row.get(col)
+                            if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                                if isinstance(val, (int, float)):
+                                    float(val)
+                    except Exception as row_err:
+                        skipped_rows += 1
+                        reason = f"{type(row_err).__name__}: {str(row_err)[:80]}"
+                        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            except Exception as e:
+                files_missing += 1
+                continue
+
+    return {
+        "pitcher_id": pitcher_id,
+        "files_checked": files_checked,
+        "files_missing": files_missing,
+        "total_rows": total_rows,
+        "clean_rows": total_rows - skipped_rows,
+        "skipped_rows": skipped_rows,
+        "skip_percentage": round((skipped_rows / total_rows * 100) if total_rows > 0 else 0, 2),
+        "skip_reasons": skip_reasons,
+    }
 
 
 @app.get("/api/debug/parquet")
