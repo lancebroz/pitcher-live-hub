@@ -1174,9 +1174,18 @@ async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
     Reads all daily parquet files, groups by pitcher, computes rate stats.
     Returns { pitchers: [...], pitch_types: [...] }.
     """
+    try:
+        return await _leaderboard_impl(batter_hand, pitch_type)
+    except Exception as e:
+        import traceback
+        print(f"Leaderboard endpoint failed: {e}")
+        traceback.print_exc()
+        return {"pitchers": [], "pitch_types": [], "error": str(e)}
+
+
+async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     import pandas as pd
     import io
-    import asyncio
     from datetime import datetime, timedelta
 
     # ── Step 1: Load all parquet data (cached 10 min) ──
@@ -1186,29 +1195,33 @@ async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
     if all_df is None:
         start = datetime(2026, 3, 26)
         end = datetime.now()
-        dates = []
-        cur = start
-        while cur <= end:
-            dates.append(cur.strftime("%Y-%m-%d"))
-            cur += timedelta(days=1)
 
-        async def fetch_day(client, d):
-            try:
-                r = await client.get(f"{DAILY_BASE}/{d}.parquet", timeout=15)
-                if r.status_code == 200:
-                    return pd.read_parquet(io.BytesIO(r.content))
-            except Exception:
-                pass
-            return None
-
+        all_dfs = []
+        fetched = 0
+        failed = 0
         async with httpx.AsyncClient() as client:
-            raw_results = await asyncio.gather(*[fetch_day(client, d) for d in dates])
+            cur = start
+            while cur <= end:
+                date_str = cur.strftime("%Y-%m-%d")
+                cur += timedelta(days=1)
+                try:
+                    r = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=15)
+                    if r.status_code == 200:
+                        df = pd.read_parquet(io.BytesIO(r.content))
+                        if len(df) > 0:
+                            all_dfs.append(df)
+                            fetched += 1
+                except Exception as e:
+                    failed += 1
+                    continue
 
-        dfs = [df for df in raw_results if df is not None and len(df) > 0]
-        all_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-        set_cache(raw_key, all_df)
+        print(f"[Leaderboard] Fetched {fetched} daily files, {failed} failed/missing")
+        all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+        if len(all_df) > 0:
+            set_cache(raw_key, all_df)
+            print(f"[Leaderboard] Total rows: {len(all_df)}, pitchers: {all_df['pitcher_id'].nunique()}")
 
-    if len(all_df) == 0:
+    if all_df is None or len(all_df) == 0:
         return {"pitchers": [], "pitch_types": []}
 
     # Available pitch types (before filtering)

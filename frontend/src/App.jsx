@@ -2507,6 +2507,26 @@ const LeaderboardPage = ({ C, isMobile }) => {
   const shown = showAll ? displayData : displayData.slice(0, 50);
   const totalCount = displayData.length;
 
+  // Compute average row from ALL filtered data (not just shown slice)
+  const avgRow = useMemo(() => {
+    if (displayData.length === 0) return null;
+    const numCols = LB_COLS.filter(c => c.key !== "pitcher_name" && c.key !== "pitcher_hand");
+    const avgs = {};
+    for (const col of numCols) {
+      const vals = displayData.map(p => p[col.key]).filter(v => v != null && v !== "—");
+      if (vals.length > 0) {
+        const sum = vals.reduce((a, b) => a + Number(b), 0);
+        const mean = sum / vals.length;
+        avgs[col.key] = col.key === "avg_spin" ? Math.round(mean) : Number(mean.toFixed(1));
+      } else {
+        avgs[col.key] = "—";
+      }
+    }
+    avgs.pitcher_name = "AVERAGE";
+    avgs.pitcher_hand = "";
+    return avgs;
+  }, [displayData]);
+
   const handleSort = (col) => {
     if (sortCol !== col) { setSortCol(col); setSortDir("desc"); }
     else if (sortDir === "desc") { setSortDir("asc"); }
@@ -2627,6 +2647,30 @@ const LeaderboardPage = ({ C, isMobile }) => {
                 </tr>
               </thead>
               <tbody>
+                {/* Frozen average row */}
+                {avgRow && (
+                  <tr style={{
+                    position: "sticky", top: 0, zIndex: 5,
+                    background: C.surface,
+                    borderBottom: `2px solid ${C.accent}`,
+                    fontWeight: 700,
+                  }}>
+                    <td style={{ padding: "7px 6px", textAlign: "center", color: C.accent, fontSize: "10px" }}>—</td>
+                    {LB_COLS.map(c => (
+                      <td key={c.key} style={{
+                        padding: "7px 6px",
+                        textAlign: c.align || "right",
+                        color: c.key === "pitcher_name" ? C.accent : C.text,
+                        fontVariantNumeric: "tabular-nums",
+                        whiteSpace: "nowrap",
+                        fontSize: c.key === "pitcher_name" ? "11px" : "12px",
+                        letterSpacing: c.key === "pitcher_name" ? "1.5px" : "0",
+                      }}>
+                        {avgRow[c.key] != null ? avgRow[c.key] : "—"}
+                      </td>
+                    ))}
+                  </tr>
+                )}
                 {shown.map((p, i) => (
                   <tr key={p.pitcher_id} style={{
                     borderBottom: `1px solid ${C.border}`,
