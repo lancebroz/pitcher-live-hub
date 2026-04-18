@@ -1219,6 +1219,10 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
         all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
         if len(all_df) > 0:
             set_cache(raw_key, all_df)
+            # Store the refresh timestamp in Chicago time
+            from zoneinfo import ZoneInfo
+            ct_now = datetime.now(ZoneInfo("America/Chicago"))
+            set_cache("leaderboard_updated", ct_now.strftime("%Y-%m-%d %I:%M %p CT"))
             print(f"[Leaderboard] Total rows: {len(all_df)}, pitchers: {all_df['pitcher_id'].nunique()}")
 
     if all_df is None or len(all_df) == 0:
@@ -1333,7 +1337,12 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
             continue
 
     pitchers.sort(key=lambda x: x["total_pitches"], reverse=True)
-    return {"pitchers": pitchers, "pitch_types": all_pitch_types}
+
+    # Get timestamps for the response
+    last_updated = get_cached("leaderboard_updated", 99999) or "—"
+    latest_date = str(all_df["game_date"].dropna().max()) if "game_date" in all_df.columns else "—"
+
+    return {"pitchers": pitchers, "pitch_types": all_pitch_types, "last_updated": last_updated, "latest_game_date": latest_date}
 
 
 @app.get("/api/pitcher/{pitcher_id}/data-quality")

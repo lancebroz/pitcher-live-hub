@@ -2460,6 +2460,7 @@ const LB_COLS = [
 const LeaderboardPage = ({ C, isMobile }) => {
   const [data, setData] = useState(null);
   const [pitchTypes, setPitchTypes] = useState([]);
+  const [lastUpdated, setLastUpdated] = useState("");
   const [loading, setLoading] = useState(false);
   const [pitcherHand, setPitcherHand] = useState("all");
   const [batterHand, setBatterHand] = useState("all");
@@ -2480,6 +2481,7 @@ const LeaderboardPage = ({ C, isMobile }) => {
         if (!alive) return;
         setData(r.pitchers || []);
         setPitchTypes(r.pitch_types || []);
+        setLastUpdated(r.last_updated || "");
       })
       .catch(() => { if (alive) setData([]); })
       .finally(() => { if (alive) setLoading(false); });
@@ -2553,6 +2555,9 @@ const LeaderboardPage = ({ C, isMobile }) => {
       <div style={{ marginBottom: "20px" }}>
         <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px" }}>Leaderboard</div>
         <div style={{ fontSize: "12px", color: C.textDim }}>2026 season pitcher stats from parquet data. Sortable columns, filterable by hand, role, pitch type.</div>
+        {lastUpdated && (
+          <div style={{ fontSize: "10px", color: C.textDim, marginTop: "4px", fontStyle: "italic" }}>Last updated: {lastUpdated}</div>
+        )}
       </div>
 
       {/* Filter controls */}
@@ -2925,7 +2930,7 @@ export default function PitcherTracker() {
   const displayMetrics = tableView === "stuff" ? stuffMetrics : metrics;
 
   return (
-    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'JetBrains Mono','SF Mono','Fira Code',monospace" }}>
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" }}>
       {/* Header */}
       <div style={{ background: theme === "dark" ? `linear-gradient(180deg,${C.surfaceAlt} 0%,${C.bg} 100%)` : C.surface, borderBottom: `1px solid ${C.border}`, padding: isMobile ? "12px 16px" : "16px 32px" }}>
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", maxWidth: "1440px", margin: "0 auto", gap: isMobile ? "10px" : "0" }}>
