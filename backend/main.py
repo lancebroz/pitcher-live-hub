@@ -1079,6 +1079,14 @@ async def _get_season_data_impl(pitcher_id: int):
     if removed > 0:
         print(f"[Season {pitcher_id}] Dedup: removed {removed} parquet rows, replaced by {len(live_pitches)} live rows")
 
+    # Strip any remaining parquet rows with no pitch classification (game_pk was 0/NaN
+    # so they couldn't be deduped, but the live merge already has their real data)
+    pre_strip = len(filtered_parquet)
+    filtered_parquet = [p for p in filtered_parquet if p.get("pitch_type") and p["pitch_type"] != "nan"]
+    stripped = pre_strip - len(filtered_parquet)
+    if stripped > 0:
+        print(f"[Season {pitcher_id}] Stripped {stripped} unclassified parquet rows (game_pk was 0, live data has replacements)")
+
     # Combine and re-number
     all_pitches = filtered_parquet + live_pitches
     for i, p in enumerate(all_pitches):
