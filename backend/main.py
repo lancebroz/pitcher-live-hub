@@ -680,18 +680,18 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
                 continue
             stats = pdata.get("stats", {}).get("pitching", {})
             if not stats:
+                print(f"[ERA {pitcher_id}] Found player in {side} but no pitching stats")
                 continue
-            er = stats.get("earnedRuns")
             ip_str = stats.get("inningsPitched", "0.0")
-            if er is None:
+            er = stats.get("earnedRuns")
+            if er is None and ip_str == "0.0":
                 continue
-            # Convert IP "X.Y" to outs (Y is 0/1/2)
             try:
-                whole, rem = ip_str.split(".")
+                whole, rem = str(ip_str).split(".")
                 game_outs = int(whole) * 3 + int(rem)
             except Exception:
                 game_outs = 0
-            earned_runs += int(er)
+            earned_runs += int(er or 0)
             outs += game_outs
             strikeouts += int(stats.get("strikeOuts") or 0)
             walks += int(stats.get("baseOnBalls") or 0)
@@ -717,6 +717,7 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
         "hit_batsmen": hit_batsmen,
         "batters_faced": batters_faced,
     }
+    print(f"[ERA {pitcher_id}] {len(pks)} game_pks requested, {games_with_data} found: K={strikeouts} BB={walks} BF={batters_faced} IP={round(innings,1)} ERA={result['era']}")
     set_cache(cache_key, result)
     return result
 

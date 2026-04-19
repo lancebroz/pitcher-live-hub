@@ -1948,6 +1948,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   }, [topData]);
 
   const searchRef = useRef(null);
+  const topEndPickerRef = useRef(null);
+  const cmpEndPickerRef = useRef(null);
 
   // Pitcher search
   useEffect(() => {
@@ -2117,9 +2119,12 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               </div>
               {topUseRange && (
                 <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                  <DatePickerWithHighlights value={topStart} onChange={setTopStart} pitchedDates={pitchedDates} C={C} label="Start" />
+                  <DatePickerWithHighlights value={topStart} onChange={setTopStart} pitchedDates={pitchedDates} C={C} label="Start"
+                    onAfterSelect={() => { if (topEndPickerRef.current) topEndPickerRef.current.querySelector("button").click(); }} />
                   <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
-                  <DatePickerWithHighlights value={topEnd} onChange={setTopEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                  <div ref={topEndPickerRef}>
+                    <DatePickerWithHighlights value={topEnd} onChange={setTopEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                  </div>
                 </div>
               )}
             </div>
@@ -2161,9 +2166,12 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
             </select>
             {cmpMode === "2026range" && (
               <>
-                <DatePickerWithHighlights value={cmpStart} onChange={setCmpStart} pitchedDates={pitchedDates} C={C} label="Start" />
+                <DatePickerWithHighlights value={cmpStart} onChange={setCmpStart} pitchedDates={pitchedDates} C={C} label="Start"
+                  onAfterSelect={() => { if (cmpEndPickerRef.current) cmpEndPickerRef.current.querySelector("button").click(); }} />
                 <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
-                <DatePickerWithHighlights value={cmpEnd} onChange={setCmpEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                <div ref={cmpEndPickerRef}>
+                  <DatePickerWithHighlights value={cmpEnd} onChange={setCmpEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                </div>
               </>
             )}
             <button onClick={loadComparison} disabled={cmpLoading} style={{
@@ -2214,6 +2222,13 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [startDate, setStartDate] = useState("2026-03-26");
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const searchRef = useRef(null);
+  const hmEndPickerRef = useRef(null);
+
+  // Compute pitched dates from loaded data for calendar highlighting
+  const pitchedDates = useMemo(() => {
+    if (!pitchData) return new Set();
+    return new Set(pitchData.map(p => p.game_date).filter(d => d && d !== "nan"));
+  }, [pitchData]);
 
   // Search
   useEffect(() => {
@@ -2299,12 +2314,20 @@ const HeatmapsPage = ({ C, isMobile }) => {
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push(p);
     }
-    return Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length).map(([name, pitches]) => ({
-      name,
-      code: PITCH_ABBREV[name] || pitches[0]?.pitch_type || "—",
-      color: getPitchColor(name),
-      pitches,
-    }));
+    // Canonical pitch type ordering (fastballs → offspeed → breaking)
+    const CANONICAL_ORDER = ["FF", "SI", "FC", "CH", "FS", "FO", "SC", "CU", "KC", "SL", "ST", "SV"];
+    const orderIndex = (code) => {
+      const idx = CANONICAL_ORDER.indexOf(code);
+      return idx >= 0 ? idx : 999; // unknown types go to end
+    };
+    return Array.from(groups.entries())
+      .map(([name, pitches]) => ({
+        name,
+        code: PITCH_ABBREV[name] || pitches[0]?.pitch_type || "—",
+        color: getPitchColor(name),
+        pitches,
+      }))
+      .sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
   }, [pitchData, hand, year, startDate, endDate, hmMode]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
@@ -2406,13 +2429,12 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {year === "2026" && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Range</span>
-              <input type="date" value={startDate} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
-                onChange={e => setStartDate(e.target.value)}
-                style={{ padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px", color: C.text, fontFamily: "inherit" }} />
+              <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start"
+                onAfterSelect={() => { if (hmEndPickerRef.current) hmEndPickerRef.current.querySelector("button").click(); }} />
               <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
-              <input type="date" value={endDate} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
-                onChange={e => setEndDate(e.target.value)}
-                style={{ padding: "6px 10px", fontSize: "11px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px", color: C.text, fontFamily: "inherit" }} />
+              <div ref={hmEndPickerRef}>
+                <DatePickerWithHighlights value={endDate} onChange={setEndDate} pitchedDates={pitchedDates} C={C} label="End" />
+              </div>
             </div>
           )}
 
