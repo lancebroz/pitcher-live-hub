@@ -832,10 +832,18 @@ async def _get_season_data_impl(pitcher_id: int):
                     else:
                         desc = "ball"
 
+                    # Safe string helper that converts NaN/None to empty string
+                    def safe_str(col, default=""):
+                        val = row.get(col, default)
+                        if val is None or (isinstance(val, float) and pd.isna(val)):
+                            return default
+                        s = str(val)
+                        return default if s.lower() == "nan" else s
+
                     parquet_pitches.append({
                         "pitch_number": 0,
-                        "pitch_type": str(row.get("pitch_type", "")),
-                        "pitch_name": str(row.get("pitch_name", "")),
+                        "pitch_type": safe_str("pitch_type"),
+                        "pitch_name": safe_str("pitch_name"),
                         "release_speed": safe("start_speed"),
                         "release_spin_rate": safe("spin_rate"),
                         "pfx_x": safe("pfx_x"),
@@ -853,18 +861,18 @@ async def _get_season_data_impl(pitcher_id: int):
                         "is_ball": bool(row.get("is_ball", False)),
                         "launch_speed": safe("launch_speed"),
                         "launch_angle": safe("launch_angle"),
-                        "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
-                        "batter_name": str(row.get("batter_name", "")),
-                        "batter_hand": str(row.get("batter_hand", "")),
-                        "stand": str(row.get("batter_hand", "")),
-                        "p_throws": str(row.get("pitcher_hand", "")),
-                        "balls": str(row.get("balls", "")),
-                        "strikes": str(row.get("strikes", "")),
-                        "game_date": str(row.get("game_date", "")),
+                        "bb_type": trajectory_map.get(safe_str("trajectory"), ""),
+                        "batter_name": safe_str("batter_name"),
+                        "batter_hand": safe_str("batter_hand"),
+                        "stand": safe_str("batter_hand"),
+                        "p_throws": safe_str("pitcher_hand"),
+                        "balls": safe_str("balls"),
+                        "strikes": safe_str("strikes"),
+                        "game_date": safe_str("game_date"),
                         "game_pk": game_pk_int,
                         "inning": safe("inning"),
                         "at_bat_number": safe("at_bat_number"),
-                        "events": str(row.get("events", "")),
+                        "events": safe_str("events"),
                     })
                 except Exception as row_err:
                     # Skip malformed rows rather than crashing the whole endpoint
@@ -884,15 +892,33 @@ async def _get_season_data_impl(pitcher_id: int):
             set_cache(parquet_cache_key, parquet_pitches)
 
     # ── Part 2: Today's live data (cached 30 sec) ──
+    # Smart approach: instead of fetching ALL games on today's schedule (15+ games,
+    # slow and error-prone), we identify which specific game_pks this pitcher is
+    # likely in, then fetch only those. Also detect incomplete parquet data
+    # (rows with no pitch_type = unclassified) and always re-fetch those games.
     live_cache_key = f"season_live:{pitcher_id}:{today_str}:{yesterday_str}"
     live_pitches = get_cached(live_cache_key, 30)
 
     if live_pitches is None:
         live_pitches = []
+
+        # Find game_pks from parquet that might need live data refresh:
+        # 1) Games from today/yesterday (might still be updating)
+        # 2) Games with incomplete data (no pitch_type = unclassified pitches)
+        target_game_pks = set()
+        for p in parquet_pitches:
+            gd = p.get("game_date", "")
+            gpk = p.get("game_pk", 0)
+            if gpk and (gd == today_str or gd == yesterday_str):
+                target_game_pks.add(gpk)
+            # Also flag games with unclassified pitches (NaN/empty pitch_type)
+            if gpk and (not p.get("pitch_type") or p.get("pitch_type") == ""):
+                target_game_pks.add(gpk)
+
+        # Also check today's and yesterday's schedule for NEW games not yet in parquet
+        # (only add game_pks NOT already fully represented in parquet)
+        parquet_game_pks = set(p.get("game_pk", 0) for p in parquet_pitches if p.get("game_pk"))
         try:
-            # Get today's AND yesterday's schedule (covers timezone edge cases
-            # where the server clock is ahead of local time)
-            game_pks = []
             async with httpx.AsyncClient() as client:
                 for check_date in [today_str, yesterday_str]:
                     try:
@@ -904,14 +930,20 @@ async def _get_season_data_impl(pitcher_id: int):
                         for date_entry in sched_data.get("dates", []):
                             for game in date_entry.get("games", []):
                                 gpk = game["gamePk"]
-                                if gpk not in game_pks:
-                                    game_pks.append(gpk)
+                                # Only add if this game_pk isn't already in parquet with complete data
+                                if gpk not in parquet_game_pks:
+                                    target_game_pks.add(gpk)
                     except Exception:
                         pass
+        except Exception:
+            pass
 
-            # Check each game for this pitcher's pitches
+        print(f"[Season {pitcher_id}] Live merge: {len(target_game_pks)} target game(s) to check")
+
+        # Now fetch only the targeted game feeds (typically 1-3 instead of 15+)
+        try:
             async with httpx.AsyncClient() as client:
-                for gpk in game_pks:
+                for gpk in target_game_pks:
                     try:
                         resp = await client.get(
                             f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
@@ -1019,6 +1051,7 @@ async def _get_season_data_impl(pitcher_id: int):
 
         if live_pitches:
             set_cache(live_cache_key, live_pitches)
+            print(f"[Season {pitcher_id}] Live merge found {len(live_pitches)} pitches from {len(set(p['game_pk'] for p in live_pitches))} game(s)")
 
     # ── Part 3: Merge with dedup ──
     # Get game_pks from live data to exclude from parquet
@@ -1028,10 +1061,14 @@ async def _get_season_data_impl(pitcher_id: int):
             live_game_pks.add(p["game_pk"])
 
     # Filter parquet to exclude games that are in live data (prevents double-counting)
+    pre_dedup = len(parquet_pitches)
     if live_game_pks:
         filtered_parquet = [p for p in parquet_pitches if p.get("game_pk", 0) not in live_game_pks]
     else:
         filtered_parquet = parquet_pitches
+    deduped = pre_dedup - len(filtered_parquet)
+    if deduped > 0:
+        print(f"[Season {pitcher_id}] Dedup removed {deduped} parquet pitches replaced by live data")
 
     # Combine and re-number
     all_pitches = filtered_parquet + live_pitches
