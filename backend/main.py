@@ -893,13 +893,27 @@ async def _get_season_data_impl(pitcher_id: int):
     if live_pitches is None:
         live_pitches = []
         try:
-            # Step 1: Find this pitcher's game_pks for today/yesterday from parquet
+            # Step 1: Find this pitcher's game_pks for today/yesterday from parquet,
+            # AND any game_pks with incomplete data (NaN pitch_type = needs live refresh)
             target_game_pks = set()
+            incomplete_game_pks = set()
             for p in parquet_pitches:
                 gpk = p.get("game_pk", 0)
+                if not gpk:
+                    continue
                 gd = p.get("game_date", "")
-                if gpk and gd in (today_str, yesterday_str):
+                # Handle game_date that might be "nan" from str(NaN)
+                if gd and gd != "nan" and gd in (today_str, yesterday_str):
                     target_game_pks.add(gpk)
+                # Any pitch with empty/nan pitch_type = incomplete parquet data
+                pt = p.get("pitch_type", "")
+                if not pt or pt == "nan":
+                    incomplete_game_pks.add(gpk)
+
+            # Always refresh incomplete games regardless of their date
+            target_game_pks.update(incomplete_game_pks)
+
+            print(f"[Season {pitcher_id}] Target game_pks: {target_game_pks} (incomplete: {incomplete_game_pks})")
 
             # Step 2: If no parquet data for today/yesterday (e.g. first game of season,
             # or pipeline hasn't run yet), fall back to schedule — but only fetch games
@@ -946,6 +960,7 @@ async def _get_season_data_impl(pitcher_id: int):
                             timeout=15,
                         )
                         feed = resp.json()
+                        print(f"[Season {pitcher_id}] Fetched live feed for game {gpk}: {resp.status_code}")
                     except Exception:
                         continue
 
@@ -1043,6 +1058,9 @@ async def _get_season_data_impl(pitcher_id: int):
 
         if live_pitches:
             set_cache(live_cache_key, live_pitches)
+            print(f"[Season {pitcher_id}] Live merge: {len(live_pitches)} classified pitches from game(s) {set(p['game_pk'] for p in live_pitches)}")
+        else:
+            print(f"[Season {pitcher_id}] Live merge: no pitches found")
 
     # ── Part 3: Merge with dedup ──
     # Get game_pks from live data to exclude from parquet
@@ -1052,10 +1070,14 @@ async def _get_season_data_impl(pitcher_id: int):
             live_game_pks.add(p["game_pk"])
 
     # Filter parquet to exclude games that are in live data (prevents double-counting)
+    pre_dedup = len(parquet_pitches)
     if live_game_pks:
         filtered_parquet = [p for p in parquet_pitches if p.get("game_pk", 0) not in live_game_pks]
     else:
         filtered_parquet = parquet_pitches
+    removed = pre_dedup - len(filtered_parquet)
+    if removed > 0:
+        print(f"[Season {pitcher_id}] Dedup: removed {removed} parquet rows, replaced by {len(live_pitches)} live rows")
 
     # Combine and re-number
     all_pitches = filtered_parquet + live_pitches
