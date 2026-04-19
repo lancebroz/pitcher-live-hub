@@ -1177,7 +1177,7 @@ const normalizeLivePitch = (p) => {
   };
 };
 
-const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other" && p.pitch_type.toLowerCase() !== "nan" && p.pitch_name.toLowerCase() !== "nan");
+const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other");
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
 const computeHistoricalSummary = (pitchData) => {
