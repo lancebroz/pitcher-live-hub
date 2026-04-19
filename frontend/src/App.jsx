@@ -1937,6 +1937,16 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
+  const [topStart, setTopStart] = useState("2026-03-26");
+  const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
+
+  // Compute pitched dates from topData for calendar highlighting
+  const pitchedDates = useMemo(() => {
+    if (!topData) return new Set();
+    return new Set(topData.map(p => p.game_date).filter(d => d && d !== "nan"));
+  }, [topData]);
+
   const searchRef = useRef(null);
 
   // Pitcher search
@@ -1965,6 +1975,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setTopData(null);
     setCmpData(null);
     setErrMsg("");
+    setTopUseRange(false);
+    setTopStart("2026-03-26");
+    setTopEnd(new Date().toISOString().slice(0, 10));
 
     setTopLoading(true);
     try {
@@ -2073,21 +2086,59 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       {pitcher && !topLoading && topData && topData.length === 0 && (
         <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No 2026 data available for this pitcher.</div>
       )}
-      {pitcher && !topLoading && topData && topData.length > 0 && (
-        <CompareTable
-          rawPitches={topData}
-          label="Full 2026 Season (parquet + live)"
-          sublabel={`${topData.length} pitches`}
-          C={C}
-          isMobile={isMobile}
-          hand={topHand}
-          onHandChange={setTopHand}
-          pitcherId={pitcher.id}
-          onComputed={setTopPitchOrder}
-          hoveredCode={hoveredCode}
-          onHoverCode={setHoveredCode}
-        />
-      )}
+      {pitcher && !topLoading && topData && topData.length > 0 && (() => {
+        // Apply date filter if custom range is active
+        const topFiltered = topUseRange
+          ? topData.filter(p => p.game_date && p.game_date >= topStart && p.game_date <= topEnd)
+          : topData;
+        const isFullSeason = !topUseRange;
+        const topLabel = isFullSeason
+          ? "Full 2026 Season (parquet + live)"
+          : `2026 Custom Range (${topStart} to ${topEnd})`;
+        return (
+          <>
+            {/* Date range controls */}
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: "4px" }}>
+                <button onClick={() => setTopUseRange(false)} style={{
+                  background: !topUseRange ? C.accentGlow : "transparent",
+                  border: `1px solid ${!topUseRange ? C.accent : C.border}`,
+                  borderRadius: "4px", padding: "6px 14px",
+                  color: !topUseRange ? C.accent : C.textDim,
+                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}>Full Season</button>
+                <button onClick={() => setTopUseRange(true)} style={{
+                  background: topUseRange ? C.accentGlow : "transparent",
+                  border: `1px solid ${topUseRange ? C.accent : C.border}`,
+                  borderRadius: "4px", padding: "6px 14px",
+                  color: topUseRange ? C.accent : C.textDim,
+                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}>Custom Range</button>
+              </div>
+              {topUseRange && (
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <DatePickerWithHighlights value={topStart} onChange={setTopStart} pitchedDates={pitchedDates} C={C} label="Start" />
+                  <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
+                  <DatePickerWithHighlights value={topEnd} onChange={setTopEnd} pitchedDates={pitchedDates} C={C} label="End" />
+                </div>
+              )}
+            </div>
+            <CompareTable
+              rawPitches={topFiltered}
+              label={topLabel}
+              sublabel={`${topFiltered.length} pitches`}
+              C={C}
+              isMobile={isMobile}
+              hand={topHand}
+              onHandChange={setTopHand}
+              pitcherId={pitcher.id}
+              onComputed={setTopPitchOrder}
+              hoveredCode={hoveredCode}
+              onHoverCode={setHoveredCode}
+            />
+          </>
+        );
+      })()}
 
       {/* Bottom section: comparison */}
       {pitcher && topData && (
@@ -2110,13 +2161,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
             </select>
             {cmpMode === "2026range" && (
               <>
-                <input type="date" value={cmpStart} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
-                  onChange={e => setCmpStart(e.target.value)}
-                  style={{ padding: "8px 12px", fontSize: "12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", color: C.text, fontFamily: "inherit" }} />
+                <DatePickerWithHighlights value={cmpStart} onChange={setCmpStart} pitchedDates={pitchedDates} C={C} label="Start" />
                 <span style={{ color: C.textDim, fontSize: "11px" }}>to</span>
-                <input type="date" value={cmpEnd} min="2026-03-26" max={new Date().toISOString().slice(0, 10)}
-                  onChange={e => setCmpEnd(e.target.value)}
-                  style={{ padding: "8px 12px", fontSize: "12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", color: C.text, fontFamily: "inherit" }} />
+                <DatePickerWithHighlights value={cmpEnd} onChange={setCmpEnd} pitchedDates={pitchedDates} C={C} label="End" />
               </>
             )}
             <button onClick={loadComparison} disabled={cmpLoading} style={{
