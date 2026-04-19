@@ -705,11 +705,16 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
     innings = outs / 3.0
     era = (earned_runs * 9.0 / innings) if innings > 0 else None
 
+    # IP in baseball format: 29.2 means 29 innings + 2 outs, not 29.2 decimal
+    ip_whole = outs // 3
+    ip_rem = outs % 3
+    innings_display = float(f"{ip_whole}.{ip_rem}")
+
     result = {
         "era": round(era, 2) if era is not None else None,
         "earned_runs": earned_runs,
         "outs": outs,
-        "innings": round(innings, 1),
+        "innings": innings_display,
         "games": games_with_data,
         "games_started": games_started,
         "strikeouts": strikeouts,
@@ -717,7 +722,7 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
         "hit_batsmen": hit_batsmen,
         "batters_faced": batters_faced,
     }
-    print(f"[ERA {pitcher_id}] {len(pks)} game_pks requested, {games_with_data} found: K={strikeouts} BB={walks} BF={batters_faced} IP={round(innings,1)} ERA={result['era']}")
+    print(f"[ERA {pitcher_id}] {len(pks)} game_pks requested, {games_with_data} found: K={strikeouts} BB={walks} BF={batters_faced} IP={innings_display} ERA={result['era']}")
     set_cache(cache_key, result)
     return result
 

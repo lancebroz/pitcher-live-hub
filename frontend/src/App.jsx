@@ -1161,6 +1161,7 @@ const normalizeLivePitch = (p) => {
       return la >= window[0] && la <= window[1];
     })(),
     batter_hand: p.batter_hand || p.stand || "R",
+    bb_type: p.bb_type || "",
     count: p.count || `${p.balls || 0}-${p.strikes || 0}`,
     batter_name: p.batter_name || "",
     inning: p.inning || 0,
@@ -1172,6 +1173,7 @@ const normalizeLivePitch = (p) => {
     woba_value: p.woba_value || null,
     delta_run_exp: p.delta_run_exp,
     game_date: p.game_date || "",
+    game_pk: p.game_pk || 0,
     at_bat_number: p.at_bat_number || null,
     events: p.events || "",
   };
