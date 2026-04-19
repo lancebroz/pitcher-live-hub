@@ -934,7 +934,8 @@ async def _get_season_data_impl(pitcher_id: int):
                         except Exception:
                             pass
 
-                    # Check boxscores (small payloads) to find which game has this pitcher
+                    # Check boxscores to find games where this pitcher ACTUALLY PITCHED
+                    # (not just on the roster). Check pitching stats, not roster presence.
                     for gpk in sched_game_pks:
                         try:
                             box_resp = await client.get(
@@ -944,13 +945,17 @@ async def _get_season_data_impl(pitcher_id: int):
                             box = box_resp.json()
                             for side in ("home", "away"):
                                 players = box.get("teams", {}).get(side, {}).get("players", {})
-                                if f"ID{pitcher_id}" in players:
+                                pdata = players.get(f"ID{pitcher_id}")
+                                if not pdata:
+                                    continue
+                                # Only match if pitcher has actual pitching stats in this game
+                                pitching = pdata.get("stats", {}).get("pitching", {})
+                                if pitching and pitching.get("inningsPitched", "0.0") != "0.0":
                                     target_game_pks.add(gpk)
+                                    print(f"[Season {pitcher_id}] Fallback found pitcher in game {gpk} ({pitching.get('inningsPitched')} IP)")
                                     break
                         except Exception:
                             continue
-                        if target_game_pks:
-                            break  # Found the game, no need to check more
 
             # Step 3: Fetch only the targeted game feed(s) — typically just 1
             async with httpx.AsyncClient() as client:
@@ -1080,13 +1085,9 @@ async def _get_season_data_impl(pitcher_id: int):
     if removed > 0:
         print(f"[Season {pitcher_id}] Dedup: removed {removed} parquet rows, replaced by {len(live_pitches)} live rows")
 
-    # Strip any remaining parquet rows with no pitch classification (game_pk was 0/NaN
-    # so they couldn't be deduped, but the live merge already has their real data)
-    pre_strip = len(filtered_parquet)
-    filtered_parquet = [p for p in filtered_parquet if p.get("pitch_type") and p["pitch_type"] != "nan"]
-    stripped = pre_strip - len(filtered_parquet)
-    if stripped > 0:
-        print(f"[Season {pitcher_id}] Stripped {stripped} unclassified parquet rows (game_pk was 0, live data has replacements)")
+    # Unclassified parquet rows (empty/nan pitch_type with game_pk=0) are NOT
+    # stripped server-side. The frontend's normAndFilter removes them before
+    # rendering. This prevents data loss when the live merge can't find replacements.
 
     # Combine and re-number
     all_pitches = filtered_parquet + live_pitches
