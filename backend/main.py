@@ -884,144 +884,159 @@ async def _get_season_data_impl(pitcher_id: int):
             set_cache(parquet_cache_key, parquet_pitches)
 
     # ── Part 2: Today's live data (cached 30 sec) ──
+    # Instead of fetching ALL 15+ game feeds from today's schedule (slow, error-prone),
+    # use the parquet data to identify which specific game_pk(s) this pitcher is in
+    # for today/yesterday, then fetch ONLY those 1-2 feeds — same approach as the live tracker.
     live_cache_key = f"season_live:{pitcher_id}:{today_str}:{yesterday_str}"
     live_pitches = get_cached(live_cache_key, 30)
 
     if live_pitches is None:
         live_pitches = []
         try:
-            # Get today's AND yesterday's schedule (covers timezone edge cases
-            # where the server clock is ahead of local time)
-            game_pks = []
+            # Step 1: Find this pitcher's game_pks for today/yesterday from parquet
+            target_game_pks = set()
+            for p in parquet_pitches:
+                gpk = p.get("game_pk", 0)
+                gd = p.get("game_date", "")
+                if gpk and gd in (today_str, yesterday_str):
+                    target_game_pks.add(gpk)
+
+            # Step 2: If no parquet data for today/yesterday (e.g. first game of season,
+            # or pipeline hasn't run yet), fall back to schedule — but only fetch games
+            # where this pitcher appears, using the lightweight boxscore endpoint first.
+            if not target_game_pks:
+                async with httpx.AsyncClient() as client:
+                    sched_game_pks = []
+                    for check_date in [today_str, yesterday_str]:
+                        try:
+                            sched_resp = await client.get(
+                                f"{MLB_BASE}/api/v1/schedule?sportId=1&date={check_date}",
+                                timeout=10,
+                            )
+                            for de in sched_resp.json().get("dates", []):
+                                for g in de.get("games", []):
+                                    sched_game_pks.append(g["gamePk"])
+                        except Exception:
+                            pass
+
+                    # Check boxscores (small payloads) to find which game has this pitcher
+                    for gpk in sched_game_pks:
+                        try:
+                            box_resp = await client.get(
+                                f"{MLB_BASE}/api/v1/game/{gpk}/boxscore",
+                                timeout=5,
+                            )
+                            box = box_resp.json()
+                            for side in ("home", "away"):
+                                players = box.get("teams", {}).get(side, {}).get("players", {})
+                                if f"ID{pitcher_id}" in players:
+                                    target_game_pks.add(gpk)
+                                    break
+                        except Exception:
+                            continue
+                        if target_game_pks:
+                            break  # Found the game, no need to check more
+
+            # Step 3: Fetch only the targeted game feed(s) — typically just 1
             async with httpx.AsyncClient() as client:
-                for check_date in [today_str, yesterday_str]:
+                for gpk in target_game_pks:
                     try:
-                        sched_resp = await client.get(
-                            f"{MLB_BASE}/api/v1/schedule?sportId=1&date={check_date}",
-                            timeout=10,
+                        resp = await client.get(
+                            f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
+                            timeout=15,
                         )
-                        sched_data = sched_resp.json()
-                        for date_entry in sched_data.get("dates", []):
-                            for game in date_entry.get("games", []):
-                                gpk = game["gamePk"]
-                                if gpk not in game_pks:
-                                    game_pks.append(gpk)
+                        feed = resp.json()
                     except Exception:
-                        pass
-
-            # Fetch ALL game feeds in parallel (instead of sequentially)
-            # Sequential: 15 games × 10s timeout = up to 150s
-            # Parallel: 15 games simultaneously = ~3-5s total
-            import asyncio
-
-            async def fetch_feed(client, gpk):
-                try:
-                    resp = await client.get(
-                        f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
-                        timeout=10,
-                    )
-                    return (gpk, resp.json())
-                except Exception:
-                    return (gpk, None)
-
-            async with httpx.AsyncClient() as client:
-                results = await asyncio.gather(*[fetch_feed(client, gpk) for gpk in game_pks])
-
-            # Process each feed to extract this pitcher's pitches
-            for gpk, feed in results:
-                if feed is None:
-                    continue
-
-                all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
-
-                # Determine game_date from feed data
-                game_date_str = feed.get("gameData", {}).get("datetime", {}).get("officialDate", today_str)
-
-                for play in all_plays:
-                    matchup = play.get("matchup", {})
-                    if matchup.get("pitcher", {}).get("id") != pitcher_id:
                         continue
 
-                    about = play.get("about", {})
-                    batter_name = matchup.get("batter", {}).get("fullName", "")
-                    batter_side = matchup.get("batSide", {}).get("code", "R")
-                    pitch_hand = matchup.get("pitchHand", {}).get("code", "")
-                    inning = about.get("inning", 0)
-                    play_result = play.get("result", {})
-                    play_event_type = play_result.get("eventType", "")
+                    all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+                    game_date_str = feed.get("gameData", {}).get("datetime", {}).get("officialDate", today_str)
 
-                    play_pitches = []
-                    for event in play.get("playEvents", []):
-                        if not event.get("isPitch", True):
+                    for play in all_plays:
+                        matchup = play.get("matchup", {})
+                        if matchup.get("pitcher", {}).get("id") != pitcher_id:
                             continue
 
-                        pitch_data = event.get("pitchData", {})
-                        details = event.get("details", {})
-                        ptype = details.get("type", {})
-                        count_obj = event.get("count", {})
-                        coords = pitch_data.get("coordinates", {})
-                        breaks = pitch_data.get("breaks", {})
-                        hit_data = event.get("hitData", {})
+                        about = play.get("about", {})
+                        batter_name = matchup.get("batter", {}).get("fullName", "")
+                        batter_side = matchup.get("batSide", {}).get("code", "R")
+                        pitch_hand = matchup.get("pitchHand", {}).get("code", "")
+                        inning = about.get("inning", 0)
+                        play_result = play.get("result", {})
+                        play_event_type = play_result.get("eventType", "")
 
-                        raw_ivb = breaks.get("breakVerticalInduced")
-                        raw_hb = breaks.get("breakHorizontal")
-                        pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
-                        pfx_x_ft = raw_hb / -12.0 if raw_hb is not None else None
+                        play_pitches = []
+                        for event in play.get("playEvents", []):
+                            if not event.get("isPitch", True):
+                                continue
 
-                        bb_map = {"ground_ball": "ground_ball", "fly_ball": "fly_ball", "line_drive": "line_drive", "popup": "popup"}
+                            pitch_data = event.get("pitchData", {})
+                            details = event.get("details", {})
+                            ptype = details.get("type", {})
+                            count_obj = event.get("count", {})
+                            coords = pitch_data.get("coordinates", {})
+                            breaks = pitch_data.get("breaks", {})
+                            hit_data = event.get("hitData", {})
 
-                        desc_raw = details.get("description", "").lower()
-                        if "swinging" in desc_raw and "strike" in desc_raw:
-                            desc = "swinging_strike"
-                        elif "called" in desc_raw and "strike" in desc_raw:
-                            desc = "called_strike"
-                        elif "foul" in desc_raw:
-                            desc = "foul"
-                        elif "in play" in desc_raw:
-                            desc = "hit_into_play"
-                        else:
-                            desc = "ball"
+                            raw_ivb = breaks.get("breakVerticalInduced")
+                            raw_hb = breaks.get("breakHorizontal")
+                            pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
+                            pfx_x_ft = raw_hb / -12.0 if raw_hb is not None else None
 
-                        play_pitches.append({
-                            "pitch_number": 0,
-                            "pitch_type": ptype.get("code", ""),
-                            "pitch_name": ptype.get("description", ""),
-                            "release_speed": pitch_data.get("startSpeed"),
-                            "release_spin_rate": breaks.get("spinRate"),
-                            "pfx_x": pfx_x_ft,
-                            "pfx_z": pfx_z_ft,
-                            "movement_source": "live_feed",
-                            "plate_x": coords.get("pX"),
-                            "plate_z": coords.get("pZ"),
-                            "release_pos_x": coords.get("x0"),
-                            "release_pos_z": coords.get("z0"),
-                            "release_extension": pitch_data.get("extension"),
-                            "zone": pitch_data.get("zone"),
-                            "description": desc,
-                            "is_in_play": details.get("isInPlay", False),
-                            "is_strike": details.get("isStrike", False),
-                            "is_ball": details.get("isBall", False),
-                            "launch_speed": hit_data.get("launchSpeed"),
-                            "launch_angle": hit_data.get("launchAngle"),
-                            "bb_type": bb_map.get(hit_data.get("trajectory", ""), ""),
-                            "batter_name": batter_name,
-                            "batter_hand": batter_side,
-                            "stand": batter_side,
-                            "p_throws": pitch_hand,
-                            "balls": str(count_obj.get("balls", 0)),
-                            "strikes": str(count_obj.get("strikes", 0)),
-                            "game_date": game_date_str,
-                            "game_pk": gpk,
-                            "inning": inning,
-                            "at_bat_number": play.get("atBatIndex", 0),
-                            "events": "",
-                        })
+                            bb_map = {"ground_ball": "ground_ball", "fly_ball": "fly_ball", "line_drive": "line_drive", "popup": "popup"}
 
-                    # Set events on last pitch of at-bat
-                    if play_pitches and play_event_type:
-                        play_pitches[-1]["events"] = play_event_type
+                            desc_raw = details.get("description", "").lower()
+                            if "swinging" in desc_raw and "strike" in desc_raw:
+                                desc = "swinging_strike"
+                            elif "called" in desc_raw and "strike" in desc_raw:
+                                desc = "called_strike"
+                            elif "foul" in desc_raw:
+                                desc = "foul"
+                            elif "in play" in desc_raw:
+                                desc = "hit_into_play"
+                            else:
+                                desc = "ball"
 
-                    live_pitches.extend(play_pitches)
+                            play_pitches.append({
+                                "pitch_number": 0,
+                                "pitch_type": ptype.get("code", ""),
+                                "pitch_name": ptype.get("description", ""),
+                                "release_speed": pitch_data.get("startSpeed"),
+                                "release_spin_rate": breaks.get("spinRate"),
+                                "pfx_x": pfx_x_ft,
+                                "pfx_z": pfx_z_ft,
+                                "movement_source": "live_feed",
+                                "plate_x": coords.get("pX"),
+                                "plate_z": coords.get("pZ"),
+                                "release_pos_x": coords.get("x0"),
+                                "release_pos_z": coords.get("z0"),
+                                "release_extension": pitch_data.get("extension"),
+                                "zone": pitch_data.get("zone"),
+                                "description": desc,
+                                "is_in_play": details.get("isInPlay", False),
+                                "is_strike": details.get("isStrike", False),
+                                "is_ball": details.get("isBall", False),
+                                "launch_speed": hit_data.get("launchSpeed"),
+                                "launch_angle": hit_data.get("launchAngle"),
+                                "bb_type": bb_map.get(hit_data.get("trajectory", ""), ""),
+                                "batter_name": batter_name,
+                                "batter_hand": batter_side,
+                                "stand": batter_side,
+                                "p_throws": pitch_hand,
+                                "balls": str(count_obj.get("balls", 0)),
+                                "strikes": str(count_obj.get("strikes", 0)),
+                                "game_date": game_date_str,
+                                "game_pk": gpk,
+                                "inning": inning,
+                                "at_bat_number": play.get("atBatIndex", 0),
+                                "events": "",
+                            })
+
+                        # Set events on last pitch of at-bat
+                        if play_pitches and play_event_type:
+                            play_pitches[-1]["events"] = play_event_type
+
+                        live_pitches.extend(play_pitches)
 
         except Exception as e:
             print(f"Failed to fetch live data: {e}")
