@@ -905,6 +905,128 @@ const HeatmapCanvas = ({ pitches, width, height, C }) => {
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
 
+// ─── Gaussian KDE Heatmap Canvas (cinematic style) ───
+// Approximation of xwOBA from exit velocity + launch angle when Savant data isn't available
+const approxXwoba = (ev, la) => {
+  if (ev == null || la == null) return 0.25;
+  // Barrel zone (matches our Statcast table)
+  if (ev >= 98 && la >= 8 && la <= 50) return Math.min(1.8, 0.9 + (ev - 98) * 0.05);
+  // Hard line drives
+  if (ev >= 95 && la >= 10 && la <= 25) return 0.7 + (ev - 95) * 0.03;
+  // Medium line drives
+  if (la >= 10 && la <= 25) return 0.3 + Math.max(0, ev - 80) * 0.015;
+  // Fly balls
+  if (la > 25 && la <= 50) return 0.15 + Math.max(0, ev - 85) * 0.02;
+  // Hard grounders
+  if (ev >= 95 && la < 10 && la >= -10) return 0.35;
+  // Soft grounders
+  if (la < 10 && la >= -10) return 0.15 + Math.max(0, ev - 70) * 0.005;
+  // Popups
+  if (la > 50) return 0.02;
+  return 0.1;
+};
+
+const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = width, h = height;
+    canvas.width = w; canvas.height = h;
+    ctx.fillStyle = "#0a0a12";
+    ctx.fillRect(0, 0, w, h);
+    if (!pitches.length) return;
+
+    const toCanvasX = (x) => ((x + 2.5) / 5) * w;
+    const toCanvasY = (y) => (1 - y / 5) * h;
+    const gridW = 200, gridH = 200;
+    const grid = new Float32Array(gridW * gridH);
+    const sigma = mode === "damage" ? 0.35 : 0.30;
+    const bw2 = sigma * sigma;
+
+    // Stamp each pitch onto the grid
+    for (const p of pitches) {
+      if (p.plate_x == null || p.plate_z == null) continue;
+      // Weight: 1.0 for frequency/whiffs, xwOBA for damage
+      let weight = 1.0;
+      if (mode === "damage") {
+        weight = p.estimated_woba_using_speedangle || approxXwoba(p.launch_speed, p.launch_angle);
+      }
+      const gxC = ((p.plate_x + 2.5) / 5) * gridW;
+      const gyC = (1 - p.plate_z / 5) * gridH;
+      const rad = Math.ceil((sigma / 5) * gridW * 3);
+      for (let gy = Math.max(0, Math.floor(gyC - rad)); gy <= Math.min(gridH - 1, Math.ceil(gyC + rad)); gy++) {
+        for (let gx = Math.max(0, Math.floor(gxC - rad)); gx <= Math.min(gridW - 1, Math.ceil(gxC + rad)); gx++) {
+          const dx = (gx / gridW) * 5 - 2.5 - p.plate_x;
+          const dy = (1 - gy / gridH) * 5 - p.plate_z;
+          grid[gy * gridW + gx] += weight * Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
+        }
+      }
+    }
+
+    let maxVal = 0;
+    for (let i = 0; i < grid.length; i++) if (grid[i] > maxVal) maxVal = grid[i];
+    if (maxVal === 0) return;
+
+    // Color ramps
+    const freqRamp = (t) => {
+      // Dark background → blue → cyan → green → yellow → red → white hot
+      if (t < 0.15) { const s = t / 0.15; return [0, 0, Math.round(80 * s), Math.round(180 * s)]; }
+      if (t < 0.3) { const s = (t - 0.15) / 0.15; return [0, Math.round(100 * s), 80 + Math.round(175 * s), 180 + Math.round(55 * s)]; }
+      if (t < 0.5) { const s = (t - 0.3) / 0.2; return [0, 100 + Math.round(155 * s), 255 - Math.round(100 * s), 235]; }
+      if (t < 0.7) { const s = (t - 0.5) / 0.2; return [Math.round(255 * s), 255, Math.round(155 * (1 - s)), 240]; }
+      if (t < 0.85) { const s = (t - 0.7) / 0.15; return [255, Math.round(255 * (1 - s * 0.6)), 0, 245]; }
+      const s = (t - 0.85) / 0.15; return [255, Math.round(100 * (1 - s)), 0, 250];
+    };
+    const damageRamp = (t) => {
+      // Blue (cold) → white (neutral) → red (hot)
+      if (t < 0.15) return [0, 0, 0, Math.round(60 * (t / 0.15))];
+      if (t < 0.4) { const s = (t - 0.15) / 0.25; return [Math.round(40 * s), Math.round(80 * s), Math.round(200 * s), 60 + Math.round(160 * s)]; }
+      if (t < 0.55) { const s = (t - 0.4) / 0.15; return [40 + Math.round(200 * s), 80 + Math.round(175 * s), 200 + Math.round(55 * s), 220 + Math.round(20 * s)]; }
+      if (t < 0.7) { const s = (t - 0.55) / 0.15; return [240 + Math.round(15 * s), 255 - Math.round(30 * s), 255 - Math.round(60 * s), 240]; }
+      const s = (t - 0.7) / 0.3; return [255, Math.round(225 * (1 - s)), Math.round(195 * (1 - s)), 240 + Math.round(10 * s)];
+    };
+    const ramp = mode === "damage" ? damageRamp : freqRamp;
+
+    const imgData = ctx.createImageData(w, h);
+    // Dark background
+    for (let i = 0; i < imgData.data.length; i += 4) {
+      imgData.data[i] = 10; imgData.data[i + 1] = 10; imgData.data[i + 2] = 18; imgData.data[i + 3] = 255;
+    }
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const gxf = (px / w) * (gridW - 1), gyf = (py / h) * (gridH - 1);
+        const gx0 = Math.floor(gxf), gy0 = Math.floor(gyf);
+        const gx1 = Math.min(gx0 + 1, gridW - 1), gy1 = Math.min(gy0 + 1, gridH - 1);
+        const fx = gxf - gx0, fy = gyf - gy0;
+        const raw = grid[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + grid[gy0 * gridW + gx1] * fx * (1 - fy) + grid[gy1 * gridW + gx0] * (1 - fx) * fy + grid[gy1 * gridW + gx1] * fx * fy;
+        const val = raw / maxVal;
+        const t = Math.pow(Math.min(val, 1), 0.6);
+        const [r, g, b, a] = ramp(t);
+        const idx = (py * w + px) * 4;
+        // Alpha blend over dark background
+        const aF = a / 255;
+        imgData.data[idx] = Math.round(10 * (1 - aF) + r * aF);
+        imgData.data[idx + 1] = Math.round(10 * (1 - aF) + g * aF);
+        imgData.data[idx + 2] = Math.round(18 * (1 - aF) + b * aF);
+        imgData.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Strike zone in white
+    ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 1.5;
+    ctx.strokeRect(toCanvasX(-0.83), toCanvasY(3.5), toCanvasX(0.83) - toCanvasX(-0.83), toCanvasY(1.5) - toCanvasY(3.5));
+    // Home plate
+    const pcx = toCanvasX(0), pby = toCanvasY(0), phw = (toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
+    ctx.beginPath(); ctx.moveTo(pcx - phw, pby); ctx.lineTo(pcx + phw, pby);
+    ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
+    ctx.closePath(); ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1; ctx.stroke();
+  }, [pitches, width, height, mode]);
+  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
+};
+
 // ─── Pitch Location Plot ───
 const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   const [locHand, setLocHand] = useState("all");
@@ -2284,6 +2406,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [year, setYear] = useState("2026");
   const [hand, setHand] = useState("all");
   const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
+  const [hmStyle, setHmStyle] = useState("gaussian"); // "grid" | "gaussian"
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -2366,7 +2489,12 @@ const HeatmapsPage = ({ C, isMobile }) => {
     const passesMode = (p) => {
       if (hmMode === "frequency") return true;
       if (hmMode === "whiffs") return (p.description || "").toLowerCase() === "swinging_strike";
-      if (hmMode === "damage") return isXBH(p.events);
+      if (hmMode === "damage") {
+        // Gaussian: show all balls in play (canvas weights by xwOBA)
+        // Grid: show only extra-base hits
+        if (hmStyle === "gaussian") return p.is_in_play;
+        return isXBH(p.events);
+      }
       return true;
     };
     const filtered = pitchData.filter(p => {
@@ -2397,7 +2525,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
         pitches,
       }))
       .sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
-  }, [pitchData, hand, year, startDate, endDate, hmMode]);
+  }, [pitchData, hand, year, startDate, endDate, hmMode, hmStyle]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
 
@@ -2494,6 +2622,19 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
+          {/* Style toggle */}
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ k: "gaussian", l: "Gaussian" }, { k: "grid", l: "Grid" }].map(t => (
+              <button key={t.k} onClick={() => setHmStyle(t.k)} style={{
+                background: hmStyle === t.k ? C.accentGlow : "transparent",
+                border: `1px solid ${hmStyle === t.k ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "6px 14px",
+                color: hmStyle === t.k ? C.accent : C.textDim,
+                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.l}</button>
+            ))}
+          </div>
+
           {/* Date pickers (2026 only) */}
           {year === "2026" && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -2524,7 +2665,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
       {filteredGroups && filteredGroups.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
           {filteredGroups.map(g => (
-            <HeatmapTile key={g.name} group={g} C={C} />
+            <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} />
           ))}
         </div>
       )}
@@ -2533,10 +2674,18 @@ const HeatmapsPage = ({ C, isMobile }) => {
       {filteredGroups && filteredGroups.length > 0 && (
         <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
-            {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density" : "Extra-Base Hit Density"}
+            {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density"
+              : (hmStyle === "gaussian" ? "Expected Damage (xwOBA)" : "Extra-Base Hit Density")}
           </span>
           <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
-          <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)" }} />
+          <div style={{
+            width: "180px", height: "10px", borderRadius: "3px",
+            background: hmStyle === "gaussian" && hmMode === "damage"
+              ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
+              : hmStyle === "gaussian"
+              ? "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)"
+              : "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)",
+          }} />
           <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
         </div>
       )}
@@ -2544,7 +2693,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   );
 };
 
-const HeatmapTile = ({ group, C }) => {
+const HeatmapTile = ({ group, C, hmStyle, hmMode }) => {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ w: 220, h: 220 });
   useEffect(() => {
@@ -2556,17 +2705,21 @@ const HeatmapTile = ({ group, C }) => {
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
+  const isGaussian = hmStyle === "gaussian";
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+    <div style={{ background: isGaussian ? "#0a0a12" : C.surface, border: `1px solid ${isGaussian ? "#222" : C.border}`, borderRadius: "8px", padding: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: group.color }} />
-          <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{group.name}</span>
+          <span style={{ fontSize: "12px", fontWeight: 700, color: isGaussian ? "#e0e0e0" : C.text }}>{group.name}</span>
         </div>
-        <span style={{ fontSize: "10px", color: C.textDim, fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
+        <span style={{ fontSize: "10px", color: isGaussian ? "#888" : C.textDim, fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
       </div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
-        <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
+        {isGaussian
+          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} />
+          : <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
+        }
       </div>
     </div>
   );
