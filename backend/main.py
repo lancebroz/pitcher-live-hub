@@ -1292,6 +1292,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     if all_df is None or len(all_df) == 0:
         return {"pitchers": [], "pitch_types": []}
 
+    # Strip rows with empty/NaN pitch_type (unprocessed game data with no analytical value)
+    all_df = all_df[all_df["pitch_type"].notna() & (all_df["pitch_type"].astype(str).str.strip() != "") & (all_df["pitch_type"].astype(str).str.lower() != "nan")]
+
     # Available pitch types (before filtering)
     all_pitch_types = sorted([str(pt) for pt in all_df["pitch_type"].dropna().unique() if str(pt).strip()])
 

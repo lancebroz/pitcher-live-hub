@@ -1657,17 +1657,35 @@ const computeSummaryStats = (rawPitches, hand) => {
   const kbbPct = kPct - bbPct;
 
   // FIP = (13×HR + 3×(BB+HBP) - 2×K) / IP + constant
-  // FIP constant ~3.15 (league-average adjustment, varies slightly by year)
   const FIP_CONSTANT = 3.15;
-  let fip = null;
+  const LG_HR_FB_RATE = 0.105; // league-average HR/FB rate (~10.5%)
+  let fip = null, xfip = null, siera = null;
+  let hr = 0;
   if (ipNum > 0) {
-    // Count HR from events
-    let hr = 0;
     for (const p of pitches) {
       const ev = (p.events || "").toLowerCase().trim();
       if (ev === "home_run") hr += 1;
     }
     fip = (13 * hr + 3 * (bb + hbp) - 2 * so) / ipNum + FIP_CONSTANT;
+    // xFIP: replace actual HR with expected HR (FB × league HR/FB rate)
+    const expectedHR = fb * LG_HR_FB_RATE;
+    xfip = (13 * expectedHR + 3 * (bb + hbp) - 2 * so) / ipNum + FIP_CONSTANT;
+  }
+  // SIERA with 2026 run-environment adjustment
+  // Constant calibrated so league-average SIERA ≈ league-average ERA (4.03 in 2026)
+  const SIERA_CONSTANT = 0.28;
+  if (pa >= 1) {
+    const gbDiff = (gb - fb - pu) / pa;
+    const sign = gbDiff >= 0 ? 1 : -1;
+    siera = 6.145
+          - 16.986 * kPct
+          + 11.434 * bbPct
+          -  1.858 * gbDiff
+          +  7.653 * (kPct * kPct)
+          + sign * 6.664 * (gbDiff * gbDiff)
+          + 10.130 * kPct * gbDiff
+          -  5.195 * bbPct * gbDiff
+          + SIERA_CONSTANT;
   }
 
   return {
@@ -1675,6 +1693,8 @@ const computeSummaryStats = (rawPitches, hand) => {
     ip: ipStr,
     era,
     fip: fip != null ? fip.toFixed(2) : "—",
+    xfip: xfip != null ? xfip.toFixed(2) : "—",
+    siera: siera != null ? siera.toFixed(2) : "—",
     kPct: pa > 0 ? `${(kPct * 100).toFixed(1)}%` : "—",
     bbPct: pa > 0 ? `${(bbPct * 100).toFixed(1)}%` : "—",
     kbbPct: pa > 0 ? `${(kbbPct * 100).toFixed(1)}%` : "—",
@@ -1702,14 +1722,45 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
     bbPctDisplay = `${bbPct.toFixed(1)}%`;
     kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
   }
-  // FIP from boxscore data when available
-  let fipDisplay = stats.fip;
+  // FIP, xFIP, SIERA from boxscore data when available
+  let fipDisplay = stats.fip, xfipDisplay = stats.xfip, sieraDisplay = stats.siera;
   if (useBox) {
     const ip = boxStats.outs / 3.0;
+    const FIP_CONSTANT = 3.15;
+    const LG_HR_FB_RATE = 0.105;
     if (ip > 0) {
-      const FIP_CONSTANT = 3.15;
       const fipVal = (13 * boxStats.home_runs + 3 * (boxStats.walks + boxStats.hit_batsmen) - 2 * boxStats.strikeouts) / ip + FIP_CONSTANT;
       fipDisplay = fipVal.toFixed(2);
+      // xFIP: need fly balls from pitch data
+      const filtered = rawPitches.filter(p => p.is_in_play);
+      let fbCount = 0, gbCount = 0, puCount = 0;
+      for (const p of filtered) {
+        if (p.bb_type === "fly_ball") fbCount += 1;
+        else if (p.bb_type === "ground_ball") gbCount += 1;
+        else if (p.bb_type === "popup") puCount += 1;
+      }
+      const expectedHR = fbCount * LG_HR_FB_RATE;
+      const xfipVal = (13 * expectedHR + 3 * (boxStats.walks + boxStats.hit_batsmen) - 2 * boxStats.strikeouts) / ip + FIP_CONSTANT;
+      xfipDisplay = xfipVal.toFixed(2);
+      // SIERA with 2026 run-environment constant
+      const bf = boxStats.batters_faced;
+      if (bf > 0) {
+        const SIERA_CONSTANT = 0.28;
+        const kPct = boxStats.strikeouts / bf;
+        const bbPct = (boxStats.walks + boxStats.hit_batsmen) / bf;
+        const gbDiff = (gbCount - fbCount - puCount) / bf;
+        const sign = gbDiff >= 0 ? 1 : -1;
+        const sieraVal = 6.145
+                    - 16.986 * kPct
+                    + 11.434 * bbPct
+                    -  1.858 * gbDiff
+                    +  7.653 * (kPct * kPct)
+                    + sign * 6.664 * (gbDiff * gbDiff)
+                    + 10.130 * kPct * gbDiff
+                    -  5.195 * bbPct * gbDiff
+                    + SIERA_CONSTANT;
+        sieraDisplay = sieraVal.toFixed(2);
+      }
     }
   }
   const cells = [
@@ -1717,6 +1768,8 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
     { l: "IP", v: ipDisplay },
     { l: "ERA", v: eraDisplay },
     { l: "FIP", v: fipDisplay },
+    { l: "xFIP", v: xfipDisplay },
+    { l: "SIERA", v: sieraDisplay },
     { l: "K%", v: kPctDisplay },
     { l: "BB%", v: bbPctDisplay },
     { l: "K-BB%", v: kbbPctDisplay },
