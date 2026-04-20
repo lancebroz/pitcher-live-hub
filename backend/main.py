@@ -830,7 +830,9 @@ async def _get_season_data_impl(pitcher_id: int):
                         except Exception: game_pk_int = 0
 
                     call_desc = str(row.get("call_description", "")).lower()
-                    if "swinging" in call_desc and "strike" in call_desc:
+                    if "foul tip" in call_desc or "foul_tip" in call_desc:
+                        desc = "swinging_strike"  # Savant counts foul tips as swinging strikes
+                    elif "swinging" in call_desc and "strike" in call_desc:
                         desc = "swinging_strike"
                     elif "called" in call_desc and "strike" in call_desc:
                         desc = "called_strike"
@@ -1015,7 +1017,9 @@ async def _get_season_data_impl(pitcher_id: int):
                             bb_map = {"ground_ball": "ground_ball", "fly_ball": "fly_ball", "line_drive": "line_drive", "popup": "popup"}
 
                             desc_raw = details.get("description", "").lower()
-                            if "swinging" in desc_raw and "strike" in desc_raw:
+                            if "foul tip" in desc_raw:
+                                desc = "swinging_strike"  # Savant counts foul tips as swinging strikes
+                            elif "swinging" in desc_raw and "strike" in desc_raw:
                                 desc = "swinging_strike"
                             elif "called" in desc_raw and "strike" in desc_raw:
                                 desc = "called_strike"
@@ -1206,7 +1210,7 @@ async def get_starters_today(game_date: str = None):
                                         if ev.get("isPitch"):
                                             total_pitches_seen += 1
                                             call = ev.get("details", {}).get("description", "").lower()
-                                            if "swinging strike" in call:
+                                            if "swinging strike" in call or "foul tip" in call:
                                                 swstr += 1
                                 if total_pitches_seen > 0:
                                     starter_data["swstr_pct"] = f"{(swstr / total_pitches_seen * 100):.1f}"
@@ -1311,8 +1315,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     # ── Step 3: Pre-compute columns ──
     desc = df["call_description"].fillna("").str.lower()
     df = df.copy()
+    is_foul_tip = desc.str.contains("foul tip", regex=False) | desc.str.contains("foul_tip", regex=False)
     df["_is_swing"] = desc.str.contains("swinging|foul|in play|missed", regex=True)
-    df["_is_swstr"] = desc.str.contains("swinging") & desc.str.contains("strike")
+    df["_is_swstr"] = (desc.str.contains("swinging") & desc.str.contains("strike")) | is_foul_tip
     df["_is_cstr"] = desc.str.contains("called") & desc.str.contains("strike")
 
     zone = pd.to_numeric(df["zone"], errors="coerce")
