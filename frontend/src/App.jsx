@@ -1020,11 +1020,10 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     ctx.putImageData(imgData, 0, 0);
 
     // Re-draw batter images ON TOP of heatmap
-    // Scale: full canvas height, positioned so strike zone top (~0.3h) aligns
-    // with just above the batter's midsection (~60% down in the image)
-    const imgH2 = h * 1.0;
+    // Scale large so batter fills the box; bottom of image = bottom of canvas (plate level)
+    const imgH2 = h * 1.3;
     const imgW2 = imgH2 * (494 / 498);
-    const batterTopY = -0.28 * h; // clip top (empty space in image anyway)
+    const batterTopY = h - imgH2; // feet at canvas bottom
     if ((hand === "all" || hand === "L") && _lhhImg.complete) {
       ctx.globalAlpha = 0.35;
       ctx.drawImage(_lhhImg, toCanvasX(2.5), batterTopY, imgW2, imgH2);
