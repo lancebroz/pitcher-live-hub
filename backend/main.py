@@ -895,26 +895,29 @@ async def _get_season_data_impl(pitcher_id: int):
             set_cache(parquet_cache_key, parquet_pitches)
 
     # ── Part 2: Today's live data (cached 30 sec) ──
-    # Instead of fetching ALL 15+ game feeds from today's schedule (slow, error-prone),
-    # use the parquet data to identify which specific game_pk(s) this pitcher is in
-    # for today/yesterday, then fetch ONLY those 1-2 feeds — same approach as the live tracker.
-    live_cache_key = f"season_live:{pitcher_id}:{today_str}:{yesterday_str}"
+    # Fetch recent game feeds to merge classified pitch data with parquet.
+    # Check up to 4 days back to cover games where the parquet pipeline
+    # captured NaN data before Statcast classified the pitches.
+    from datetime import timedelta as td
+    check_dates = [(ct_now - td(days=i)).strftime("%Y-%m-%d") for i in range(4)]
+    live_cache_key = f"season_live:{pitcher_id}:{check_dates[0]}:{check_dates[-1]}"
     live_pitches = get_cached(live_cache_key, 30)
 
     if live_pitches is None:
         live_pitches = []
         try:
-            # Step 1: Find this pitcher's game_pks for today/yesterday from parquet,
+            # Step 1: Find this pitcher's game_pks for recent days from parquet,
             # AND any game_pks with incomplete data (NaN pitch_type = needs live refresh)
             target_game_pks = set()
             incomplete_game_pks = set()
+            check_dates_set = set(check_dates)
             for p in parquet_pitches:
                 gpk = p.get("game_pk", 0)
                 if not gpk:
                     continue
                 gd = p.get("game_date", "")
                 # Handle game_date that might be "nan" from str(NaN)
-                if gd and gd != "nan" and gd in (today_str, yesterday_str):
+                if gd and gd != "nan" and gd in check_dates_set:
                     target_game_pks.add(gpk)
                 # Any pitch with empty/nan pitch_type = incomplete parquet data
                 pt = p.get("pitch_type", "")
@@ -932,7 +935,7 @@ async def _get_season_data_impl(pitcher_id: int):
             if not target_game_pks:
                 async with httpx.AsyncClient() as client:
                     sched_game_pks = []
-                    for check_date in [today_str, yesterday_str]:
+                    for check_date in check_dates:
                         try:
                             sched_resp = await client.get(
                                 f"{MLB_BASE}/api/v1/schedule?sportId=1&date={check_date}",

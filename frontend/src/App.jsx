@@ -926,7 +926,7 @@ const approxXwoba = (ev, la) => {
   return 0.1;
 };
 
-const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
+const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -936,29 +936,78 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
     canvas.width = w; canvas.height = h;
     ctx.fillStyle = "#0a0a12";
     ctx.fillRect(0, 0, w, h);
+
+    // Coordinate conversion: pitcher POV (negate plate_x)
+    const toCanvasX = (x) => ((-x + 2.5) / 5) * w;
+    const toCanvasY = (y) => (1 - y / 5) * h;
+
+    // Draw batter silhouettes FIRST (behind heatmap)
+    const drawBatter = (cx, cy, scale, facingRight) => {
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (!facingRight) ctx.scale(-1, 1);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = "rgba(180,180,180,0.18)";
+      ctx.strokeStyle = "rgba(180,180,180,0.12)";
+      ctx.lineWidth = 2;
+      // Head
+      ctx.beginPath(); ctx.arc(0, -52, 10, 0, Math.PI * 2); ctx.fill();
+      // Neck
+      ctx.fillRect(-3, -42, 6, 6);
+      // Torso
+      ctx.beginPath(); ctx.moveTo(-14, -36); ctx.lineTo(14, -36);
+      ctx.lineTo(12, 0); ctx.lineTo(-12, 0); ctx.closePath(); ctx.fill();
+      // Front leg (bent)
+      ctx.beginPath(); ctx.moveTo(4, 0); ctx.lineTo(10, 24); ctx.lineTo(6, 48);
+      ctx.lineWidth = 7; ctx.stroke();
+      // Back leg (bent)
+      ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-12, 22); ctx.lineTo(-8, 48);
+      ctx.stroke();
+      // Arms + bat
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(10, -32); ctx.lineTo(22, -26); ctx.lineTo(18, -50);
+      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-8, -32); ctx.lineTo(-18, -28); ctx.lineTo(-14, -50);
+      ctx.stroke();
+      // Bat
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(200,200,200,0.22)";
+      ctx.beginPath(); ctx.moveTo(-14, -50); ctx.lineTo(8, -72); ctx.stroke();
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(8, -72); ctx.lineTo(20, -80); ctx.stroke();
+      // Helmet
+      ctx.fillStyle = "rgba(160,160,160,0.15)";
+      ctx.beginPath(); ctx.arc(0, -54, 12, Math.PI, 0); ctx.fill();
+      ctx.restore();
+    };
+
+    // Batter positions (pitcher POV): LHH on left, RHH on right
+    const lhhX = toCanvasX(1.4), rhhX = toCanvasX(-1.4);
+    const batterY = toCanvasY(1.8);
+    const batterScale = w / 280;
+    if (hand === "all" || hand === "L") drawBatter(lhhX, batterY, batterScale, true);
+    if (hand === "all" || hand === "R") drawBatter(rhhX, batterY, batterScale, false);
+
     if (!pitches.length) return;
 
-    const toCanvasX = (x) => ((x + 2.5) / 5) * w;
-    const toCanvasY = (y) => (1 - y / 5) * h;
     const gridW = 200, gridH = 200;
     const grid = new Float32Array(gridW * gridH);
     const sigma = mode === "damage" ? 0.35 : 0.30;
     const bw2 = sigma * sigma;
 
-    // Stamp each pitch onto the grid
+    // Stamp each pitch onto the grid (negate plate_x for pitcher POV)
     for (const p of pitches) {
       if (p.plate_x == null || p.plate_z == null) continue;
-      // Weight: 1.0 for frequency/whiffs, xwOBA for damage
       let weight = 1.0;
       if (mode === "damage") {
         weight = p.estimated_woba_using_speedangle || approxXwoba(p.launch_speed, p.launch_angle);
       }
-      const gxC = ((p.plate_x + 2.5) / 5) * gridW;
+      const px = -p.plate_x; // Flip for pitcher POV
+      const gxC = ((px + 2.5) / 5) * gridW;
       const gyC = (1 - p.plate_z / 5) * gridH;
       const rad = Math.ceil((sigma / 5) * gridW * 3);
       for (let gy = Math.max(0, Math.floor(gyC - rad)); gy <= Math.min(gridH - 1, Math.ceil(gyC + rad)); gy++) {
         for (let gx = Math.max(0, Math.floor(gxC - rad)); gx <= Math.min(gridW - 1, Math.ceil(gxC + rad)); gx++) {
-          const dx = (gx / gridW) * 5 - 2.5 - p.plate_x;
+          const dx = (gx / gridW) * 5 - 2.5 - px;
           const dy = (1 - gy / gridH) * 5 - p.plate_z;
           grid[gy * gridW + gx] += weight * Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
         }
@@ -971,7 +1020,6 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
 
     // Color ramps
     const freqRamp = (t) => {
-      // Dark background → blue → cyan → green → yellow → red → white hot
       if (t < 0.15) { const s = t / 0.15; return [0, 0, Math.round(80 * s), Math.round(180 * s)]; }
       if (t < 0.3) { const s = (t - 0.15) / 0.15; return [0, Math.round(100 * s), 80 + Math.round(175 * s), 180 + Math.round(55 * s)]; }
       if (t < 0.5) { const s = (t - 0.3) / 0.2; return [0, 100 + Math.round(155 * s), 255 - Math.round(100 * s), 235]; }
@@ -979,18 +1027,17 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
       if (t < 0.85) { const s = (t - 0.7) / 0.15; return [255, Math.round(255 * (1 - s * 0.6)), 0, 245]; }
       const s = (t - 0.85) / 0.15; return [255, Math.round(100 * (1 - s)), 0, 250];
     };
-    const damageRamp = (t) => {
-      // Blue (cold) → white (neutral) → red (hot)
+    const intensityRamp = (t) => {
+      // Blue (cold) → white (neutral) → red (hot) — used for whiffs AND damage
       if (t < 0.15) return [0, 0, 0, Math.round(60 * (t / 0.15))];
       if (t < 0.4) { const s = (t - 0.15) / 0.25; return [Math.round(40 * s), Math.round(80 * s), Math.round(200 * s), 60 + Math.round(160 * s)]; }
       if (t < 0.55) { const s = (t - 0.4) / 0.15; return [40 + Math.round(200 * s), 80 + Math.round(175 * s), 200 + Math.round(55 * s), 220 + Math.round(20 * s)]; }
       if (t < 0.7) { const s = (t - 0.55) / 0.15; return [240 + Math.round(15 * s), 255 - Math.round(30 * s), 255 - Math.round(60 * s), 240]; }
       const s = (t - 0.7) / 0.3; return [255, Math.round(225 * (1 - s)), Math.round(195 * (1 - s)), 240 + Math.round(10 * s)];
     };
-    const ramp = mode === "damage" ? damageRamp : freqRamp;
+    const ramp = mode === "frequency" ? freqRamp : intensityRamp;
 
     const imgData = ctx.createImageData(w, h);
-    // Dark background
     for (let i = 0; i < imgData.data.length; i += 4) {
       imgData.data[i] = 10; imgData.data[i + 1] = 10; imgData.data[i + 2] = 18; imgData.data[i + 3] = 255;
     }
@@ -1005,7 +1052,6 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
         const t = Math.pow(Math.min(val, 1), 0.6);
         const [r, g, b, a] = ramp(t);
         const idx = (py * w + px) * 4;
-        // Alpha blend over dark background
         const aF = a / 255;
         imgData.data[idx] = Math.round(10 * (1 - aF) + r * aF);
         imgData.data[idx + 1] = Math.round(10 * (1 - aF) + g * aF);
@@ -1015,15 +1061,21 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode }) => {
     }
     ctx.putImageData(imgData, 0, 0);
 
+    // Re-draw batters ON TOP of heatmap (at slightly higher opacity for visibility)
+    ctx.globalAlpha = 0.35;
+    if (hand === "all" || hand === "L") drawBatter(lhhX, batterY, batterScale, true);
+    if (hand === "all" || hand === "R") drawBatter(rhhX, batterY, batterScale, false);
+    ctx.globalAlpha = 1.0;
+
     // Strike zone in white
     ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 1.5;
-    ctx.strokeRect(toCanvasX(-0.83), toCanvasY(3.5), toCanvasX(0.83) - toCanvasX(-0.83), toCanvasY(1.5) - toCanvasY(3.5));
+    ctx.strokeRect(toCanvasX(0.83), toCanvasY(3.5), toCanvasX(-0.83) - toCanvasX(0.83), toCanvasY(1.5) - toCanvasY(3.5));
     // Home plate
-    const pcx = toCanvasX(0), pby = toCanvasY(0), phw = (toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
+    const pcx = toCanvasX(0), pby = toCanvasY(0), phw = Math.abs(toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
     ctx.beginPath(); ctx.moveTo(pcx - phw, pby); ctx.lineTo(pcx + phw, pby);
     ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
     ctx.closePath(); ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1; ctx.stroke();
-  }, [pitches, width, height, mode]);
+  }, [pitches, width, height, mode, hand]);
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
 
@@ -2665,7 +2717,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
       {filteredGroups && filteredGroups.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
           {filteredGroups.map(g => (
-            <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} />
+            <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} />
           ))}
         </div>
       )}
@@ -2680,7 +2732,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
           <div style={{
             width: "180px", height: "10px", borderRadius: "3px",
-            background: hmStyle === "gaussian" && hmMode === "damage"
+            background: hmStyle === "gaussian" && (hmMode === "damage" || hmMode === "whiffs")
               ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
               : hmStyle === "gaussian"
               ? "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)"
@@ -2693,7 +2745,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   );
 };
 
-const HeatmapTile = ({ group, C, hmStyle, hmMode }) => {
+const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ w: 220, h: 220 });
   useEffect(() => {
@@ -2717,7 +2769,7 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode }) => {
       </div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
         {isGaussian
-          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} />
+          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} />
           : <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
         }
       </div>
