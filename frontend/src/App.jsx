@@ -188,6 +188,7 @@ const generateMockPitchData = () => {
 
 const pct = (n, d) => d > 0 ? Math.round((n / d) * 100) + "%" : "—";
 const avg1 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(1) : "—"; };
+const avg2 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(2) : "—"; };
 const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? Math.round(f.reduce((s, v) => s + v, 0) / f.length) : "—"; };
 const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
 const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
@@ -215,8 +216,8 @@ const computeMetrics = (pitches, hf) => {
       avgSpin: avgInt(pts.map(p => p.release_spin_rate)),
       avgSpinEff: avgInt(pts.map(p => p.spin_efficiency)) + "%",
       avgIVB: avg1(pts.map(p => p.pfx_z)), avgHB: avg1(pts.map(p => p.pfx_x)),
-      avgRelH: avg1(pts.map(p => p.release_pos_z)), avgRelS: avg1(pts.map(p => p.release_pos_x)),
-      avgExt: avg1(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
+      avgRelH: avg2(pts.map(p => p.release_pos_z)), avgRelS: avg2(pts.map(p => p.release_pos_x)),
+      avgExt: avg2(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
@@ -250,8 +251,8 @@ const computeMetrics = (pitches, hf) => {
     maxVelo: (() => { const v = allPts.map(p => p.release_speed).filter(v => v != null); return v.length ? Math.max(...v).toFixed(1) : "—"; })(),
     avgSpin: avgInt(allPts.map(p => p.release_spin_rate)),
     avgIVB: avg1(allPts.map(p => p.pfx_z)), avgHB: avg1(allPts.map(p => p.pfx_x)),
-    avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
-    avgExt: avg1(allPts.map(p => p.release_extension)),
+    avgRelH: avg2(allPts.map(p => p.release_pos_z)), avgRelS: avg2(allPts.map(p => p.release_pos_x)),
+    avgExt: avg2(allPts.map(p => p.release_extension)),
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
@@ -266,9 +267,9 @@ const computeMetrics = (pitches, hf) => {
 
   return {
     total: f.length, pitchTypeMetrics: ptm, allRow,
-    avgRelH: avg1(pitches.map(p => p.release_pos_z)),
+    avgRelH: avg2(pitches.map(p => p.release_pos_z)),
     avgRelS: avgNum(pitches.map(p => p.release_pos_x)),
-    avgExt: avg1(pitches.map(p => p.release_extension)),
+    avgExt: avg2(pitches.map(p => p.release_extension)),
   };
 };
 
@@ -2190,8 +2191,23 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
 
     setTopLoading(true);
     try {
-      const raw = await getSeasonData(p.id); // parquet+live merged
-      setTopData(normAndFilter(raw || []));
+      // Primary: Savant CSV for calibrated Statcast data (release point, movement, etc.)
+      // Supplement: parquet+live for recent games not yet processed by Savant (~24hr delay)
+      const [savantRaw, liveRaw] = await Promise.all([
+        getStatcast(p.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []),
+        getSeasonData(p.id).catch(() => []),
+      ]);
+      let merged;
+      if (savantRaw && savantRaw.length > 0) {
+        // Find game_pks in Savant data
+        const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => p.game_pk));
+        // Add any live/parquet pitches from games NOT in Savant (most recent games)
+        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(p.game_pk));
+        merged = [...savantRaw, ...liveSupplement];
+      } else {
+        merged = liveRaw || [];
+      }
+      setTopData(normAndFilter(merged));
     } catch (e) {
       console.error("Top load failed", e);
       setErrMsg("Failed to load 2026 season data.");
@@ -2238,7 +2254,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const topMetrics = useMemo(() => topData ? computeMetrics(topData, "all") : null, [topData]);
   const cmpMetrics = useMemo(() => cmpData ? computeMetrics(cmpData, "all") : null, [cmpData]);
 
-  const cmpLabel = cmpMode === "2025" ? "2025 Full Season (sampled)" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
+  const cmpLabel = cmpMode === "2025" ? "2025 Full Season" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
 
   return (
     <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
@@ -2302,7 +2318,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           : topData;
         const isFullSeason = !topUseRange;
         const topLabel = isFullSeason
-          ? "Full 2026 Season (parquet + live)"
+          ? "Full 2026 Season (Statcast + Live)"
           : `2026 Custom Range (${topStart} to ${topEnd})`;
         return (
           <>
@@ -3120,19 +3136,22 @@ export default function PitcherTracker() {
         setPitchData(livePitchData);
       }
     } else if (newView === "season2025") {
-      // 2025 Season from Baseball Savant (SAMPLED for performance)
+      // 2025 Season from Baseball Savant (full data)
       if (season2025PitchData) {
         setPitchData(season2025PitchData);
       } else if (pitcherId) {
         setIsLoading(true);
         try {
-          const result = await getStatcastSampled(pitcherId, "2025-03-27", "2025-09-28", 50);
-          console.log(`2025 load: ${result.total_pitches} total, ${result.sampled.length} sampled`);
-          if (result.sampled && result.sampled.length > 0) {
-            const normalized = normAndFilter(result.sampled);
+          const raw = await getStatcast(pitcherId, "2025-03-27", "2025-09-28");
+          if (raw && raw.length > 0) {
+            const normalized = normAndFilter(raw);
             setSeason2025PitchData(normalized);
             setPitchData(normalized);
-            if (!pitcherHand && result.p_throws) setPitcherHand(result.p_throws);
+            if (!pitcherHand && normalized.length > 0) {
+              // Extract pitcher hand from the first pitch's p_throws
+              const firstWithHand = raw.find(p => p.p_throws);
+              if (firstWithHand) setPitcherHand(firstWithHand.p_throws);
+            }
           } else {
             setPitchData(null);
           }
