@@ -216,8 +216,8 @@ const computeMetrics = (pitches, hf) => {
       avgSpin: avgInt(pts.map(p => p.release_spin_rate)),
       avgSpinEff: avgInt(pts.map(p => p.spin_efficiency)) + "%",
       avgIVB: avg1(pts.map(p => p.pfx_z)), avgHB: avg1(pts.map(p => p.pfx_x)),
-      avgRelH: avg2(pts.map(p => p.release_pos_z)), avgRelS: avg2(pts.map(p => p.release_pos_x)),
-      avgExt: avg2(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
+      avgRelH: avg1(pts.map(p => p.release_pos_z)), avgRelS: avg1(pts.map(p => p.release_pos_x)),
+      avgExt: avg1(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
@@ -251,8 +251,8 @@ const computeMetrics = (pitches, hf) => {
     maxVelo: (() => { const v = allPts.map(p => p.release_speed).filter(v => v != null); return v.length ? Math.max(...v).toFixed(1) : "—"; })(),
     avgSpin: avgInt(allPts.map(p => p.release_spin_rate)),
     avgIVB: avg1(allPts.map(p => p.pfx_z)), avgHB: avg1(allPts.map(p => p.pfx_x)),
-    avgRelH: avg2(allPts.map(p => p.release_pos_z)), avgRelS: avg2(allPts.map(p => p.release_pos_x)),
-    avgExt: avg2(allPts.map(p => p.release_extension)),
+    avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
+    avgExt: avg1(allPts.map(p => p.release_extension)),
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
@@ -267,9 +267,9 @@ const computeMetrics = (pitches, hf) => {
 
   return {
     total: f.length, pitchTypeMetrics: ptm, allRow,
-    avgRelH: avg2(pitches.map(p => p.release_pos_z)),
+    avgRelH: avg1(pitches.map(p => p.release_pos_z)),
     avgRelS: avgNum(pitches.map(p => p.release_pos_x)),
-    avgExt: avg2(pitches.map(p => p.release_extension)),
+    avgExt: avg1(pitches.map(p => p.release_extension)),
   };
 };
 
@@ -1804,7 +1804,7 @@ const computeSummaryStats = (rawPitches, hand) => {
 
   // FIP = (13×HR + 3×(BB+HBP) - 2×K) / IP + constant
   const FIP_CONSTANT = 3.15;
-  const LG_HR_FB_RATE = 0.105; // league-average HR/FB rate (~10.5%)
+  const LG_HR_FB_RATE = 0.119; // league-average HR/FB rate (2025: 11.9%)
   let fip = null, xfip = null, siera = null;
   let hr = 0;
   if (ipNum > 0) {
@@ -1896,7 +1896,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   if (useBox) {
     const ip = boxStats.outs / 3.0;
     const FIP_CONSTANT = 3.15;
-    const LG_HR_FB_RATE = 0.105;
+    const LG_HR_FB_RATE = 0.119;
     if (ip > 0) {
       const fipVal = (13 * boxStats.home_runs + 3 * (boxStats.walks + boxStats.hit_batsmen) - 2 * boxStats.strikeouts) / ip + FIP_CONSTANT;
       fipDisplay = fipVal.toFixed(2);
