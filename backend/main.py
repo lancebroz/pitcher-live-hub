@@ -626,25 +626,74 @@ MONTH_FILES = [
 ]
 
 @app.get("/api/pitcher/{pitcher_id}/era")
-async def get_pitcher_era(pitcher_id: int, game_pks: str):
+async def get_pitcher_era(pitcher_id: int, game_pks: str = ""):
     """
-    Computes ERA for a pitcher across the given game_pks (comma-separated).
-    Fetches each boxscore in parallel and sums earned runs / outs for this pitcher.
-    Cached per (pitcher_id, game_pks) for 5 minutes; per-game boxscores cached longer below.
+    Returns season pitching stats for a pitcher.
+    Primary source: MLB season stats API (exact official numbers).
+    Fallback: boxscore aggregation across game_pks.
     """
     import asyncio
 
-    cache_key = f"era:{pitcher_id}:{game_pks}"
+    cache_key = f"era_season:{pitcher_id}"
     cached = get_cached(cache_key, 300)
     if cached:
         return cached
 
+    # ── Primary: MLB Season Stats API ──
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{MLB_BASE}/api/v1/people/{pitcher_id}/stats?stats=season&season=2026&group=pitching",
+                timeout=10,
+            )
+            data = r.json()
+            splits = data.get("stats", [{}])[0].get("splits", [])
+            if splits:
+                s = splits[0].get("stat", {})
+                ip_str = s.get("inningsPitched", "0.0")
+                try:
+                    whole, rem = str(ip_str).split(".")
+                    total_outs = int(whole) * 3 + int(rem)
+                except Exception:
+                    total_outs = 0
+                innings = total_outs / 3.0
+                ip_whole = total_outs // 3
+                ip_rem = total_outs % 3
+                innings_display = float(f"{ip_whole}.{ip_rem}")
+
+                era_val = None
+                try:
+                    era_val = float(s.get("era", 0))
+                except Exception:
+                    if innings > 0:
+                        era_val = round(int(s.get("earnedRuns", 0)) * 9.0 / innings, 2)
+
+                result = {
+                    "era": round(era_val, 2) if era_val is not None else None,
+                    "earned_runs": int(s.get("earnedRuns", 0)),
+                    "outs": total_outs,
+                    "innings": innings_display,
+                    "games": int(s.get("gamesPlayed", 0)),
+                    "games_started": int(s.get("gamesStarted", 0)),
+                    "strikeouts": int(s.get("strikeOuts", 0)),
+                    "walks": int(s.get("baseOnBalls", 0)),
+                    "hit_batsmen": int(s.get("hitBatsmen", 0)),
+                    "batters_faced": int(s.get("battersFaced", 0)),
+                    "home_runs": int(s.get("homeRuns", 0)),
+                    "source": "season_api",
+                }
+                print(f"[ERA {pitcher_id}] Season API: K={result['strikeouts']} BB={result['walks']} HR={result['home_runs']} BF={result['batters_faced']} IP={innings_display} ERA={result['era']}")
+                set_cache(cache_key, result)
+                return result
+    except Exception as e:
+        print(f"[ERA {pitcher_id}] Season API failed: {e}, falling back to boxscore aggregation")
+
+    # ── Fallback: Boxscore aggregation ──
     pks = [int(x) for x in game_pks.split(",") if x.strip().isdigit()]
     if not pks:
         return {"era": None, "earned_runs": 0, "outs": 0, "innings": 0.0, "games": 0}
 
     async def fetch_box(client, gpk):
-        # Per-game boxscore cache (3-day TTL since boxscores rarely change after Final)
         bk = f"box:{gpk}"
         b = get_cached(bk, 60 * 60 * 24 * 3)
         if b:

@@ -1733,9 +1733,11 @@ const computeSummaryStats = (rawPitches, hand) => {
   // Distinct game dates as a proxy for games started
   const gs = new Set(pitches.filter(p => p.game_date).map(p => p.game_date)).size;
 
-  // Plate appearance ending pitches have a non-empty events field
-  const paPitches = pitches.filter(p => p.events && p.events.trim() !== "");
-  const pa = paPitches.length;
+  // Count plate appearances using unique at-bat identifiers (game_pk + at_bat_number)
+  // This is more reliable than counting event-ending pitches because normAndFilter may
+  // have removed NaN-classified pitches that had valid events.
+  const uniqueABs = new Set(pitches.filter(p => p.game_pk && p.at_bat_number != null).map(p => `${p.game_pk}-${p.at_bat_number}`));
+  const pa = uniqueABs.size;
 
   // Categorize PA outcomes
   let so = 0, bb = 0, hbp = 0, ibb = 0;
@@ -1852,9 +1854,9 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   // (not split by hand), so they shouldn't be used when filtering by batter handedness.
   const hasBox = boxStats && boxStats.batters_faced > 0;
   const useBox = hand === "all" && hasBox;
-  const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : (hand !== "all" ? "—" : stats.era);
-  const ipDisplay = (hand === "all" && ipOverride != null) ? ipOverride.toFixed(1) : (hand !== "all" ? "—" : stats.ip);
-  const gsDisplay = useBox ? boxStats.games_started : (hand !== "all" ? "—" : stats.gs);
+  const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : stats.era;
+  const ipDisplay = (hand === "all" && ipOverride != null) ? ipOverride.toFixed(1) : stats.ip;
+  const gsDisplay = useBox ? boxStats.games_started : stats.gs;
   let kPctDisplay = stats.kPct, bbPctDisplay = stats.bbPct, kbbPctDisplay = stats.kbbPct;
   if (useBox) {
     const bf = boxStats.batters_faced;
@@ -1888,15 +1890,9 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
       kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
     }
   }
-  // FIP, xFIP, SIERA from boxscore data when available
+  // FIP, xFIP, SIERA from boxscore data when available (hand="all" only)
   let fipDisplay = stats.fip, xfipDisplay = stats.xfip, sieraDisplay = stats.siera;
-  if (hand !== "all") {
-    // ERA-family stats can't be accurately split by hand from pitch data alone.
-    // Show "—" to avoid misleading numbers. K%/BB%/K-BB% above ARE computed per-hand.
-    fipDisplay = "—";
-    xfipDisplay = "—";
-    sieraDisplay = "—";
-  } else if (useBox) {
+  if (useBox) {
     const ip = boxStats.outs / 3.0;
     const FIP_CONSTANT = 3.15;
     const LG_HR_FB_RATE = 0.105;
