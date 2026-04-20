@@ -1707,24 +1707,53 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   if (!stats) return null;
   // When hand="all" and we have boxscore truth-source numbers, use them. They are season totals
   // (not split by hand), so they shouldn't be used when filtering by batter handedness.
-  const useBox = hand === "all" && boxStats && boxStats.batters_faced > 0;
-  const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : stats.era;
-  const ipDisplay = (hand === "all" && ipOverride != null) ? ipOverride.toFixed(1) : stats.ip;
-  const gsDisplay = useBox ? boxStats.games_started : stats.gs;
+  const hasBox = boxStats && boxStats.batters_faced > 0;
+  const useBox = hand === "all" && hasBox;
+  const eraDisplay = (hand === "all" && eraOverride != null) ? eraOverride.toFixed(2) : (hand !== "all" ? "—" : stats.era);
+  const ipDisplay = (hand === "all" && ipOverride != null) ? ipOverride.toFixed(1) : (hand !== "all" ? "—" : stats.ip);
+  const gsDisplay = useBox ? boxStats.games_started : (hand !== "all" ? "—" : stats.gs);
   let kPctDisplay = stats.kPct, bbPctDisplay = stats.bbPct, kbbPctDisplay = stats.kbbPct;
   if (useBox) {
     const bf = boxStats.batters_faced;
     const k = boxStats.strikeouts;
-    const bb = boxStats.walks + boxStats.hit_batsmen; // BB% includes HBP per SIERA convention
+    const bb = boxStats.walks + boxStats.hit_batsmen;
     const kPct = (k / bf) * 100;
     const bbPct = (bb / bf) * 100;
     kPctDisplay = `${kPct.toFixed(1)}%`;
     bbPctDisplay = `${bbPct.toFixed(1)}%`;
     kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
+  } else if (hand !== "all" && hasBox) {
+    // For hand-filtered views, pitch-level event counting is unreliable because
+    // normAndFilter may have removed NaN-classified at-bat-ending pitches.
+    // Instead: count unique at-bats via (game_pk, at_bat_number) for this hand,
+    // and use event-based K/BB counts as-is (those we have are correct, just incomplete).
+    const handPitches = rawPitches.filter(p => p.batter_hand === hand);
+    const uniqueABs = new Set(handPitches.filter(p => p.game_pk && p.at_bat_number != null).map(p => `${p.game_pk}-${p.at_bat_number}`));
+    const pa = uniqueABs.size;
+    if (pa > 0) {
+      // K and BB from events are correct for the pitches we have
+      let k = 0, bb = 0;
+      for (const p of handPitches) {
+        const ev = (p.events || "").toLowerCase().trim();
+        if (ev.includes("strikeout")) k++;
+        else if (ev === "walk" || ev === "intent_walk" || ev === "hit_by_pitch") bb++;
+      }
+      const kPct = (k / pa) * 100;
+      const bbPct = (bb / pa) * 100;
+      kPctDisplay = `${kPct.toFixed(1)}%`;
+      bbPctDisplay = `${bbPct.toFixed(1)}%`;
+      kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
+    }
   }
   // FIP, xFIP, SIERA from boxscore data when available
   let fipDisplay = stats.fip, xfipDisplay = stats.xfip, sieraDisplay = stats.siera;
-  if (useBox) {
+  if (hand !== "all") {
+    // ERA-family stats can't be accurately split by hand from pitch data alone.
+    // Show "—" to avoid misleading numbers. K%/BB%/K-BB% above ARE computed per-hand.
+    fipDisplay = "—";
+    xfipDisplay = "—";
+    sieraDisplay = "—";
+  } else if (useBox) {
     const ip = boxStats.outs / 3.0;
     const FIP_CONSTANT = 3.15;
     const LG_HR_FB_RATE = 0.105;
