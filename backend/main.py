@@ -666,6 +666,7 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
     hit_batsmen = 0
     batters_faced = 0
     games_started = 0
+    home_runs = 0
 
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(*[fetch_box(client, gpk) for gpk in pks])
@@ -697,6 +698,7 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
             walks += int(stats.get("baseOnBalls") or 0)
             hit_batsmen += int(stats.get("hitBatsmen") or 0)
             batters_faced += int(stats.get("battersFaced") or 0)
+            home_runs += int(stats.get("homeRuns") or 0)
             if stats.get("gamesStarted"):
                 games_started += int(stats.get("gamesStarted"))
             games_with_data += 1
@@ -721,8 +723,9 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str):
         "walks": walks,
         "hit_batsmen": hit_batsmen,
         "batters_faced": batters_faced,
+        "home_runs": home_runs,
     }
-    print(f"[ERA {pitcher_id}] {len(pks)} game_pks requested, {games_with_data} found: K={strikeouts} BB={walks} BF={batters_faced} IP={innings_display} ERA={result['era']}")
+    print(f"[ERA {pitcher_id}] {len(pks)} game_pks requested, {games_with_data} found: K={strikeouts} BB={walks} HR={home_runs} BF={batters_faced} IP={innings_display} ERA={result['era']}")
     set_cache(cache_key, result)
     return result
 
