@@ -1262,7 +1262,7 @@ const normalizeLivePitch = (p) => {
   return {
     pitch_number: p.pitch_number,
     pitch_type: p.pitch_type || "",
-    pitch_name: p.pitch_name || p.pitch_type || "",
+    pitch_name: (p.pitch_name || p.pitch_type || "").replace("Four-Seam", "4-Seam"),
     release_speed: p.release_speed,
     release_spin_rate: p.release_spin_rate || p.spin_rate,
     spin_efficiency: p.spin_efficiency || null,
