@@ -1021,17 +1021,17 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     ctx.putImageData(imgData, 0, 0);
 
     // Re-draw batter images ON TOP of heatmap
-    // Scale large so batter fills the box; bottom of image = bottom of canvas (plate level)
-    const imgH2 = h * 1.3;
+    // Scale large; bottom of image flush with canvas bottom (plate level)
+    const imgH2 = h * 1.6;
     const imgW2 = imgH2 * (494 / 498);
-    const batterTopY = h - imgH2; // feet at canvas bottom
+    const batterTopY = h - imgH2;
     if ((hand === "all" || hand === "L") && _lhhImg.complete) {
-      ctx.globalAlpha = 0.35;
+      ctx.globalAlpha = 0.45;
       ctx.drawImage(_lhhImg, toCanvasX(2.5), batterTopY, imgW2, imgH2);
       ctx.globalAlpha = 1.0;
     }
     if ((hand === "all" || hand === "R") && _rhhImg.complete) {
-      ctx.globalAlpha = 0.35;
+      ctx.globalAlpha = 0.45;
       ctx.drawImage(_rhhImg, w - imgW2, batterTopY, imgW2, imgH2);
       ctx.globalAlpha = 1.0;
     }
@@ -1039,11 +1039,12 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     // Strike zone in white
     ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 1.5;
     ctx.strokeRect(toCanvasX(0.83), toCanvasY(3.5), toCanvasX(-0.83) - toCanvasX(0.83), toCanvasY(1.5) - toCanvasY(3.5));
-    // Home plate
+    // Home plate (filled white + stroke)
     const pcx = toCanvasX(0), pby = toCanvasY(0), phw = Math.abs(toCanvasX(0.83) - toCanvasX(-0.83)) / 2;
     ctx.beginPath(); ctx.moveTo(pcx - phw, pby); ctx.lineTo(pcx + phw, pby);
     ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
-    ctx.closePath(); ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1.5; ctx.stroke();
   }, [pitches, width, height, mode, hand]);
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
@@ -1960,7 +1961,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode }) => {
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season }) => {
   const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
@@ -1999,11 +2000,12 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   }, [orderMetrics]);
 
   // Fetch real ERA + IP from boxscores whenever the underlying pitch set changes
+  // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats
   useEffect(() => {
     setEra(null);
     setIpFromBox(null);
     setBoxStats(null);
-    if (!rawPitches || !pitcherId) return;
+    if (!rawPitches || !pitcherId || season === "2025") return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
@@ -2014,7 +2016,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
       setBoxStats(r ?? null);
     }).catch(() => {});
     return () => { alive = false; };
-  }, [rawPitches, pitcherId]);
+  }, [rawPitches, pitcherId, season]);
 
   if (!rawPitches) return null;
   const allRow = metrics?.allRow;
@@ -2365,6 +2367,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               onComputed={setTopPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
+              season="2026"
             />
           </>
         );
@@ -2423,6 +2426,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               pitchOrder={topPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
+              season={cmpMode === "2025" ? "2025" : "2026"}
             />
           )}
         </>
