@@ -1021,18 +1021,19 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     ctx.putImageData(imgData, 0, 0);
 
     // Re-draw batter images ON TOP of heatmap
-    // Scale large; bottom of image flush with canvas bottom (plate level)
+    // Scale large; push down so feet are at canvas bottom (image has padding below feet)
     const imgH2 = h * 1.6;
     const imgW2 = imgH2 * (494 / 498);
-    const batterTopY = h - imgH2;
+    const batterTopY = h - imgH2 + h * 0.12; // push down to account for padding below feet in PNG
+    const edgeOffset = w * 0.06; // push batters away from center
     if ((hand === "all" || hand === "L") && _lhhImg.complete) {
       ctx.globalAlpha = 0.45;
-      ctx.drawImage(_lhhImg, toCanvasX(2.5), batterTopY, imgW2, imgH2);
+      ctx.drawImage(_lhhImg, toCanvasX(2.5) - edgeOffset, batterTopY, imgW2, imgH2);
       ctx.globalAlpha = 1.0;
     }
     if ((hand === "all" || hand === "R") && _rhhImg.complete) {
       ctx.globalAlpha = 0.45;
-      ctx.drawImage(_rhhImg, w - imgW2, batterTopY, imgW2, imgH2);
+      ctx.drawImage(_rhhImg, w - imgW2 + edgeOffset, batterTopY, imgW2, imgH2);
       ctx.globalAlpha = 1.0;
     }
 
