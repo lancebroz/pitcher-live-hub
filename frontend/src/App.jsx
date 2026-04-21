@@ -1025,7 +1025,7 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     const imgH2 = h * 1.6;
     const imgW2 = imgH2 * (494 / 498);
     const batterTopY = h - imgH2 + h * 0.12; // push down to account for padding below feet in PNG
-    const edgeOffset = w * 0.06; // push batters away from center
+    const edgeOffset = w * 0.12; // push batters away from center
     if ((hand === "all" || hand === "L") && _lhhImg.complete) {
       ctx.globalAlpha = 0.45;
       ctx.drawImage(_lhhImg, toCanvasX(2.5) - edgeOffset, batterTopY, imgW2, imgH2);
