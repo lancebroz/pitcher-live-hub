@@ -1383,7 +1383,7 @@ const computeHistoricalSummary = (pitchData) => {
 
   // Compute rates
   const kPct = totalPA > 0 ? ((strikeouts / totalPA) * 100).toFixed(1) : "0.0";
-  const bbPct = totalPA > 0 ? ((walks / totalPA) * 100).toFixed(1) : "0.0";
+  const bbPct = totalPA > 0 ? ((bbOnly / totalPA) * 100).toFixed(1) : "0.0"; // walks only, no HBP
   const whip = ipNum > 0 ? ((bbOnly + hits) / ipNum).toFixed(2) : "-.--";
 
   // ERA: use delta_run_exp sum as a proxy for runs, or compute from run-scoring events
@@ -1796,11 +1796,13 @@ const computeSummaryStats = (rawPitches, hand) => {
   // Fall back to "—" for ERA since accurate ER tracking would need boxscore lookups.
   const era = "—";
 
-  // Rates (BB% includes IBB and HBP per SIERA convention)
-  const bbAll = bb + hbp;
+  // Display rates: BB% = walks only (FanGraphs convention)
+  // Formula rates: BB% includes HBP (used for FIP/SIERA internally)
+  const bbAll = bb + hbp; // for FIP/SIERA formulas
   const kPct = pa > 0 ? (so / pa) : 0;
-  const bbPct = pa > 0 ? (bbAll / pa) : 0;
-  const kbbPct = kPct - bbPct;
+  const bbPctDisplay = pa > 0 ? (bb / pa) : 0; // walks only for display
+  const bbPctFormula = pa > 0 ? (bbAll / pa) : 0; // walks+HBP for SIERA
+  const kbbPct = kPct - bbPctDisplay;
 
   // FIP = (13×HR + 3×(BB+HBP) - 2×K) / IP + constant
   const FIP_CONSTANT = 3.15;
@@ -1825,12 +1827,12 @@ const computeSummaryStats = (rawPitches, hand) => {
     const sign = gbDiff >= 0 ? 1 : -1;
     siera = 6.145
           - 16.986 * kPct
-          + 11.434 * bbPct
+          + 11.434 * bbPctFormula
           -  1.858 * gbDiff
           +  7.653 * (kPct * kPct)
           + sign * 6.664 * (gbDiff * gbDiff)
           + 10.130 * kPct * gbDiff
-          -  5.195 * bbPct * gbDiff
+          -  5.195 * bbPctFormula * gbDiff
           + SIERA_CONSTANT;
   }
 
@@ -1842,7 +1844,7 @@ const computeSummaryStats = (rawPitches, hand) => {
     xfip: xfip != null ? xfip.toFixed(2) : "—",
     siera: siera != null ? siera.toFixed(2) : "—",
     kPct: pa > 0 ? `${(kPct * 100).toFixed(1)}%` : "—",
-    bbPct: pa > 0 ? `${(bbPct * 100).toFixed(1)}%` : "—",
+    bbPct: pa > 0 ? `${(bbPctDisplay * 100).toFixed(1)}%` : "—",
     kbbPct: pa > 0 ? `${(kbbPct * 100).toFixed(1)}%` : "—",
     pa,
   };
@@ -1862,9 +1864,9 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   if (useBox) {
     const bf = boxStats.batters_faced;
     const k = boxStats.strikeouts;
-    const bb = boxStats.walks + boxStats.hit_batsmen;
+    const bbOnly = boxStats.walks; // BB% display = walks only (FanGraphs convention)
     const kPct = (k / bf) * 100;
-    const bbPct = (bb / bf) * 100;
+    const bbPct = (bbOnly / bf) * 100;
     kPctDisplay = `${kPct.toFixed(1)}%`;
     bbPctDisplay = `${bbPct.toFixed(1)}%`;
     kbbPctDisplay = `${(kPct - bbPct).toFixed(1)}%`;
@@ -1882,7 +1884,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
       for (const p of handPitches) {
         const ev = (p.events || "").toLowerCase().trim();
         if (ev.includes("strikeout")) k++;
-        else if (ev === "walk" || ev === "intent_walk" || ev === "hit_by_pitch") bb++;
+        else if (ev === "walk" || ev === "intent_walk") bb++; // BB% = walks only, no HBP
       }
       const kPct = (k / pa) * 100;
       const bbPct = (bb / pa) * 100;
