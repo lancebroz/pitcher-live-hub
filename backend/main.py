@@ -1306,6 +1306,7 @@ async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
 async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     import pandas as pd
     import io
+    import asyncio
     from datetime import datetime, timedelta
 
     # ── Step 1: Load all parquet data (cached 10 min) ──
@@ -1316,24 +1317,41 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
         start = datetime(2026, 3, 26)
         end = datetime.now()
 
+        # Build list of dates to fetch
+        dates = []
+        cur = start
+        while cur <= end:
+            dates.append(cur.strftime("%Y-%m-%d"))
+            cur += timedelta(days=1)
+
         all_dfs = []
         fetched = 0
         failed = 0
+
+        # Fetch in parallel batches for speed, with retries for reliability
         async with httpx.AsyncClient() as client:
-            cur = start
-            while cur <= end:
-                date_str = cur.strftime("%Y-%m-%d")
-                cur += timedelta(days=1)
-                try:
-                    r = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=15)
-                    if r.status_code == 200:
-                        df = pd.read_parquet(io.BytesIO(r.content))
-                        if len(df) > 0:
-                            all_dfs.append(df)
-                            fetched += 1
-                except Exception as e:
-                    failed += 1
-                    continue
+            async def fetch_one(date_str):
+                for attempt in range(2):  # retry once on failure
+                    try:
+                        r = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=20)
+                        if r.status_code == 200:
+                            return pd.read_parquet(io.BytesIO(r.content))
+                    except Exception:
+                        if attempt == 0:
+                            await asyncio.sleep(0.5)  # brief pause before retry
+                return None
+
+            import asyncio
+            # Fetch in batches of 5 to avoid overwhelming GitHub
+            for i in range(0, len(dates), 5):
+                batch = dates[i:i+5]
+                results = await asyncio.gather(*[fetch_one(d) for d in batch])
+                for j, result in enumerate(results):
+                    if result is not None and len(result) > 0:
+                        all_dfs.append(result)
+                        fetched += 1
+                    else:
+                        failed += 1
 
         print(f"[Leaderboard] Fetched {fetched} daily files, {failed} failed/missing")
         all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
@@ -1371,6 +1389,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     df["_is_swing"] = desc.str.contains("swinging|foul|in play|missed", regex=True)
     df["_is_swstr"] = (desc.str.contains("swinging") & desc.str.contains("strike")) | is_foul_tip
     df["_is_cstr"] = desc.str.contains("called") & desc.str.contains("strike")
+    # Strike% (FanGraphs): includes called strikes, swinging strikes, fouls, foul tips, AND balls in play
+    df["_is_strike_fg"] = df["is_strike"].fillna(False).astype(bool) | desc.str.contains("in play", regex=False)
 
     zone = pd.to_numeric(df["zone"], errors="coerce")
     df["_in_zone"] = zone.isin(range(1, 10))
@@ -1403,6 +1423,51 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     traj = df["trajectory"].fillna("")
     df["_is_gb"] = traj == "ground_ball"
     df["_is_fb"] = traj == "fly_ball"
+
+    # ── Run Value computation (context-neutral, count-based) ──
+    COUNT_RE = {
+        "0-0": 0.0, "1-0": 0.032, "0-1": -0.037, "2-0": 0.080, "1-1": -0.012,
+        "0-2": -0.086, "3-0": 0.149, "2-1": 0.024, "1-2": -0.055, "3-1": 0.101,
+        "2-2": -0.026, "3-2": 0.040,
+    }
+    EVENT_LW = {
+        "strikeout": -0.279, "strikeout_double_play": -0.279, "walk": 0.306, "intent_walk": 0.175,
+        "hit_by_pitch": 0.352, "single": 0.464, "double": 0.762, "triple": 1.051, "home_run": 1.396,
+        "field_out": -0.264, "flyout": -0.264, "groundout": -0.264, "lineout": -0.264, "pop_out": -0.264,
+        "force_out": -0.264, "forceout": -0.264, "sac_fly": -0.098, "sac_bunt": -0.147,
+        "fielders_choice": -0.243, "fielders_choice_out": -0.264, "field_error": 0.464,
+        "catcher_interf": 0.306, "double_play": -0.494, "grounded_into_double_play": -0.494,
+        "sac_fly_double_play": -0.494, "sac_bunt_double_play": -0.494, "triple_play": -0.594,
+    }
+    def _compute_rv(row):
+        try:
+            b = int(row.get("balls", 0)) if pd.notna(row.get("balls")) else 0
+            s = int(row.get("strikes", 0)) if pd.notna(row.get("strikes")) else 0
+            ck = f"{b}-{s}"
+            cur_re = COUNT_RE.get(ck, 0)
+            ev = str(row.get("events", "")).lower().strip()
+            # Skip baserunning events (don't end the PA)
+            is_baserunning = "caught_stealing" in ev or "pickoff" in ev
+            if ev and ev != "nan" and not is_baserunning:
+                lw = EVENT_LW.get(ev)
+                if lw is not None:
+                    return lw - cur_re
+                if "out" in ev:
+                    return -0.264 - cur_re
+                return 0
+            cd = str(row.get("call_description", "")).lower()
+            if "ball" in cd and "foul" not in cd:
+                nk = f"{min(b+1,3)}-{s}"
+                return COUNT_RE.get(nk, 0) - cur_re
+            if "foul" in cd and s >= 2:
+                return 0
+            if "strike" in cd or "foul" in cd:
+                nk = f"{b}-{min(s+1,2)}"
+                return COUNT_RE.get(nk, 0) - cur_re
+            return 0
+        except Exception:
+            return 0
+    df["_rv"] = df.apply(_compute_rv, axis=1)
 
     # ── Step 4: Group and aggregate ──
     grouped = df.groupby("pitcher_id")
@@ -1443,7 +1508,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 "avg_spin": int(round(float(spin.mean()))) if len(spin) > 0 else None,
                 "avg_ivb": round(float(ivb.mean()) * 12, 1) if len(ivb) > 0 else None,
                 "avg_hb": round(float(hb.mean()) * -12, 1) if len(hb) > 0 else None,
-                "strike_rate": round(float(g["is_strike"].fillna(False).astype(bool).sum()) / n * 100, 1) if n > 0 else None,
+                "strike_rate": round(float(g["_is_strike_fg"].sum()) / n * 100, 1) if n > 0 else None,
                 "zone_rate": round(int(g["_in_zone"].sum()) / n * 100, 1) if n > 0 else None,
                 "csw_rate": round((cstr + swstr) / n * 100, 1) if n > 0 else None,
                 "cstr_rate": round(cstr / n * 100, 1) if n > 0 else None,
@@ -1455,6 +1520,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 "gb_rate": round(gb / bip * 100, 1) if bip > 0 else None,
                 "fb_rate": round(fb / bip * 100, 1) if bip > 0 else None,
                 "barrel_rate": round(barrels / bip * 100, 1) if bip > 0 else None,
+                "run_value": round(float(g["_rv"].sum()), 1),
+                "rv_100": round(float(g["_rv"].mean()) * 100, 1) if n > 0 else None,
             })
         except Exception as e:
             print(f"Leaderboard: skipping pitcher {pid}: {e}")

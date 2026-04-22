@@ -202,7 +202,7 @@ const computeMetrics = (pitches, hf) => {
   const ptm = Object.entries(bt).map(([n, pts]) => {
     const c = pts.length, sw = pts.filter(p => p.is_swing).length, wh = pts.filter(p => p.is_whiff).length,
       iz = pts.filter(p => p.is_in_zone).length, cs = pts.filter(p => p.is_called_strike).length,
-      st = pts.filter(p => p.is_in_zone || p.is_swing || p.is_called_strike || p.description === "foul").length,
+      st = pts.filter(p => p.is_swing || p.is_called_strike).length,
       ip = pts.filter(p => p.is_in_play).length, gb = pts.filter(p => p.is_ground_ball).length,
       fb = pts.filter(p => p.is_fly_ball).length, ba = pts.filter(p => p.is_barrel).length,
       ozs = pts.filter(p => !p.is_in_zone && p.is_swing).length,
@@ -226,7 +226,8 @@ const computeMetrics = (pitches, hf) => {
       xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-      expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
+      expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
+      rv100: (() => { const rvPts = pts.filter(p => p.delta_run_exp != null); const total = rvPts.reduce((a, p) => a + p.delta_run_exp, 0); return rvPts.length > 0 ? ((total / rvPts.length) * 100).toFixed(1) : "—"; })(),
       rawPitches: pts,
       avgRelHNum: avgNum(pts.map(p => p.release_pos_z)),
       avgRelSNum: avgNum(pts.map(p => p.release_pos_x)),
@@ -238,7 +239,7 @@ const computeMetrics = (pitches, hf) => {
   const allPts = f;
   const ac = allPts.length, asw = allPts.filter(p => p.is_swing).length, awh = allPts.filter(p => p.is_whiff).length,
     aiz = allPts.filter(p => p.is_in_zone).length, acs = allPts.filter(p => p.is_called_strike).length,
-    ast = allPts.filter(p => p.is_in_zone || p.is_swing || p.is_called_strike || p.description === "foul").length,
+    ast = allPts.filter(p => p.is_swing || p.is_called_strike).length,
     aip = allPts.filter(p => p.is_in_play).length, agb = allPts.filter(p => p.is_ground_ball).length,
     afb = allPts.filter(p => p.is_fly_ball).length, aba = allPts.filter(p => p.is_barrel).length,
     aozs = allPts.filter(p => !p.is_in_zone && p.is_swing).length,
@@ -261,7 +262,8 @@ const computeMetrics = (pitches, hf) => {
     xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
     xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-    expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(2),
+    expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
+    rv100: (() => { const rvPts = allPts.filter(p => p.delta_run_exp != null); const total = rvPts.reduce((a, p) => a + p.delta_run_exp, 0); return rvPts.length > 0 ? ((total / rvPts.length) * 100).toFixed(1) : "—"; })(),
     rawPitches: allPts,
   };
 
@@ -1243,6 +1245,51 @@ const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, se
   );
 };
 
+// ─── Context-neutral pitch run value from count states ───
+// Run expectancy by count (runs above average PA, from Tom Tango's linear weights)
+const COUNT_RE = {
+  "0-0": 0.000, "1-0": 0.032, "0-1": -0.037, "2-0": 0.080, "1-1": -0.012,
+  "0-2": -0.086, "3-0": 0.149, "2-1": 0.024, "1-2": -0.055, "3-1": 0.101,
+  "2-2": -0.026, "3-2": 0.040,
+};
+// PA outcome linear weights (~4.3 R/G environment, 2024-2025)
+const EVENT_LW = {
+  strikeout: -0.279, strikeout_double_play: -0.279, walk: 0.306, intent_walk: 0.175,
+  hit_by_pitch: 0.352, single: 0.464, double: 0.762, triple: 1.051, home_run: 1.396,
+  field_out: -0.264, flyout: -0.264, groundout: -0.264, lineout: -0.264, pop_out: -0.264,
+  force_out: -0.264, forceout: -0.264, sac_fly: -0.098, sac_bunt: -0.147,
+  fielders_choice: -0.243, fielders_choice_out: -0.264, field_error: 0.464,
+  catcher_interf: 0.306, double_play: -0.494, grounded_into_double_play: -0.494,
+  sac_fly_double_play: -0.494, sac_bunt_double_play: -0.494, triple_play: -0.594,
+};
+const computePitchRunValue = (p) => {
+  const b = parseInt(p.balls) || 0, s = parseInt(p.strikes) || 0;
+  const countKey = `${b}-${s}`;
+  const currentRE = COUNT_RE[countKey] ?? 0;
+  const ev = (p.events || "").toLowerCase().trim();
+  // Skip baserunning events (they don't end the PA)
+  const isBaserunning = ev.includes("caught_stealing") || ev.includes("pickoff");
+  // PA-ending event: RV = event weight - current count RE
+  if (ev && !isBaserunning) {
+    const lw = EVENT_LW[ev];
+    if (lw != null) return lw - currentRE;
+    if (ev.includes("out") || ev.includes("play")) return -0.264 - currentRE;
+    return 0;
+  }
+  // Non-terminal pitch: RV = new count RE - current count RE
+  const desc = (p.description || "").toLowerCase();
+  if (desc.includes("ball") && !desc.includes("foul")) {
+    const newKey = `${Math.min(b + 1, 3)}-${s}`;
+    return (COUNT_RE[newKey] ?? 0) - currentRE;
+  }
+  if (desc.includes("foul") && s >= 2) return 0; // foul with 2 strikes = no change
+  if (desc.includes("strike") || desc.includes("foul")) {
+    const newKey = `${b}-${Math.min(s + 1, 2)}`;
+    return (COUNT_RE[newKey] ?? 0) - currentRE;
+  }
+  return 0;
+};
+
 // ─── Normalize API pitch data into internal format ───
 const normalizeLivePitch = (p) => {
   const desc = (p.description || "").toLowerCase();
@@ -1317,7 +1364,7 @@ const normalizeLivePitch = (p) => {
     estimated_woba_using_speedangle: p.estimated_woba_using_speedangle || null,
     estimated_ba_using_speedangle: p.estimated_ba_using_speedangle || null,
     woba_value: p.woba_value || null,
-    delta_run_exp: p.delta_run_exp,
+    delta_run_exp: p.delta_run_exp != null ? p.delta_run_exp : computePitchRunValue(p),
     game_date: p.game_date || "",
     game_pk: p.game_pk || 0,
     at_bat_number: p.at_bat_number || null,
@@ -1597,6 +1644,7 @@ const PERF_COLS = [
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
   { key: "bipCount", label: "BIP" }, { key: "gbRate", label: "GB%" },
   { key: "fbRate", label: "FB%" }, { key: "barrelRate", label: "Barrel%" },
+  { key: "expRunValue", label: "RV" }, { key: "rv100", label: "RV/100" },
 ];
 
 // ─── Starters Grid (home page) ───
@@ -1724,6 +1772,8 @@ const COMPARE_COLS = [
   { key: "gbRate", label: "GB%", w: 55 },
   { key: "fbRate", label: "FB%", w: 55 },
   { key: "barrelRate", label: "Barrel%", w: 65 },
+  { key: "expRunValue", label: "RV", w: 50 },
+  { key: "rv100", label: "RV/100", w: 60 },
 ];
 
 // Compute high-level pitcher stats (GS, IP, ERA, SIERA, K%, BB%, K-BB%) from raw pitches.
@@ -2785,6 +2835,8 @@ const LB_COLS = [
   { key: "gb_rate", label: "GB%", w: 45 },
   { key: "fb_rate", label: "FB%", w: 45 },
   { key: "barrel_rate", label: "Barrel%", w: 60 },
+  { key: "run_value", label: "RV", w: 50 },
+  { key: "rv_100", label: "RV/100", w: 58 },
 ];
 
 const LeaderboardPage = ({ C, isMobile }) => {
