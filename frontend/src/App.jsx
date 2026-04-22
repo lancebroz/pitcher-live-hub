@@ -2892,18 +2892,29 @@ const LeaderboardPage = ({ C, isMobile }) => {
   const totalCount = displayData.length;
 
   // Compute average row from ALL filtered data (not just shown slice)
+  // Rate stats (percentages) are weighted by total_pitches for accurate league averages
   const avgRow = useMemo(() => {
     if (displayData.length === 0) return null;
     const numCols = LB_COLS.filter(c => c.key !== "pitcher_name" && c.key !== "pitcher_hand");
+    const rateKeys = new Set(["strike_rate", "zone_rate", "csw_rate", "cstr_rate", "swstr_rate",
+      "whiff_rate", "chase_rate", "zone_whiff_rate", "gb_rate", "fb_rate", "barrel_rate", "rv_100",
+      "avg_velo", "avg_spin", "avg_ivb", "avg_hb"]);
     const avgs = {};
     for (const col of numCols) {
       const vals = displayData.map(p => p[col.key]).filter(v => v != null && v !== "—");
-      if (vals.length > 0) {
+      if (vals.length === 0) { avgs[col.key] = "—"; continue; }
+      if (rateKeys.has(col.key)) {
+        // Pitch-weighted average for rate stats
+        let wSum = 0, wTotal = 0;
+        for (const p of displayData) {
+          const v = p[col.key], w = p.total_pitches || 0;
+          if (v != null && v !== "—" && w > 0) { wSum += Number(v) * w; wTotal += w; }
+        }
+        avgs[col.key] = wTotal > 0 ? (col.key === "avg_spin" ? Math.round(wSum / wTotal) : Number((wSum / wTotal).toFixed(1))) : "—";
+      } else {
         const sum = vals.reduce((a, b) => a + Number(b), 0);
         const mean = sum / vals.length;
         avgs[col.key] = col.key === "avg_spin" ? Math.round(mean) : Number(mean.toFixed(1));
-      } else {
-        avgs[col.key] = "—";
       }
     }
     avgs.pitcher_name = "AVERAGE";
