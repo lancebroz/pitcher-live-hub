@@ -1372,7 +1372,17 @@ const normalizeLivePitch = (p) => {
   };
 };
 
-const normAndFilter = (raw) => raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other" && p.pitch_type.toLowerCase() !== "nan" && p.pitch_name.toLowerCase() !== "nan");
+const normAndFilter = (raw) => {
+  const normalized = raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other" && p.pitch_type.toLowerCase() !== "nan" && p.pitch_name.toLowerCase() !== "nan");
+  // Dedup by game_pk + at_bat_number + pitch_number (catches Savant CSV dupes & merge overlaps)
+  const seen = new Set();
+  return normalized.filter(p => {
+    const key = `${p.game_pk || ""}-${p.at_bat_number || ""}-${p.pitch_number || ""}-${p.pitch_type}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
 const computeHistoricalSummary = (pitchData) => {
@@ -2254,10 +2264,10 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       ]);
       let merged;
       if (savantRaw && savantRaw.length > 0) {
-        // Find game_pks in Savant data
-        const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => p.game_pk));
+        // Find game_pks in Savant data (coerce to string for reliable dedup)
+        const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
         // Add any live/parquet pitches from games NOT in Savant (most recent games)
-        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(p.game_pk));
+        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));
         merged = [...savantRaw, ...liveSupplement];
       } else {
         merged = liveRaw || [];
