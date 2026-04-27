@@ -1389,12 +1389,13 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     df["_is_swing"] = desc.str.contains("swinging|foul|in play|missed", regex=True)
     df["_is_swstr"] = (desc.str.contains("swinging") & desc.str.contains("strike")) | is_foul_tip
     df["_is_cstr"] = desc.str.contains("called") & desc.str.contains("strike")
-    # Strike% (FanGraphs): includes called strikes, swinging strikes, fouls, foul tips, AND balls in play
-    df["_is_strike_fg"] = df["is_strike"].fillna(False).astype(bool) | desc.str.contains("in play", regex=False)
+    # Strike% (FanGraphs): swing (fouls, whiffs, BIP) + called strikes
+    # Computed purely from call_description — does NOT rely on is_strike column
+    df["_is_strike_fg"] = df["_is_swing"] | df["_is_cstr"]
 
     zone = pd.to_numeric(df["zone"], errors="coerce")
-    df["_in_zone"] = zone.isin(range(1, 10))
-    df["_out_zone"] = zone.isin(range(11, 15))
+    df["_in_zone"] = (zone >= 1) & (zone <= 9)
+    df["_out_zone"] = (zone >= 11) & (zone <= 14)
     df["_is_chase"] = df["_out_zone"] & df["_is_swing"]
     df["_zone_swing"] = df["_in_zone"] & df["_is_swing"]
     df["_zone_swstr"] = df["_in_zone"] & df["_is_swstr"]

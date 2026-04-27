@@ -1295,11 +1295,11 @@ const normalizeLivePitch = (p) => {
   const desc = (p.description || "").toLowerCase();
   const isFoulTip = desc.includes("foul_tip") || desc.includes("foul tip");
   const isStrike = p.is_strike || desc.includes("strike") || desc.includes("foul");
-  const isSwing = desc.includes("swing") || desc.includes("foul") || desc.includes("in play") || desc.includes("hit");
-  const isWhiff = isFoulTip || (desc.includes("swinging") && desc.includes("strike"));
+  const isSwing = desc.includes("swing") || desc.includes("foul") || desc.includes("in play") || desc.includes("into_play") || desc.includes("missed_bunt");
+  const isWhiff = isFoulTip || (desc.includes("swinging") && desc.includes("strike")) || desc.includes("missed_bunt");
   const isCalledStrike = desc.includes("called") && desc.includes("strike");
   const isFoul = !isFoulTip && desc.includes("foul"); // regular fouls only, NOT foul tips
-  const isInPlay = p.is_in_play || desc.includes("in play");
+  const isInPlay = p.is_in_play || desc.includes("in play") || desc.includes("into_play");
   const zone = p.zone;
   const isInZone = zone != null ? (zone >= 1 && zone <= 9) : (Math.abs(p.plate_x || 0) <= 0.83 && (p.plate_z || 0) >= 1.5 && (p.plate_z || 0) <= 3.5);
 
@@ -1323,7 +1323,7 @@ const normalizeLivePitch = (p) => {
     release_extension: p.release_extension,
     plate_x: p.plate_x,
     plate_z: p.plate_z,
-    description: isWhiff ? "swinging_strike" : isCalledStrike ? "called_strike" : isFoul ? "foul" : isInPlay ? "hit_into_play" : "ball",
+    description: isWhiff ? "swinging_strike" : isCalledStrike ? "called_strike" : isFoul ? "foul" : isInPlay ? "hit_into_play" : desc.includes("hit_by_pitch") ? "hit_by_pitch" : "ball",
     is_in_zone: isInZone,
     is_swing: isSwing,
     is_whiff: isWhiff,
@@ -2587,7 +2587,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     };
     const passesMode = (p) => {
       if (hmMode === "frequency") return true;
-      if (hmMode === "whiffs") return (p.description || "").toLowerCase() === "swinging_strike";
+      if (hmMode === "whiffs") return p.is_whiff;
       if (hmMode === "damage") {
         // Gaussian: show all balls in play (canvas weights by xwOBA)
         // Grid: show only extra-base hits
