@@ -1326,34 +1326,44 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
 
         all_dfs = []
         fetched = 0
-        failed = 0
+        failed_dates = []
 
-        # Fetch in parallel batches for speed, with retries for reliability
+        # Fetch in parallel batches with aggressive retry for reliability
         async with httpx.AsyncClient() as client:
             async def fetch_one(date_str):
-                for attempt in range(2):  # retry once on failure
+                for attempt in range(3):  # 3 attempts per file
                     try:
-                        r = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=20)
+                        r = await client.get(f"{DAILY_BASE}/{date_str}.parquet", timeout=30)
                         if r.status_code == 200:
-                            return pd.read_parquet(io.BytesIO(r.content))
+                            df = pd.read_parquet(io.BytesIO(r.content))
+                            if len(df) > 0:
+                                return df
+                            return None  # empty file (no games that day)
+                        if r.status_code == 404:
+                            return None  # no games that day
                     except Exception:
-                        if attempt == 0:
-                            await asyncio.sleep(0.5)  # brief pause before retry
-                return None
+                        pass
+                    if attempt < 2:
+                        await asyncio.sleep(1.0 * (attempt + 1))  # increasing backoff
+                return "FAILED"  # distinguish from None (no games)
 
-            import asyncio
-            # Fetch in batches of 5 to avoid overwhelming GitHub
+            # Fetch in batches of 5 with a pause between batches
             for i in range(0, len(dates), 5):
                 batch = dates[i:i+5]
                 results = await asyncio.gather(*[fetch_one(d) for d in batch])
                 for j, result in enumerate(results):
-                    if result is not None and len(result) > 0:
+                    if isinstance(result, pd.DataFrame):
                         all_dfs.append(result)
                         fetched += 1
-                    else:
-                        failed += 1
+                    elif result == "FAILED":
+                        failed_dates.append(batch[j])
+                # Brief pause between batches to avoid GitHub rate limits
+                if i + 5 < len(dates):
+                    await asyncio.sleep(0.3)
 
-        print(f"[Leaderboard] Fetched {fetched} daily files, {failed} failed/missing")
+        if failed_dates:
+            print(f"[Leaderboard] WARNING: Failed to fetch {len(failed_dates)} dates: {failed_dates}")
+        print(f"[Leaderboard] Fetched {fetched} daily files, {len(failed_dates)} failed, {len(dates) - fetched - len(failed_dates)} no-game days")
         all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
         if len(all_df) > 0:
             set_cache(raw_key, all_df)
@@ -1361,6 +1371,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
             from zoneinfo import ZoneInfo
             ct_now = datetime.now(ZoneInfo("America/Chicago"))
             set_cache("leaderboard_updated", ct_now.strftime("%Y-%m-%d %I:%M %p CT"))
+            set_cache("leaderboard_fetch_stats", {"fetched": fetched, "failed": len(failed_dates), "failed_dates": failed_dates})
             print(f"[Leaderboard] Total rows: {len(all_df)}, pitchers: {all_df['pitcher_id'].nunique()}")
 
     if all_df is None or len(all_df) == 0:
@@ -1533,8 +1544,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     # Get timestamps for the response
     last_updated = get_cached("leaderboard_updated", 99999) or "—"
     latest_date = str(all_df["game_date"].dropna().max()) if "game_date" in all_df.columns else "—"
+    fetch_stats = get_cached("leaderboard_fetch_stats", 99999) or {}
 
-    return {"pitchers": pitchers, "pitch_types": all_pitch_types, "last_updated": last_updated, "latest_game_date": latest_date}
+    return {"pitchers": pitchers, "pitch_types": all_pitch_types, "last_updated": last_updated, "latest_game_date": latest_date, "fetch_stats": fetch_stats}
 
 
 @app.get("/api/pitcher/{pitcher_id}/data-quality")

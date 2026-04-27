@@ -2551,7 +2551,18 @@ const HeatmapsPage = ({ C, isMobile }) => {
       try {
         let raw = [];
         if (year === "2026") {
-          raw = await getSeasonData(pitcher.id);
+          // Same merge as compare tool: Savant CSV (calibrated) + live supplement (recent games)
+          const [savantRaw, liveRaw] = await Promise.all([
+            getStatcast(pitcher.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []),
+            getSeasonData(pitcher.id).catch(() => []),
+          ]);
+          if (savantRaw && savantRaw.length > 0) {
+            const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
+            const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));
+            raw = [...savantRaw, ...liveSupplement];
+          } else {
+            raw = liveRaw || [];
+          }
         } else {
           raw = await getStatcast(pitcher.id, "2025-03-27", "2025-09-28");
         }
@@ -2853,6 +2864,7 @@ const LeaderboardPage = ({ C, isMobile }) => {
   const [data, setData] = useState(null);
   const [pitchTypes, setPitchTypes] = useState([]);
   const [lastUpdated, setLastUpdated] = useState("");
+  const [fetchStats, setFetchStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [pitcherHand, setPitcherHand] = useState("all");
   const [batterHand, setBatterHand] = useState("all");
@@ -2874,6 +2886,7 @@ const LeaderboardPage = ({ C, isMobile }) => {
         setData(r.pitchers || []);
         setPitchTypes(r.pitch_types || []);
         setLastUpdated(r.last_updated || "");
+        setFetchStats(r.fetch_stats || null);
       })
       .catch(() => { if (alive) setData([]); })
       .finally(() => { if (alive) setLoading(false); });
@@ -2959,7 +2972,15 @@ const LeaderboardPage = ({ C, isMobile }) => {
         <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px" }}>Leaderboard</div>
         <div style={{ fontSize: "12px", color: C.textDim }}>2026 season pitcher stats from parquet data. Sortable columns, filterable by hand, role, pitch type.</div>
         {lastUpdated && (
-          <div style={{ fontSize: "10px", color: C.textDim, marginTop: "4px", fontStyle: "italic" }}>Last updated: {lastUpdated}</div>
+          <div style={{ fontSize: "10px", color: C.textDim, marginTop: "4px", fontStyle: "italic" }}>
+            Last updated: {lastUpdated}
+            {fetchStats && fetchStats.failed > 0 && (
+              <span style={{ color: C.yellow, marginLeft: "8px" }}>⚠ {fetchStats.failed} day(s) missing data</span>
+            )}
+            {fetchStats && fetchStats.fetched > 0 && (
+              <span style={{ marginLeft: "8px" }}>({fetchStats.fetched} days loaded)</span>
+            )}
+          </div>
         )}
       </div>
 
