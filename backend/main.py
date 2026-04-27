@@ -625,72 +625,6 @@ MONTH_FILES = [
     "09_september.parquet", "10_october.parquet",
 ]
 
-
-@app.get("/api/pitcher/{pitcher_id}/cached-season")
-async def get_cached_season(pitcher_id: int):
-    """
-    Returns a pitcher's full 2026 season from the leaderboard Savant cache.
-    Same format as the /statcast endpoint but near-instant (~20ms).
-    Returns empty list if cache hasn't loaded yet.
-    If cache expired, triggers background rebuild via leaderboard endpoint.
-    """
-    raw_by_pitcher = get_cached("savant_by_pitcher", 14400)  # 4 hours
-    if not raw_by_pitcher:
-        # Cache is cold — trigger a background rebuild by calling leaderboard
-        import asyncio
-        asyncio.create_task(_leaderboard_impl("all", "all"))
-        return []
-    if pitcher_id not in raw_by_pitcher:
-        return []
-
-    rows = raw_by_pitcher[pitcher_id]
-    pitches = []
-    for row in rows:
-        def safe_float(key):
-            try: return float(row.get(key, ""))
-            except (ValueError, TypeError): return None
-
-        pitches.append({
-            "pitch_number": len(pitches) + 1,
-            "pitch_type": row.get("pitch_type", ""),
-            "pitch_name": row.get("pitch_name", ""),
-            "release_speed": safe_float("release_speed"),
-            "release_spin_rate": safe_float("release_spin_rate"),
-            "spin_axis": safe_float("spin_axis"),
-            "pfx_x": safe_float("pfx_x"),
-            "pfx_z": safe_float("pfx_z"),
-            "movement_source": "savant",
-            "plate_x": safe_float("plate_x"),
-            "plate_z": safe_float("plate_z"),
-            "release_pos_x": safe_float("release_pos_x"),
-            "release_pos_z": safe_float("release_pos_z"),
-            "release_extension": safe_float("release_extension"),
-            "vx0": safe_float("vx0"),
-            "vy0": safe_float("vy0"),
-            "vz0": safe_float("vz0"),
-            "effective_speed": safe_float("effective_speed"),
-            "zone": safe_float("zone"),
-            "description": row.get("description", ""),
-            "events": row.get("events", ""),
-            "type": row.get("type", ""),
-            "launch_speed": safe_float("launch_speed"),
-            "launch_angle": safe_float("launch_angle"),
-            "estimated_woba_using_speedangle": safe_float("estimated_woba_using_speedangle"),
-            "bb_type": row.get("bb_type", ""),
-            "is_in_play": row.get("type", "") == "X",
-            "stand": row.get("stand", ""),
-            "p_throws": row.get("p_throws", ""),
-            "balls": row.get("balls", ""),
-            "strikes": row.get("strikes", ""),
-            "game_date": row.get("game_date", ""),
-            "game_pk": int(row.get("game_pk", "0")) if str(row.get("game_pk", "")).strip().isdigit() else 0,
-            "inning": safe_float("inning"),
-            "at_bat_number": safe_float("at_bat_number"),
-            "events": row.get("events", ""),
-            "delta_run_exp": safe_float("delta_run_exp"),
-        })
-    return pitches
-
 @app.get("/api/pitcher/{pitcher_id}/era")
 async def get_pitcher_era(pitcher_id: int, game_pks: str = ""):
     """
@@ -1376,9 +1310,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     import asyncio
     from datetime import datetime, timedelta
 
-    # ── Step 1: Load all Savant data (cached 4 hours — data only updates daily) ──
+    # ── Step 1: Load all parquet data (cached 10 min) ──
     raw_key = "leaderboard_raw"
-    all_df = get_cached(raw_key, 14400)
+    all_df = get_cached(raw_key, 600)
 
     if all_df is None:
         start = datetime(2026, 3, 26)
@@ -1442,24 +1376,11 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
         print(f"[Leaderboard] Fetched {fetched_chunks} Savant chunks, {len(failed_chunks)} failed, {len(all_rows)} total rows")
 
         if all_rows:
-            # ── Cache raw Savant rows by pitcher_id for fast cached-season lookups ──
-            raw_by_pitcher = {}
+            # ── Convert Savant CSV rows to DataFrame with leaderboard column names ──
             def sf(row, key):
                 try: return float(row.get(key, ""))
                 except (ValueError, TypeError): return None
 
-            for row in all_rows:
-                pitcher_id_str = row.get("pitcher", "")
-                if not pitcher_id_str or not pitcher_id_str.strip().isdigit():
-                    continue
-                pid = int(pitcher_id_str)
-                if pid not in raw_by_pitcher:
-                    raw_by_pitcher[pid] = []
-                raw_by_pitcher[pid].append(row)
-
-            set_cache("savant_by_pitcher", raw_by_pitcher)
-
-            # ── Convert Savant CSV rows to DataFrame with leaderboard column names ──
             records = []
             for row in all_rows:
                 pitcher_id_str = row.get("pitcher", "")
@@ -1813,21 +1734,6 @@ async def debug_parquet():
             except Exception as e:
                 result[fname] = {"error": str(e)}
     return result
-
-
-# ─── Startup: pre-build Savant cache so first request is instant ───
-@app.on_event("startup")
-async def startup_cache():
-    import asyncio
-    async def _build():
-        await asyncio.sleep(2)  # let server finish starting
-        print("[Startup] Pre-building Savant cache...")
-        try:
-            await _leaderboard_impl("all", "all")
-            print("[Startup] Cache ready!")
-        except Exception as e:
-            print(f"[Startup] Cache build failed: {e}")
-    asyncio.create_task(_build())
 
 
 # ─── Health check ───

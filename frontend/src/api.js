@@ -74,12 +74,6 @@ export async function getStatcast(pitcherId, startDate, endDate) {
   return res.json();
 }
 
-export async function getCachedSeason(pitcherId) {
-  const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/cached-season`);
-  if (!res.ok) return [];
-  return res.json();
-}
-
 export async function getStatcastSampled(pitcherId, startDate, endDate, sampleSize = 50) {
   const res = await fetch(
     `${API_BASE}/api/pitcher/${pitcherId}/statcast-sampled?start_date=${startDate}&end_date=${endDate}&sample_per_type=${sampleSize}`
