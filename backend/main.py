@@ -653,18 +653,45 @@ async def get_cached_season(pitcher_id: int):
     if len(pitcher_df) == 0:
         return []
 
+    # Map pitch_type codes to pitch_name for fallback
+    PT_NAMES = {
+        "FF": "4-Seam Fastball", "SI": "Sinker", "FC": "Cutter",
+        "SL": "Slider", "ST": "Sweeper", "SV": "Slurve",
+        "CU": "Curveball", "KC": "Knuckle Curve", "CS": "Slow Curve",
+        "CH": "Changeup", "FS": "Splitter", "KN": "Knuckleball",
+        "EP": "Eephus", "SC": "Screwball",
+    }
+
     pitches = []
     for _, row in pitcher_df.iterrows():
         def sf(key):
             v = row.get(key)
-            if v is not None and str(v) not in ("", "nan", "None"):
+            if v is not None and str(v) not in ("", "nan", "None", "NaN"):
                 try: return float(v)
                 except (ValueError, TypeError): return None
             return None
 
+        def ss(key, default=""):
+            v = row.get(key, default)
+            s = str(v) if v is not None else default
+            return default if s in ("nan", "None", "NaN", "") else s
+
+        pt = ss("pitch_type")
+        pn = ss("pitch_name") or PT_NAMES.get(pt, pt)
+
+        # Reverse fallback: if parquet has blank pitch_type but a valid pitch_name,
+        # derive the code from the name. Without this, the frontend filter strips
+        # every such pitch and Compare/Heatmaps render empty.
+        if not pt and pn:
+            PN_TO_PT = {v: k for k, v in PT_NAMES.items()}
+            PN_TO_PT["Four-Seam Fastball"] = "FF"
+            PN_TO_PT["Split-Finger"] = "FS"
+            pt = PN_TO_PT.get(pn, pn[:2].upper() if pn else "UN")
+
         pitches.append({
-            "pitch_type": str(row.get("pitch_type", "")),
-            "pitch_name": str(row.get("pitch_name", "")),
+            "pitch_type": pt,
+            "pitch_name": pn,
+            "pitch_number": sf("pitch_number"),
             "release_speed": sf("release_speed"),
             "release_spin_rate": sf("release_spin_rate"),
             "spin_axis": sf("spin_axis"),
@@ -680,20 +707,20 @@ async def get_cached_season(pitcher_id: int):
             "vz0": sf("vz0"),
             "effective_speed": sf("effective_speed"),
             "zone": sf("zone"),
-            "description": str(row.get("description", "")),
-            "events": str(row.get("events", "")),
-            "type": str(row.get("type", "")),
+            "description": ss("description"),
+            "events": ss("events"),
+            "type": ss("type"),
             "launch_speed": sf("launch_speed"),
             "launch_angle": sf("launch_angle"),
             "estimated_woba_using_speedangle": sf("estimated_woba_using_speedangle"),
-            "bb_type": str(row.get("bb_type", "")),
-            "is_in_play": str(row.get("type", "")) == "X",
-            "stand": str(row.get("stand", "")),
-            "p_throws": str(row.get("p_throws", "")),
-            "balls": str(row.get("balls", "")),
-            "strikes": str(row.get("strikes", "")),
-            "game_date": str(row.get("game_date", "")),
-            "game_pk": int(row.get("game_pk", 0)) if str(row.get("game_pk", "0")) not in ("", "nan") else 0,
+            "bb_type": ss("bb_type"),
+            "is_in_play": ss("type") == "X",
+            "stand": ss("stand"),
+            "p_throws": ss("p_throws"),
+            "balls": ss("balls"),
+            "strikes": ss("strikes"),
+            "game_date": ss("game_date"),
+            "game_pk": int(row.get("game_pk", 0)) if str(row.get("game_pk", "0")) not in ("", "nan", "NaN") else 0,
             "inning": sf("inning"),
             "at_bat_number": sf("at_bat_number"),
             "delta_run_exp": sf("delta_run_exp"),
