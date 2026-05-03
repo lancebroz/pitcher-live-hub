@@ -4,6 +4,7 @@ Pitcher Tracker Backend
 A simple API server that fetches MLB data and serves it to the frontend.
 """
 
+import os
 import time
 import httpx
 from fastapi import FastAPI
@@ -614,6 +615,90 @@ async def get_statcast_sampled(pitcher_id: int, start_date: str, end_date: str, 
     }
     set_cache(cache_key, result)
     return result
+
+
+# ─── Local Savant cache: serves pitcher data from local parquet file ───
+LOCAL_SAVANT_PATH = os.environ.get("LOCAL_SAVANT_PATH", "")
+_local_savant_df = None
+_local_savant_loaded = False
+
+def _load_local_savant():
+    global _local_savant_df, _local_savant_loaded
+    if _local_savant_loaded:
+        return _local_savant_df
+    if LOCAL_SAVANT_PATH and os.path.exists(LOCAL_SAVANT_PATH):
+        import pandas as pd
+        try:
+            _local_savant_df = pd.read_parquet(LOCAL_SAVANT_PATH)
+            _local_savant_loaded = True
+            print(f"[Local] Loaded {len(_local_savant_df)} pitches from {LOCAL_SAVANT_PATH}")
+        except Exception as e:
+            print(f"[Local] Failed to load {LOCAL_SAVANT_PATH}: {e}")
+            _local_savant_loaded = True
+    else:
+        _local_savant_loaded = True
+    return _local_savant_df
+
+@app.get("/api/pitcher/{pitcher_id}/cached-season")
+async def get_cached_season(pitcher_id: int):
+    """
+    Returns a pitcher's full 2026 season from local Savant parquet file.
+    Near-instant (~5ms). Returns empty list if no local file configured.
+    """
+    df = _load_local_savant()
+    if df is None:
+        return []
+
+    pitcher_df = df[df["pitcher"].astype(int) == pitcher_id] if "pitcher" in df.columns else df.iloc[0:0]
+    if len(pitcher_df) == 0:
+        return []
+
+    pitches = []
+    for _, row in pitcher_df.iterrows():
+        def sf(key):
+            v = row.get(key)
+            if v is not None and str(v) not in ("", "nan", "None"):
+                try: return float(v)
+                except (ValueError, TypeError): return None
+            return None
+
+        pitches.append({
+            "pitch_type": str(row.get("pitch_type", "")),
+            "pitch_name": str(row.get("pitch_name", "")),
+            "release_speed": sf("release_speed"),
+            "release_spin_rate": sf("release_spin_rate"),
+            "spin_axis": sf("spin_axis"),
+            "pfx_x": sf("pfx_x"),
+            "pfx_z": sf("pfx_z"),
+            "plate_x": sf("plate_x"),
+            "plate_z": sf("plate_z"),
+            "release_pos_x": sf("release_pos_x"),
+            "release_pos_z": sf("release_pos_z"),
+            "release_extension": sf("release_extension"),
+            "vx0": sf("vx0"),
+            "vy0": sf("vy0"),
+            "vz0": sf("vz0"),
+            "effective_speed": sf("effective_speed"),
+            "zone": sf("zone"),
+            "description": str(row.get("description", "")),
+            "events": str(row.get("events", "")),
+            "type": str(row.get("type", "")),
+            "launch_speed": sf("launch_speed"),
+            "launch_angle": sf("launch_angle"),
+            "estimated_woba_using_speedangle": sf("estimated_woba_using_speedangle"),
+            "bb_type": str(row.get("bb_type", "")),
+            "is_in_play": str(row.get("type", "")) == "X",
+            "stand": str(row.get("stand", "")),
+            "p_throws": str(row.get("p_throws", "")),
+            "balls": str(row.get("balls", "")),
+            "strikes": str(row.get("strikes", "")),
+            "game_date": str(row.get("game_date", "")),
+            "game_pk": int(row.get("game_pk", 0)) if str(row.get("game_pk", "0")) not in ("", "nan") else 0,
+            "inning": sf("inning"),
+            "at_bat_number": sf("at_bat_number"),
+            "delta_run_exp": sf("delta_run_exp"),
+        })
+    return pitches
 
 
 # ─── Route 6: Get 2026 season data from parquet files ───

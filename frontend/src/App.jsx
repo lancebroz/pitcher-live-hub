@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -2256,17 +2256,16 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
 
     setTopLoading(true);
     try {
-      // Primary: Savant CSV for calibrated Statcast data (release point, movement, etc.)
-      // Supplement: parquet+live for recent games not yet processed by Savant (~24hr delay)
-      const [savantRaw, liveRaw] = await Promise.all([
-        getStatcast(p.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []),
+      // Try instant local cache first, fall back to Savant CSV
+      const [cachedRaw, liveRaw] = await Promise.all([
+        getCachedSeason(p.id).catch(() => []),
         getSeasonData(p.id).catch(() => []),
       ]);
+      let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
+        await getStatcast(p.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
       let merged;
       if (savantRaw && savantRaw.length > 0) {
-        // Find game_pks in Savant data (coerce to string for reliable dedup)
         const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
-        // Add any live/parquet pitches from games NOT in Savant (most recent games)
         const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));
         merged = [...savantRaw, ...liveSupplement];
       } else {
@@ -2551,11 +2550,13 @@ const HeatmapsPage = ({ C, isMobile }) => {
       try {
         let raw = [];
         if (year === "2026") {
-          // Same merge as compare tool: Savant CSV (calibrated) + live supplement (recent games)
-          const [savantRaw, liveRaw] = await Promise.all([
-            getStatcast(pitcher.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []),
+          // Try cached data first (instant if local), fall back to Savant CSV
+          const [cachedRaw, liveRaw] = await Promise.all([
+            getCachedSeason(pitcher.id).catch(() => []),
             getSeasonData(pitcher.id).catch(() => []),
           ]);
+          let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
+            await getStatcast(pitcher.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
           if (savantRaw && savantRaw.length > 0) {
             const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
             const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));

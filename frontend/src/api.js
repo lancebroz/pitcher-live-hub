@@ -7,7 +7,48 @@
  * In production: set it in Vercel's environment variables
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app";
+const RAILWAY_URL = "https://pitcher-live-hub-production.up.railway.app";
+const LOCAL_URL = "http://localhost:8000";
+
+// Auto-detect local backend: try localhost first, fall back to Railway
+let _apiBase = null;
+let _apiBasePromise = null;
+
+async function detectApiBase() {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 800); // 800ms timeout
+    const res = await fetch(`${LOCAL_URL}/`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      console.log("[API] Using local backend (localhost:8000)");
+      return LOCAL_URL;
+    }
+  } catch {}
+  console.log("[API] Using Railway backend");
+  return RAILWAY_URL;
+}
+
+function getApiBase() {
+  if (_apiBase) return Promise.resolve(_apiBase);
+  if (!_apiBasePromise) {
+    _apiBasePromise = detectApiBase().then(base => {
+      _apiBase = base;
+      return base;
+    });
+  }
+  return _apiBasePromise;
+}
+
+// Wrapper for fetch that auto-selects backend
+async function apiFetch(path) {
+  const base = await getApiBase();
+  const res = await fetch(`${base}${path}`);
+  return res;
+}
+
+// For backwards compatibility with existing code
+const API_BASE = import.meta.env.VITE_API_URL || RAILWAY_URL;
 
 // ESPN team logos - fetched once and cached
 let _logoCache = null;
@@ -72,6 +113,14 @@ export async function getStatcast(pitcherId, startDate, endDate) {
   );
   if (!res.ok) return [];
   return res.json();
+}
+
+export async function getCachedSeason(pitcherId) {
+  // Uses auto-detected backend (local if available, Railway otherwise)
+  const res = await apiFetch(`/api/pitcher/${pitcherId}/cached-season`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.length > 0 ? data : [];
 }
 
 export async function getStatcastSampled(pitcherId, startDate, endDate, sampleSize = 50) {
