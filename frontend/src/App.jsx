@@ -1308,10 +1308,27 @@ const normalizeLivePitch = (p) => {
   const pfx_z_inches = p.pfx_z != null ? p.pfx_z * 12 : null;
   const pfx_x_inches = p.pfx_x != null ? p.pfx_x * -12 : null;
 
+  // Backend sometimes returns blank pitch_type even when pitch_name is valid.
+  // Derive the code from the name so the filter in normAndFilter doesn't strip these.
+  const PN_TO_PT_LOOKUP = {
+    "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
+    "Sinker": "SI", "Cutter": "FC",
+    "Slider": "SL", "Sweeper": "ST", "Slurve": "SV",
+    "Curveball": "CU", "Knuckle Curve": "KC", "Slow Curve": "CS",
+    "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS",
+    "Screwball": "SC", "Forkball": "FO", "Knuckleball": "KN",
+    "Eephus": "EP",
+  };
+  const _rawPt = p.pitch_type || "";
+  const _rawPn = p.pitch_name || "";
+  const _derivedPt = (!_rawPt || _rawPt.toLowerCase() === "nan") && _rawPn && _rawPn.toLowerCase() !== "nan"
+    ? (PN_TO_PT_LOOKUP[_rawPn] || _rawPn.slice(0, 2).toUpperCase())
+    : _rawPt;
+
   return {
     pitch_number: p.pitch_number,
-    pitch_type: p.pitch_type || "",
-    pitch_name: (p.pitch_name || p.pitch_type || "").replace("Four-Seam", "4-Seam"),
+    pitch_type: _derivedPt,
+    pitch_name: (_rawPn || _rawPt || "").replace("Four-Seam", "4-Seam"),
     release_speed: p.release_speed,
     release_spin_rate: p.release_spin_rate || p.spin_rate,
     spin_efficiency: p.spin_efficiency || null,
