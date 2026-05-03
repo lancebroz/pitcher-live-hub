@@ -932,153 +932,11 @@ async def _get_season_data_impl(pitcher_id: int):
     parquet_pitches = get_cached(parquet_cache_key, 300)
 
     if parquet_pitches is None:
-        # Live-merge mode: only fetch the last 4 days. cached-season already has
-        # all historical data from the local Savant parquet (which is refreshed
-        # daily with yesterday's games). The /season endpoint just needs to catch
-        # very recent games not yet in that parquet.
-        from datetime import timedelta
-        import asyncio
-        end = datetime.now()
-        start = end - timedelta(days=4)
-        daily_urls = []
-        cur = start
-        while cur <= end:
-            date_str = cur.strftime("%Y-%m-%d")
-            daily_urls.append((date_str, f"{DAILY_BASE}/{date_str}.parquet"))
-            cur += timedelta(days=1)
-
-        # Fetch all days in parallel instead of sequentially (was ~6s, now ~500ms).
-        async def _fetch_day(client, date_str, url):
-            try:
-                resp = await client.get(url, timeout=15)
-                if resp.status_code == 200:
-                    df = pd.read_parquet(io.BytesIO(resp.content))
-                    pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
-                    if len(pitcher_df) > 0:
-                        return pitcher_df
-            except Exception as e:
-                print(f"Failed to fetch {date_str}: {e}")
-            return None
-
-        async with httpx.AsyncClient() as client:
-            results = await asyncio.gather(
-                *[_fetch_day(client, ds, u) for ds, u in daily_urls]
-            )
-        all_dfs = [df for df in results if df is not None]
-
+        # Skip GitHub parquet fetch — cached-season already serves all historical
+        # data from the local Savant parquet. The /season endpoint now only needs
+        # to add today's live game data that isn't yet in the local parquet.
+        # This drops the typical season call from ~3s to ~500ms.
         parquet_pitches = []
-        if all_dfs:
-            try:
-                combined = pd.concat(all_dfs, ignore_index=True)
-            except Exception as e:
-                print(f"pd.concat failed for pitcher {pitcher_id}: {e}")
-                combined = pd.DataFrame()
-
-            trajectory_map = {
-                "ground_ball": "ground_ball", "fly_ball": "fly_ball",
-                "line_drive": "line_drive", "popup": "popup",
-            }
-
-            total_rows = len(combined)
-            skipped_rows = 0
-            skip_reasons = {}  # error_type_str -> count
-
-            for _, row in combined.iterrows():
-                try:
-                    def safe(col):
-                        val = row.get(col)
-                        if val is None or (isinstance(val, float) and pd.isna(val)):
-                            return None
-                        return float(val) if isinstance(val, (int, float)) else val
-
-                    # Safe int coercion for game_pk (NaN → 0)
-                    gpk_raw = row.get("game_pk")
-                    if gpk_raw is None or (isinstance(gpk_raw, float) and pd.isna(gpk_raw)):
-                        game_pk_int = 0
-                    else:
-                        try: game_pk_int = int(gpk_raw)
-                        except Exception: game_pk_int = 0
-
-                    call_desc = str(row.get("call_description", "")).lower()
-                    if "foul tip" in call_desc or "foul_tip" in call_desc:
-                        desc = "swinging_strike"  # Savant counts foul tips as swinging strikes
-                    elif "swinging" in call_desc and "strike" in call_desc:
-                        desc = "swinging_strike"
-                    elif "called" in call_desc and "strike" in call_desc:
-                        desc = "called_strike"
-                    elif "foul" in call_desc:
-                        desc = "foul"
-                    elif "in play" in call_desc or "hit into play" in call_desc:
-                        desc = "hit_into_play"
-                    else:
-                        desc = "ball"
-
-                    # Reverse fallback: derive pitch_type from pitch_name when parquet
-                    # has the name but blank/nan code. Frontend strips empty pitch_type.
-                    raw_pt = str(row.get("pitch_type", "") or "")
-                    raw_pn = str(row.get("pitch_name", "") or "")
-                    if raw_pt.lower() in ("", "nan", "none") and raw_pn and raw_pn.lower() not in ("nan", "none"):
-                        _PN_TO_PT = {
-                            "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
-                            "Sinker": "SI", "Cutter": "FC",
-                            "Slider": "SL", "Sweeper": "ST", "Slurve": "SV",
-                            "Curveball": "CU", "Knuckle Curve": "KC", "Slow Curve": "CS",
-                            "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS",
-                            "Screwball": "SC", "Forkball": "FO", "Knuckleball": "KN",
-                            "Eephus": "EP",
-                        }
-                        raw_pt = _PN_TO_PT.get(raw_pn, raw_pn[:2].upper() if raw_pn else "")
-
-                    parquet_pitches.append({
-                        "pitch_number": 0,
-                        "pitch_type": raw_pt,
-                        "pitch_name": raw_pn,
-                        "release_speed": safe("start_speed"),
-                        "release_spin_rate": safe("spin_rate"),
-                        "pfx_x": safe("pfx_x"),
-                        "pfx_z": safe("pfx_z"),
-                        "movement_source": "parquet",
-                        "plate_x": safe("plate_x"),
-                        "plate_z": safe("plate_z"),
-                        "release_pos_x": safe("release_x"),
-                        "release_pos_z": safe("release_z"),
-                        "release_extension": safe("extension"),
-                        "zone": safe("zone"),
-                        "description": desc,
-                        "is_in_play": bool(row.get("is_in_play", False)),
-                        "is_strike": bool(row.get("is_strike", False)),
-                        "is_ball": bool(row.get("is_ball", False)),
-                        "launch_speed": safe("launch_speed"),
-                        "launch_angle": safe("launch_angle"),
-                        "bb_type": trajectory_map.get(str(row.get("trajectory", "")), ""),
-                        "batter_name": str(row.get("batter_name", "")),
-                        "batter_hand": str(row.get("batter_hand", "")),
-                        "stand": str(row.get("batter_hand", "")),
-                        "p_throws": str(row.get("pitcher_hand", "")),
-                        "balls": str(row.get("balls", "")),
-                        "strikes": str(row.get("strikes", "")),
-                        "game_date": str(row.get("game_date", "")),
-                        "game_pk": game_pk_int,
-                        "inning": safe("inning"),
-                        "at_bat_number": safe("at_bat_number"),
-                        "events": str(row.get("events", "")),
-                    })
-                except Exception as row_err:
-                    # Skip malformed rows rather than crashing the whole endpoint
-                    skipped_rows += 1
-                    reason = f"{type(row_err).__name__}: {str(row_err)[:100]}"
-                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-                    continue
-
-            # Log summary if any rows were skipped
-            if skipped_rows > 0:
-                pct = (skipped_rows / total_rows * 100) if total_rows > 0 else 0
-                print(f"[DATA QUALITY] Pitcher {pitcher_id}: skipped {skipped_rows}/{total_rows} rows ({pct:.1f}%)")
-                for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
-                    print(f"  - {count}x: {reason}")
-
-        if parquet_pitches:
-            set_cache(parquet_cache_key, parquet_pitches)
 
     # ── Part 2: Today's live data (cached 30 sec) ──
     # Fetch recent game feeds to merge classified pitch data with parquet.
@@ -1118,61 +976,88 @@ async def _get_season_data_impl(pitcher_id: int):
             # Step 2: If no parquet data for today/yesterday (e.g. first game of season,
             # or pipeline hasn't run yet), fall back to schedule — but only fetch games
             # where this pitcher appears, using the lightweight boxscore endpoint first.
+            # NOTE: Only check TODAY (not last 4 days). The local Savant parquet is
+            # refreshed daily, so anything older than today is already in parquet_pitches.
+            # Checking 4 days here was scanning ~60 boxscores per request unnecessarily.
             if not target_game_pks:
+                fallback_dates = [today_str]
                 async with httpx.AsyncClient() as client:
-                    sched_game_pks = []
-                    for check_date in check_dates:
+                    # Fetch today's schedule
+                    async def _fetch_sched(check_date):
                         try:
-                            sched_resp = await client.get(
+                            r = await client.get(
                                 f"{MLB_BASE}/api/v1/schedule?sportId=1&date={check_date}",
                                 timeout=10,
                             )
-                            for de in sched_resp.json().get("dates", []):
-                                for g in de.get("games", []):
-                                    sched_game_pks.append(g["gamePk"])
+                            return r.json()
                         except Exception:
-                            pass
+                            return None
 
-                    # Check boxscores to find games where this pitcher ACTUALLY PITCHED
-                    # (not just on the roster). Check pitching stats, not roster presence.
-                    for gpk in sched_game_pks:
+                    sched_results = await asyncio.gather(
+                        *[_fetch_sched(d) for d in fallback_dates]
+                    )
+                    sched_game_pks = []
+                    for sched_json in sched_results:
+                        if not sched_json:
+                            continue
+                        for de in sched_json.get("dates", []):
+                            for g in de.get("games", []):
+                                sched_game_pks.append(g["gamePk"])
+
+                    # Check today's boxscores in parallel to find this pitcher.
+                    async def _fetch_box(gpk):
                         try:
-                            box_resp = await client.get(
+                            r = await client.get(
                                 f"{MLB_BASE}/api/v1/game/{gpk}/boxscore",
                                 timeout=5,
                             )
-                            box = box_resp.json()
-                            for side in ("home", "away"):
-                                players = box.get("teams", {}).get(side, {}).get("players", {})
-                                pdata = players.get(f"ID{pitcher_id}")
-                                if not pdata:
-                                    continue
-                                # Only match if pitcher has actual pitching stats in this game
-                                pitching = pdata.get("stats", {}).get("pitching", {})
-                                if pitching and pitching.get("inningsPitched", "0.0") != "0.0":
-                                    target_game_pks.add(gpk)
-                                    print(f"[Season {pitcher_id}] Fallback found pitcher in game {gpk} ({pitching.get('inningsPitched')} IP)")
-                                    break
+                            return (gpk, r.json())
                         except Exception:
+                            return (gpk, None)
+
+                    box_results = await asyncio.gather(
+                        *[_fetch_box(gpk) for gpk in sched_game_pks]
+                    )
+                    for gpk, box in box_results:
+                        if not box:
                             continue
+                        for side in ("home", "away"):
+                            players = box.get("teams", {}).get(side, {}).get("players", {})
+                            pdata = players.get(f"ID{pitcher_id}")
+                            if not pdata:
+                                continue
+                            pitching = pdata.get("stats", {}).get("pitching", {})
+                            if pitching and pitching.get("inningsPitched", "0.0") != "0.0":
+                                target_game_pks.add(gpk)
+                                print(f"[Season {pitcher_id}] Fallback found pitcher in game {gpk} ({pitching.get('inningsPitched')} IP)")
+                                break
 
-            # Step 3: Fetch only the targeted game feed(s) — typically just 1
+            # Step 3: Fetch all targeted game feeds in parallel (was sequential —
+            # this was the main remaining bottleneck for active pitchers).
+            async def _fetch_feed(client, gpk):
+                try:
+                    r = await client.get(
+                        f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
+                        timeout=15,
+                    )
+                    return (gpk, r.json())
+                except Exception:
+                    return (gpk, None)
+
             async with httpx.AsyncClient() as client:
-                for gpk in target_game_pks:
-                    try:
-                        resp = await client.get(
-                            f"{MLB_BASE}/api/v1.1/game/{gpk}/feed/live",
-                            timeout=15,
-                        )
-                        feed = resp.json()
-                        print(f"[Season {pitcher_id}] Fetched live feed for game {gpk}: {resp.status_code}")
-                    except Exception:
-                        continue
+                feed_results = await asyncio.gather(
+                    *[_fetch_feed(client, gpk) for gpk in target_game_pks]
+                )
 
-                    all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
-                    game_date_str = feed.get("gameData", {}).get("datetime", {}).get("officialDate", today_str)
+            for gpk, feed in feed_results:
+                if feed is None:
+                    continue
+                print(f"[Season {pitcher_id}] Fetched live feed for game {gpk}")
 
-                    for play in all_plays:
+                all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+                game_date_str = feed.get("gameData", {}).get("datetime", {}).get("officialDate", today_str)
+
+                for play in all_plays:
                         matchup = play.get("matchup", {})
                         if matchup.get("pitcher", {}).get("id") != pitcher_id:
                             continue
