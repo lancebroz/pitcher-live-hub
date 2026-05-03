@@ -932,10 +932,14 @@ async def _get_season_data_impl(pitcher_id: int):
     parquet_pitches = get_cached(parquet_cache_key, 300)
 
     if parquet_pitches is None:
-        # Generate list of daily file URLs from March 26 to today
+        # Live-merge mode: only fetch the last 4 days. cached-season already has
+        # all historical data from the local Savant parquet (which is refreshed
+        # daily with yesterday's games). The /season endpoint just needs to catch
+        # very recent games not yet in that parquet.
         from datetime import timedelta
-        start = datetime(2026, 3, 26)
+        import asyncio
         end = datetime.now()
+        start = end - timedelta(days=4)
         daily_urls = []
         cur = start
         while cur <= end:
@@ -943,19 +947,24 @@ async def _get_season_data_impl(pitcher_id: int):
             daily_urls.append((date_str, f"{DAILY_BASE}/{date_str}.parquet"))
             cur += timedelta(days=1)
 
-        all_dfs = []
+        # Fetch all days in parallel instead of sequentially (was ~6s, now ~500ms).
+        async def _fetch_day(client, date_str, url):
+            try:
+                resp = await client.get(url, timeout=15)
+                if resp.status_code == 200:
+                    df = pd.read_parquet(io.BytesIO(resp.content))
+                    pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
+                    if len(pitcher_df) > 0:
+                        return pitcher_df
+            except Exception as e:
+                print(f"Failed to fetch {date_str}: {e}")
+            return None
+
         async with httpx.AsyncClient() as client:
-            for date_str, url in daily_urls:
-                try:
-                    resp = await client.get(url, timeout=15)
-                    if resp.status_code == 200:
-                        df = pd.read_parquet(io.BytesIO(resp.content))
-                        pitcher_df = df[df["pitcher_id"].astype(str) == str(pitcher_id)]
-                        if len(pitcher_df) > 0:
-                            all_dfs.append(pitcher_df)
-                except Exception as e:
-                    print(f"Failed to fetch {date_str}: {e}")
-                    continue
+            results = await asyncio.gather(
+                *[_fetch_day(client, ds, u) for ds, u in daily_urls]
+            )
+        all_dfs = [df for df in results if df is not None]
 
         parquet_pitches = []
         if all_dfs:
@@ -1004,10 +1013,26 @@ async def _get_season_data_impl(pitcher_id: int):
                     else:
                         desc = "ball"
 
+                    # Reverse fallback: derive pitch_type from pitch_name when parquet
+                    # has the name but blank/nan code. Frontend strips empty pitch_type.
+                    raw_pt = str(row.get("pitch_type", "") or "")
+                    raw_pn = str(row.get("pitch_name", "") or "")
+                    if raw_pt.lower() in ("", "nan", "none") and raw_pn and raw_pn.lower() not in ("nan", "none"):
+                        _PN_TO_PT = {
+                            "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF",
+                            "Sinker": "SI", "Cutter": "FC",
+                            "Slider": "SL", "Sweeper": "ST", "Slurve": "SV",
+                            "Curveball": "CU", "Knuckle Curve": "KC", "Slow Curve": "CS",
+                            "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS",
+                            "Screwball": "SC", "Forkball": "FO", "Knuckleball": "KN",
+                            "Eephus": "EP",
+                        }
+                        raw_pt = _PN_TO_PT.get(raw_pn, raw_pn[:2].upper() if raw_pn else "")
+
                     parquet_pitches.append({
                         "pitch_number": 0,
-                        "pitch_type": str(row.get("pitch_type", "")),
-                        "pitch_name": str(row.get("pitch_name", "")),
+                        "pitch_type": raw_pt,
+                        "pitch_name": raw_pn,
                         "release_speed": safe("start_speed"),
                         "release_spin_rate": safe("spin_rate"),
                         "pfx_x": safe("pfx_x"),
