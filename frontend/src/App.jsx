@@ -195,7 +195,10 @@ const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return 
 
 const computeMetrics = (pitches, hf) => {
   if (!pitches?.length) return null;
-  const f = hf === "all" ? pitches : pitches.filter(p => p.batter_hand === hf);
+  let f = hf === "all" ? pitches : pitches.filter(p => p.batter_hand === hf);
+  // Filter out "events-only" pitches (those kept for events but missing pitch classification)
+  // so they don't show as a blank row in the pitch-type table.
+  f = f.filter(p => p.pitch_name && p.pitch_name.trim() !== "" && p.pitch_name.toLowerCase() !== "nan");
   if (!f.length) return null;
   const bt = {};
   f.forEach(p => { if (!bt[p.pitch_name]) bt[p.pitch_name] = []; bt[p.pitch_name].push(p); });
@@ -1391,7 +1394,17 @@ const normalizeLivePitch = (p) => {
 };
 
 const normAndFilter = (raw) => {
-  const normalized = raw.map(normalizeLivePitch).filter(p => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other" && p.pitch_type.toLowerCase() !== "nan" && p.pitch_name.toLowerCase() !== "nan");
+  // Filter rule: keep pitches with valid pitch_type, OR pitches with events (regardless
+  // of pitch_type) so we don't lose AB-ending pitches whose pitch_type wasn't classified.
+  // Without the events exception, walks/Ks tied to unclassifiable borderline pitches were
+  // being stripped, causing under-counted BB% and K% in summary stats.
+  const normalized = raw.map(normalizeLivePitch).filter(p => {
+    const hasValidType = p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" &&
+      p.pitch_name !== "Other" && p.pitch_type.toLowerCase() !== "nan" &&
+      p.pitch_name.toLowerCase() !== "nan";
+    const hasEvent = p.events && p.events.trim() !== "";
+    return hasValidType || hasEvent;
+  });
   // Dedup by game_pk + at_bat_number + pitch_number (catches Savant CSV dupes & merge overlaps)
   const seen = new Set();
   return normalized.filter(p => {
