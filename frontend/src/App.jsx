@@ -1304,7 +1304,7 @@ const normalizeLivePitch = (p) => {
   const zone = p.zone;
   const isInZone = zone != null ? (zone >= 1 && zone <= 9) : (Math.abs(p.plate_x || 0) <= 0.83 && (p.plate_z || 0) >= 1.5 && (p.plate_z || 0) <= 3.5);
 
-  // Movement data: both Savant and live feed pfx values are in FEET → multiply by 12 for inches
+  // Movement data: Savant CSV pfx values are in FEET → multiply by 12 for inches
   // HB is flipped (negated) for pitcher's perspective
   const pfx_z_inches = p.pfx_z != null ? p.pfx_z * 12 : null;
   const pfx_x_inches = p.pfx_x != null ? p.pfx_x * -12 : null;
