@@ -7,6 +7,7 @@ A simple API server that fetches MLB data and serves it to the frontend.
 import os
 import time
 import math
+import asyncio
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
