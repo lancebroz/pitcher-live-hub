@@ -714,6 +714,34 @@ LOCAL_SAVANT_PATH = os.environ.get("LOCAL_SAVANT_PATH", "")
 _local_savant_df = None
 _local_savant_loaded = False
 
+
+@app.get("/api/debug/local-savant")
+async def debug_local_savant():
+    """
+    Diagnostic: shows what the local savant loader is actually using.
+    Helps figure out where cached-season is getting its data from.
+    """
+    df = _load_local_savant()
+    info = {
+        "LOCAL_SAVANT_PATH_env": LOCAL_SAVANT_PATH,
+        "path_exists": bool(LOCAL_SAVANT_PATH and os.path.exists(LOCAL_SAVANT_PATH)),
+        "df_loaded": df is not None,
+        "row_count": len(df) if df is not None else 0,
+        "columns": list(df.columns) if df is not None else [],
+        "has_ax": "ax" in df.columns if df is not None else False,
+        "has_ay": "ay" in df.columns if df is not None else False,
+        "has_az": "az" in df.columns if df is not None else False,
+    }
+    if df is not None and len(df) > 0:
+        try:
+            info["sample_row"] = df.iloc[0].to_dict()
+            # Convert any numpy types to native python types for JSON
+            info["sample_row"] = {k: (None if (v is None or (isinstance(v, float) and v != v)) else (str(v) if not isinstance(v, (int, float, bool, str)) else v)) for k, v in info["sample_row"].items()}
+        except Exception as e:
+            info["sample_row_error"] = str(e)
+    return info
+
+
 def _load_local_savant():
     global _local_savant_df, _local_savant_loaded
     if _local_savant_loaded:
