@@ -254,6 +254,7 @@ const computeMetrics = (pitches, hf) => {
     avgIVB: avg1(allPts.map(p => p.pfx_z)), avgHB: avg1(allPts.map(p => p.pfx_x)),
     avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
     avgExt: avg1(allPts.map(p => p.release_extension)),
+    avgVAA: avg1(allPts.map(p => p.vaa)),
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
@@ -1661,7 +1662,7 @@ const STUFF_COLS = [
   { key: "avgSpin", label: "Spin" },
   { key: "avgIVB", label: "IVB" }, { key: "avgHB", label: "HB" },
   { key: "avgRelH", label: "RelH" }, { key: "avgRelS", label: "RelS" },
-  { key: "avgExt", label: "Ext" },
+  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" },
 ];
 const PERF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
@@ -1787,6 +1788,7 @@ const COMPARE_COLS = [
   { key: "avgRelH", label: "RelH", w: 55 },
   { key: "avgRelS", label: "RelS", w: 55 },
   { key: "avgExt", label: "Ext", w: 55 },
+  { key: "avgVAA", label: "VAA", w: 55 },
   { key: "strikeRate", label: "Strike%", w: 65 },
   { key: "zoneRate", label: "Zone%", w: 60 },
   { key: "cswRate", label: "CSW%", w: 60 },
