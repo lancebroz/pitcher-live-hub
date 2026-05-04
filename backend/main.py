@@ -1850,7 +1850,7 @@ async def get_data_quality(pitcher_id: int):
 
     ct = ZoneInfo("America/Chicago")
     ct_now = datetime.now(ct)
-    start = datetime(2026, 3, 26)
+    start = datetime(2026, 3, 25)
     end = ct_now.replace(tzinfo=None)
 
     total_rows = 0
