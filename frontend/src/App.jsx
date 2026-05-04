@@ -2284,8 +2284,15 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         await getStatcast(p.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
       let merged;
       if (savantRaw && savantRaw.length > 0) {
-        const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
-        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));
+        // Build dedup set ONLY from games that have REAL pitch data in the cache
+        // (i.e. valid pitch_type, not just game_pk stubs). Otherwise cached-season's
+        // empty placeholder rows for in-progress games would block today's live data.
+        const cachedRealGamePks = new Set(
+          savantRaw
+            .filter(p => p.game_pk && p.pitch_type && p.pitch_type.toLowerCase() !== "nan")
+            .map(p => String(p.game_pk))
+        );
+        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !cachedRealGamePks.has(String(p.game_pk)));
         merged = [...savantRaw, ...liveSupplement];
       } else {
         merged = liveRaw || [];
@@ -2577,8 +2584,14 @@ const HeatmapsPage = ({ C, isMobile }) => {
           let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
             await getStatcast(pitcher.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
           if (savantRaw && savantRaw.length > 0) {
-            const savantGamePks = new Set(savantRaw.filter(p => p.game_pk).map(p => String(p.game_pk)));
-            const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !savantGamePks.has(String(p.game_pk)));
+            // Only dedup by game_pk for games with REAL pitch data in cache.
+            // Stubs (game_pk only, no pitch_type) shouldn't block today's live pitches.
+            const cachedRealGamePks = new Set(
+              savantRaw
+                .filter(p => p.game_pk && p.pitch_type && p.pitch_type.toLowerCase() !== "nan")
+                .map(p => String(p.game_pk))
+            );
+            const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !cachedRealGamePks.has(String(p.game_pk)));
             raw = [...savantRaw, ...liveSupplement];
           } else {
             raw = liveRaw || [];
