@@ -914,8 +914,8 @@ async def get_cached_season(pitcher_id: int):
             "release_speed": release_speed,
             "release_spin_rate": release_spin_rate,
             "spin_axis": sf("spin_direction") if sf("spin_direction") is not None else sf("spin_axis"),
-            "pfx_x": (sf("pfx_x") / 12.0) if sf("pfx_x") is not None else None,
-            "pfx_z": (sf("pfx_z") / 12.0) if sf("pfx_z") is not None else None,
+            "pfx_x": sf("pfx_x"),
+            "pfx_z": sf("pfx_z"),
             "plate_x": sf("plate_x"),
             "plate_z": sf("plate_z"),
             "release_pos_x": release_pos_x,
@@ -1620,12 +1620,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 is_strike = bool(row.get("is_strike", False))
                 is_in_play = bool(row.get("is_in_play", False))
 
-                pfx_x_raw = _safef(row.get("pfx_x"))
-                pfx_z_raw = _safef(row.get("pfx_z"))
-                # Parquet stores pfx in inches from MLB API. Convert to feet here
-                # so the downstream *12 multiplier yields correct inches.
-                pfx_x_ft = (pfx_x_raw / 12.0) if pfx_x_raw is not None else None
-                pfx_z_ft = (pfx_z_raw / 12.0) if pfx_z_raw is not None else None
+                pfx_x_v = _safef(row.get("pfx_x"))
 
                 records.append({
                     "pitcher_id": pitcher_id_int,
@@ -1639,8 +1634,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     "zone": _safef(row.get("zone")),
                     "start_speed": _safef(row.get("start_speed")),
                     "spin_rate": _safef(row.get("spin_rate")),
-                    "pfx_z": pfx_z_ft,
-                    "pfx_x": -pfx_x_ft if pfx_x_ft is not None else None,
+                    "pfx_z": _safef(row.get("pfx_z")),
+                    "pfx_x": -pfx_x_v if pfx_x_v is not None else None,
                     "launch_speed": _safef(row.get("launch_speed")),
                     "launch_angle": _safef(row.get("launch_angle")),
                     "trajectory": str(row.get("trajectory", "") or ""),
