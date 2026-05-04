@@ -2222,14 +2222,14 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [topLoading, setTopLoading] = useState(false);
   const [cmpLoading, setCmpLoading] = useState(false);
   const [cmpMode, setCmpMode] = useState("2025"); // "2025" | "2026range"
-  const [cmpStart, setCmpStart] = useState("2026-03-26");
+  const [cmpStart, setCmpStart] = useState("2026-03-25");
   const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
   const [errMsg, setErrMsg] = useState("");
   const [topHand, setTopHand] = useState("all");
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
-  const [topStart, setTopStart] = useState("2026-03-26");
+  const [topStart, setTopStart] = useState("2026-03-25");
   const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
   const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
 
@@ -2270,7 +2270,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setCmpData(null);
     setErrMsg("");
     setTopUseRange(false);
-    setTopStart("2026-03-26");
+    setTopStart("2026-03-25");
     setTopEnd(new Date().toISOString().slice(0, 10));
 
     setTopLoading(true);
@@ -2281,7 +2281,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         getSeasonData(p.id).catch(() => []),
       ]);
       let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
-        await getStatcast(p.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
+        await getStatcast(p.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []);
       let merged;
       if (savantRaw && savantRaw.length > 0) {
         // Build dedup set ONLY from games that have REAL pitch data in the cache
@@ -2402,9 +2402,14 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No 2026 data available for this pitcher.</div>
       )}
       {pitcher && !topLoading && topData && topData.length > 0 && (() => {
-        // Apply date filter if custom range is active
+        // Apply date filter if custom range is active. Convert game_date to string
+        // for safe comparison (some sources may emit Date objects or formatted strings).
         const topFiltered = topUseRange
-          ? topData.filter(p => p.game_date && p.game_date >= topStart && p.game_date <= topEnd)
+          ? topData.filter(p => {
+              if (!p.game_date) return false;
+              const gd = String(p.game_date).slice(0, 10);
+              return gd >= topStart && gd <= topEnd;
+            })
           : topData;
         const isFullSeason = !topUseRange;
         const topLabel = isFullSeason
@@ -2535,7 +2540,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   // 2026 date range filter
-  const [startDate, setStartDate] = useState("2026-03-26");
+  const [startDate, setStartDate] = useState("2026-03-25");
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const searchRef = useRef(null);
   const hmEndPickerRef = useRef(null);
@@ -2582,7 +2587,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
             getSeasonData(pitcher.id).catch(() => []),
           ]);
           let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
-            await getStatcast(pitcher.id, "2026-03-26", new Date().toISOString().slice(0, 10)).catch(() => []);
+            await getStatcast(pitcher.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []);
           if (savantRaw && savantRaw.length > 0) {
             // Only dedup by game_pk for games with REAL pitch data in cache.
             // Stubs (game_pk only, no pitch_type) shouldn't block today's live pitches.
@@ -3194,7 +3199,7 @@ export default function PitcherTracker() {
   const [historicalPitchData, setHistoricalPitchData] = useState(null);
   const [season2025PitchData, setSeason2025PitchData] = useState(null);
   const todayStr = new Date().toISOString().split("T")[0];
-  const [seasonStart, setSeasonStart] = useState("2026-03-26");
+  const [seasonStart, setSeasonStart] = useState("2026-03-25");
   const [seasonEnd, setSeasonEnd] = useState(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [tableView, setTableView] = useState("stuff");
