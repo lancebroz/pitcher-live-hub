@@ -6,6 +6,7 @@ A simple API server that fetches MLB data and serves it to the frontend.
 
 import os
 import time
+import math
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── VAA (Vertical Approach Angle) helper ───
+# Standard formula from FanGraphs / Harry Pavlidis (Baseball Prospectus):
+#     vy_f = -sqrt(vy0^2 - 2*ay*(y0-yf))
+#     t    = (vy_f - vy0) / ay
+#     vz_f = vz0 + az*t
+#     VAA  = -arctan(vz_f / vy_f) * (180/pi)
+# vy0/vz0 are Statcast's reported initial velocities at y=50ft.
+# yf=1.417ft is the front of home plate.
+# Returns angle in degrees, or None if any input is missing/invalid.
+def _compute_vaa(vy0, vz0, ay, az, y0=50.0, yf=1.417):
+    try:
+        if any(v is None for v in (vy0, vz0, ay, az)):
+            return None
+        vy0, vz0, ay, az = float(vy0), float(vz0), float(ay), float(az)
+        if ay == 0:
+            return None
+        discriminant = vy0 * vy0 - 2 * ay * (y0 - yf)
+        if discriminant < 0:
+            return None
+        vy_f = -math.sqrt(discriminant)
+        if vy_f == 0:
+            return None
+        t = (vy_f - vy0) / ay
+        vz_f = vz0 + az * t
+        vaa = -math.degrees(math.atan(vz_f / vy_f))
+        # Sanity check: real VAA values are between ~-15 and 0 degrees.
+        # Reject any obvious garbage values.
+        if vaa < -25 or vaa > 5:
+            return None
+        return round(vaa, 2)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return None
 
 # ─── Simple cache so we don't spam MLB servers ───
 _cache = {}
@@ -283,6 +317,14 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
             pfx_z_ft = raw_ivb / 12.0 if raw_ivb is not None else None
             pfx_x_ft = raw_hb / -12.0 if raw_hb is not None else None
 
+            # Pull velocity / accel for VAA. MLB API uses camelCase.
+            vy0_g = coords.get("vY0")
+            vz0_g = coords.get("vZ0")
+            ax_g = coords.get("aX")
+            ay_g = coords.get("aY")
+            az_g = coords.get("aZ")
+            vaa_g = _compute_vaa(vy0_g, vz0_g, ay_g, az_g)
+
             pitches.append({
                 "pitch_number": len(pitches) + 1,
                 "pitch_type": pitch_type.get("code", ""),
@@ -299,6 +341,12 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
                 "release_spin_rate": breaks.get("spinRate"),
                 "spin_direction": breaks.get("spinDirection"),
                 "zone": pitch_data.get("zone"),
+                "vy0": vy0_g,
+                "vz0": vz0_g,
+                "ax": ax_g,
+                "ay": ay_g,
+                "az": az_g,
+                "vaa": vaa_g,
                 "description": details.get("description", ""),
                 "call": details.get("call", {}).get("description", ""),
                 "is_in_play": details.get("isInPlay", False),
@@ -688,6 +736,14 @@ async def get_cached_season(pitcher_id: int):
             PN_TO_PT["Split-Finger"] = "FS"
             pt = PN_TO_PT.get(pn, pn[:2].upper() if pn else "UN")
 
+        # Compute VAA from raw kinematics for this pitch
+        vy0_v = sf("vy0")
+        vz0_v = sf("vz0")
+        ax_v = sf("ax")
+        ay_v = sf("ay")
+        az_v = sf("az")
+        vaa_v = _compute_vaa(vy0_v, vz0_v, ay_v, az_v)
+
         pitches.append({
             "pitch_type": pt,
             "pitch_name": pn,
@@ -703,8 +759,12 @@ async def get_cached_season(pitcher_id: int):
             "release_pos_z": sf("release_pos_z"),
             "release_extension": sf("release_extension"),
             "vx0": sf("vx0"),
-            "vy0": sf("vy0"),
-            "vz0": sf("vz0"),
+            "vy0": vy0_v,
+            "vz0": vz0_v,
+            "ax": ax_v,
+            "ay": ay_v,
+            "az": az_v,
+            "vaa": vaa_v,
             "effective_speed": sf("effective_speed"),
             "zone": sf("zone"),
             "description": ss("description"),
@@ -1104,6 +1164,14 @@ async def _get_season_data_impl(pitcher_id: int):
                             else:
                                 desc = "ball"
 
+                            # Pull velocity / accel for VAA. MLB API uses camelCase.
+                            vy0_live = coords.get("vY0")
+                            vz0_live = coords.get("vZ0")
+                            ax_live = coords.get("aX")
+                            ay_live = coords.get("aY")
+                            az_live = coords.get("aZ")
+                            vaa_live = _compute_vaa(vy0_live, vz0_live, ay_live, az_live)
+
                             play_pitches.append({
                                 "pitch_number": 0,
                                 "pitch_type": ptype.get("code", ""),
@@ -1119,6 +1187,12 @@ async def _get_season_data_impl(pitcher_id: int):
                                 "release_pos_z": coords.get("z0"),
                                 "release_extension": pitch_data.get("extension"),
                                 "zone": pitch_data.get("zone"),
+                                "vy0": vy0_live,
+                                "vz0": vz0_live,
+                                "ax": ax_live,
+                                "ay": ay_live,
+                                "az": az_live,
+                                "vaa": vaa_live,
                                 "description": desc,
                                 "is_in_play": details.get("isInPlay", False),
                                 "is_strike": details.get("isStrike", False),
