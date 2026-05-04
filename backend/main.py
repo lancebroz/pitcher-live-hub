@@ -709,67 +709,126 @@ async def get_statcast_sampled(pitcher_id: int, start_date: str, end_date: str, 
     return result
 
 
-# ─── Local Savant cache: serves pitcher data from local parquet file ───
-LOCAL_SAVANT_PATH = os.environ.get("LOCAL_SAVANT_PATH", "")
+# ─── Parquet data source URLs (used by cached-season, season, leaderboard) ───
+PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/monthly"
+DAILY_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/daily"
+MONTH_FILES = [
+    "03_march.parquet", "04_april.parquet", "05_may.parquet",
+    "06_june.parquet", "07_july.parquet", "08_august.parquet",
+    "09_september.parquet", "10_october.parquet",
+]
+
+
+# ─── Cached-season data source ───
+# Loads monthly parquet files from the mlb-pitcher-data GitHub repo at startup.
+# Refreshes every 24h. Replaces the old LOCAL_SAVANT_PATH approach which required
+# a parquet file to be deployed alongside the code.
 _local_savant_df = None
-_local_savant_loaded = False
+_local_savant_loaded_at = 0  # unix timestamp of last load
+_LOCAL_SAVANT_TTL = 86400    # refresh once per day
 
 
 @app.get("/api/debug/local-savant")
 async def debug_local_savant():
     """
-    Diagnostic: shows what the local savant loader is actually using.
-    Helps figure out where cached-season is getting its data from.
+    Diagnostic: shows what the cached-season loader is actually using.
     """
-    df = _load_local_savant()
+    df = await _load_local_savant_async()
     info = {
-        "LOCAL_SAVANT_PATH_env": LOCAL_SAVANT_PATH,
-        "path_exists": bool(LOCAL_SAVANT_PATH and os.path.exists(LOCAL_SAVANT_PATH)),
         "df_loaded": df is not None,
         "row_count": len(df) if df is not None else 0,
         "columns": list(df.columns) if df is not None else [],
         "has_ax": "ax" in df.columns if df is not None else False,
         "has_ay": "ay" in df.columns if df is not None else False,
         "has_az": "az" in df.columns if df is not None else False,
+        "loaded_at_unix": _local_savant_loaded_at,
+        "age_seconds": int(time.time() - _local_savant_loaded_at) if _local_savant_loaded_at else None,
     }
     if df is not None and len(df) > 0:
         try:
-            info["sample_row"] = df.iloc[0].to_dict()
-            # Convert any numpy types to native python types for JSON
-            info["sample_row"] = {k: (None if (v is None or (isinstance(v, float) and v != v)) else (str(v) if not isinstance(v, (int, float, bool, str)) else v)) for k, v in info["sample_row"].items()}
+            info["latest_game_date"] = str(df["game_date"].max())
+            info["pitcher_count"] = int(df["pitcher_id"].nunique())
         except Exception as e:
-            info["sample_row_error"] = str(e)
+            info["error"] = str(e)
     return info
 
 
-def _load_local_savant():
-    global _local_savant_df, _local_savant_loaded
-    if _local_savant_loaded:
+async def _load_local_savant_async():
+    """
+    Load monthly parquets from GitHub. Cached for 24h.
+    Returns a single combined DataFrame (or None on failure).
+    """
+    global _local_savant_df, _local_savant_loaded_at
+    import pandas as pd
+    import io
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+
+    age = time.time() - _local_savant_loaded_at
+    if _local_savant_df is not None and age < _LOCAL_SAVANT_TTL:
         return _local_savant_df
-    if LOCAL_SAVANT_PATH and os.path.exists(LOCAL_SAVANT_PATH):
-        import pandas as pd
+
+    ct_now = _dt.now(_ZI("America/Chicago"))
+    current_month = ct_now.month
+
+    months_to_fetch = [
+        f for f in MONTH_FILES
+        if int(f.split("_")[0]) <= current_month
+    ]
+
+    async def _fetch_one(client, fname):
         try:
-            _local_savant_df = pd.read_parquet(LOCAL_SAVANT_PATH)
-            _local_savant_loaded = True
-            print(f"[Local] Loaded {len(_local_savant_df)} pitches from {LOCAL_SAVANT_PATH}")
+            resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=45)
+            if resp.status_code == 200:
+                return pd.read_parquet(io.BytesIO(resp.content))
         except Exception as e:
-            print(f"[Local] Failed to load {LOCAL_SAVANT_PATH}: {e}")
-            _local_savant_loaded = True
+            print(f"[CachedSeason] Failed {fname}: {e}")
+        return None
+
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *[_fetch_one(client, f) for f in months_to_fetch]
+        )
+
+    dfs = [d for d in results if d is not None]
+    if dfs:
+        _local_savant_df = pd.concat(dfs, ignore_index=True)
+        _local_savant_loaded_at = time.time()
+        print(f"[CachedSeason] Loaded {len(_local_savant_df)} pitches from {len(dfs)} monthly parquets")
+        return _local_savant_df
+    elif _local_savant_df is not None:
+        # Fetch failed but we have stale data — keep using it rather than serve nothing
+        print(f"[CachedSeason] Refresh failed, serving stale data ({len(_local_savant_df)} rows)")
+        return _local_savant_df
     else:
-        _local_savant_loaded = True
+        print("[CachedSeason] Failed to load any monthly parquets")
+        return None
+
+
+# Backwards-compat sync wrapper for any old callers
+def _load_local_savant():
+    """Synchronous wrapper. Returns whatever's currently cached, or None."""
+    global _local_savant_df
     return _local_savant_df
 
 @app.get("/api/pitcher/{pitcher_id}/cached-season")
 async def get_cached_season(pitcher_id: int):
     """
-    Returns a pitcher's full 2026 season from local Savant parquet file.
-    Near-instant (~5ms). Returns empty list if no local file configured.
+    Returns a pitcher's full 2026 season from the GitHub monthly parquets.
+    Cached in memory; near-instant after first load. Refreshes every 24h.
     """
-    df = _load_local_savant()
+    df = await _load_local_savant_async()
     if df is None:
         return []
 
-    pitcher_df = df[df["pitcher"].astype(int) == pitcher_id] if "pitcher" in df.columns else df.iloc[0:0]
+    # Filter to this pitcher (parquet uses 'pitcher_id' column)
+    pid_col = "pitcher_id" if "pitcher_id" in df.columns else ("pitcher" if "pitcher" in df.columns else None)
+    if pid_col is None:
+        return []
+    try:
+        pitcher_df = df[df[pid_col].astype(int) == pitcher_id]
+    except Exception:
+        return []
     if len(pitcher_df) == 0:
         return []
 
@@ -780,6 +839,19 @@ async def get_cached_season(pitcher_id: int):
         "CU": "Curveball", "KC": "Knuckle Curve", "CS": "Slow Curve",
         "CH": "Changeup", "FS": "Splitter", "KN": "Knuckleball",
         "EP": "Eephus", "SC": "Screwball",
+    }
+
+    # Map call_description from parquet's snake_case format to readable
+    CALL_DESC_MAP = {
+        "called_strike": "Called Strike", "swinging_strike": "Swinging Strike",
+        "swinging_strike_blocked": "Swinging Strike (Blocked)",
+        "foul": "Foul", "foul_tip": "Foul Tip", "foul_bunt": "Foul Bunt",
+        "ball": "Ball", "blocked_ball": "Ball In Dirt",
+        "hit_by_pitch": "Hit By Pitch", "missed_bunt": "Swinging Strike",
+        "hit_into_play": "In Play, Out(s)",
+        "hit_into_play_score": "In Play, Run(s)",
+        "hit_into_play_no_out": "In Play, No Out",
+        "pitchout": "Ball", "intent_ball": "Ball",
     }
 
     pitches = []
@@ -796,19 +868,26 @@ async def get_cached_season(pitcher_id: int):
             s = str(v) if v is not None else default
             return default if s in ("nan", "None", "NaN", "") else s
 
+        # Map parquet column names → cached-season output names
+        # Parquet: start_speed, spin_rate, release_x/y/z, extension
+        # Output:  release_speed, release_spin_rate, release_pos_x/z, release_extension
+        release_speed = sf("start_speed") if sf("start_speed") is not None else sf("release_speed")
+        release_spin_rate = sf("spin_rate") if sf("spin_rate") is not None else sf("release_spin_rate")
+        release_pos_x = sf("release_x") if sf("release_x") is not None else sf("release_pos_x")
+        release_pos_z = sf("release_z") if sf("release_z") is not None else sf("release_pos_z")
+        release_extension = sf("extension") if sf("extension") is not None else sf("release_extension")
+
         pt = ss("pitch_type")
         pn = ss("pitch_name") or PT_NAMES.get(pt, pt)
 
-        # Reverse fallback: if parquet has blank pitch_type but a valid pitch_name,
-        # derive the code from the name. Without this, the frontend filter strips
-        # every such pitch and Compare/Heatmaps render empty.
+        # Reverse fallback: if pitch_type empty but pitch_name valid, derive code from name
         if not pt and pn:
             PN_TO_PT = {v: k for k, v in PT_NAMES.items()}
             PN_TO_PT["Four-Seam Fastball"] = "FF"
             PN_TO_PT["Split-Finger"] = "FS"
             pt = PN_TO_PT.get(pn, pn[:2].upper() if pn else "UN")
 
-        # Compute VAA from raw kinematics for this pitch
+        # Compute VAA from raw kinematics
         vy0_v = sf("vy0")
         vz0_v = sf("vz0")
         ax_v = sf("ax")
@@ -816,20 +895,32 @@ async def get_cached_season(pitcher_id: int):
         az_v = sf("az")
         vaa_v = _compute_vaa(vy0_v, vz0_v, ay_v, az_v)
 
+        # call_description: prefer parquet's snake_case → readable mapping
+        call_desc_raw = ss("call_description") or ss("description")
+        description_out = CALL_DESC_MAP.get(call_desc_raw.lower(), call_desc_raw) if call_desc_raw else ""
+
+        # type field for downstream code (S=strike, B=ball, X=in play)
+        is_in_play = bool(row.get("is_in_play", False)) if "is_in_play" in row.index else (ss("type") == "X")
+        is_strike = bool(row.get("is_strike", False)) if "is_strike" in row.index else (ss("type") == "S")
+        type_v = "X" if is_in_play else ("S" if is_strike else "B")
+
+        # bb_type / trajectory mapping
+        bb_type = ss("trajectory") or ss("bb_type")
+
         pitches.append({
             "pitch_type": pt,
             "pitch_name": pn,
             "pitch_number": sf("pitch_number"),
-            "release_speed": sf("release_speed"),
-            "release_spin_rate": sf("release_spin_rate"),
-            "spin_axis": sf("spin_axis"),
+            "release_speed": release_speed,
+            "release_spin_rate": release_spin_rate,
+            "spin_axis": sf("spin_direction") if sf("spin_direction") is not None else sf("spin_axis"),
             "pfx_x": sf("pfx_x"),
             "pfx_z": sf("pfx_z"),
             "plate_x": sf("plate_x"),
             "plate_z": sf("plate_z"),
-            "release_pos_x": sf("release_pos_x"),
-            "release_pos_z": sf("release_pos_z"),
-            "release_extension": sf("release_extension"),
+            "release_pos_x": release_pos_x,
+            "release_pos_z": release_pos_z,
+            "release_extension": release_extension,
             "vx0": sf("vx0"),
             "vy0": vy0_v,
             "vz0": vz0_v,
@@ -839,16 +930,16 @@ async def get_cached_season(pitcher_id: int):
             "vaa": vaa_v,
             "effective_speed": sf("effective_speed"),
             "zone": sf("zone"),
-            "description": ss("description"),
+            "description": description_out,
             "events": ss("events"),
-            "type": ss("type"),
+            "type": type_v,
             "launch_speed": sf("launch_speed"),
             "launch_angle": sf("launch_angle"),
             "estimated_woba_using_speedangle": sf("estimated_woba_using_speedangle"),
-            "bb_type": ss("bb_type"),
-            "is_in_play": ss("type") == "X",
+            "bb_type": bb_type,
+            "is_in_play": is_in_play,
             "stand": ss("stand"),
-            "p_throws": ss("p_throws"),
+            "p_throws": ss("pitcher_hand") or ss("p_throws"),
             "balls": ss("balls"),
             "strikes": ss("strikes"),
             "game_date": ss("game_date"),
@@ -861,13 +952,6 @@ async def get_cached_season(pitcher_id: int):
 
 
 # ─── Route 6: Get 2026 season data from parquet files ───
-PARQUET_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/monthly"
-DAILY_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/raw/2026/daily"
-MONTH_FILES = [
-    "03_march.parquet", "04_april.parquet", "05_may.parquet",
-    "06_june.parquet", "07_july.parquet", "08_august.parquet",
-    "09_september.parquet", "10_october.parquet",
-]
 
 @app.get("/api/pitcher/{pitcher_id}/era")
 async def get_pitcher_era(pitcher_id: int, game_pks: str = ""):
@@ -1489,43 +1573,13 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
         ct = ZoneInfo("America/Chicago")
         ct_now = datetime.now(ct)
 
-        # Determine which monthly files to fetch (skip future months)
-        current_month = ct_now.month
-        fetched_files = 0
-        failed_files = []
-
-        async def _fetch_month(client, fname):
-            try:
-                resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=45)
-                if resp.status_code == 200:
-                    df = pd.read_parquet(io.BytesIO(resp.content))
-                    return (fname, df)
-            except Exception as e:
-                print(f"[Leaderboard] Failed {fname}: {e}")
-            return (fname, None)
-
-        # Only fetch months we expect to have data (March = month 3, through current)
-        months_to_fetch = [
-            f for f in MONTH_FILES
-            if int(f.split("_")[0]) <= current_month
-        ]
-
-        async with httpx.AsyncClient() as client:
-            results = await asyncio.gather(
-                *[_fetch_month(client, f) for f in months_to_fetch]
-            )
-
-        dfs = []
-        for fname, df in results:
-            if df is not None:
-                dfs.append(df)
-                fetched_files += 1
-            else:
-                failed_files.append(fname)
-
-        if dfs:
-            combined = pd.concat(dfs, ignore_index=True)
-            print(f"[Leaderboard] Loaded {len(combined)} rows from {fetched_files} monthly parquets")
+        # Reuse the SAME loader as cached-season so leaderboard ↔ Compare numbers
+        # are guaranteed to match. The loader caches the combined DF for 24h.
+        combined = await _load_local_savant_async()
+        if combined is not None and len(combined) > 0:
+            fetched_files = 1  # one combined DF
+            failed_files = []
+            print(f"[Leaderboard] Using shared cache: {len(combined)} rows")
 
             # Build records with same column names rest of the function expects
             def _safef(v):
