@@ -2041,7 +2041,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season }) => {
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true }) => {
   const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
@@ -2081,11 +2081,13 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
 
   // Fetch real ERA + IP from boxscores whenever the underlying pitch set changes
   // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats
+  // Skip when custom date range is active — ERA endpoint returns season totals only,
+  // which would override the correctly computed filtered stats.
   useEffect(() => {
     setEra(null);
     setIpFromBox(null);
     setBoxStats(null);
-    if (!rawPitches || !pitcherId || season === "2025") return;
+    if (!rawPitches || !pitcherId || season === "2025" || !isFullSeason) return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
@@ -2096,7 +2098,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
       setBoxStats(r ?? null);
     }).catch(() => {});
     return () => { alive = false; };
-  }, [rawPitches, pitcherId, season]);
+  }, [rawPitches, pitcherId, season, isFullSeason]);
 
   if (!rawPitches) return null;
   const allRow = metrics?.allRow;
@@ -2459,6 +2461,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
               season="2026"
+              isFullSeason={isFullSeason}
             />
           </>
         );
