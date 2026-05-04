@@ -7,75 +7,24 @@
  * In production: set it in Vercel's environment variables
  */
 
-const RAILWAY_URL = "https://pitcher-live-hub-production.up.railway.app";
-const LOCAL_URL = "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "https://pitcher-live-hub-production.up.railway.app";
 
-// Auto-detect local backend: try localhost first, fall back to Railway
-let _apiBase = null;
-let _apiBasePromise = null;
-
-async function detectApiBase() {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 800); // 800ms timeout
-    const res = await fetch(`${LOCAL_URL}/`, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (res.ok) {
-      console.log("[API] Using local backend (localhost:8000)");
-      return LOCAL_URL;
-    }
-  } catch {}
-  console.log("[API] Using Railway backend");
-  return RAILWAY_URL;
-}
-
-function getApiBase() {
-  if (_apiBase) return Promise.resolve(_apiBase);
-  if (!_apiBasePromise) {
-    _apiBasePromise = detectApiBase().then(base => {
-      _apiBase = base;
-      return base;
-    });
-  }
-  return _apiBasePromise;
-}
-
-// Wrapper for fetch that auto-selects backend
+// For cached-season, use same backend
 async function apiFetch(path) {
-  const base = await getApiBase();
-  const res = await fetch(`${base}${path}`);
+  const res = await fetch(`${API_BASE}${path}`);
   return res;
 }
 
-// For backwards compatibility with existing code
-const API_BASE = import.meta.env.VITE_API_URL || RAILWAY_URL;
-
-// ESPN team logos - fetched once and cached
+// Team logos via backend proxy (avoids browser CORS errors with ESPN's API)
 let _logoCache = null;
 export async function getTeamLogos() {
   if (_logoCache) return _logoCache;
   try {
-    const res = await fetch("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
+    const res = await fetch(`${API_BASE}/api/teams/logos`);
     if (!res.ok) return {};
     const data = await res.json();
-    const map = {};
-    for (const t of data.sports?.[0]?.leagues?.[0]?.teams || []) {
-      const team = t.team;
-      const abbr = team.abbreviation;
-      const logo = team.logos?.[0]?.href || "";
-      if (abbr && logo) map[abbr] = logo;
-    }
-    // Handle common abbreviation differences (MLB API vs ESPN)
-    if (map["WSH"] && !map["WAS"]) map["WAS"] = map["WSH"];
-    if (map["WAS"] && !map["WSH"]) map["WSH"] = map["WAS"];
-    if (map["AZ"] && !map["ARI"]) map["ARI"] = map["AZ"];
-    if (map["ARI"] && !map["AZ"]) map["AZ"] = map["ARI"];
-    if (map["CHW"] && !map["CWS"]) map["CWS"] = map["CHW"];
-    if (map["CWS"] && !map["CHW"]) map["CHW"] = map["CWS"];
-    if (map["CHA"] && !map["CWS"]) map["CWS"] = map["CHA"];
-    if (map["CHA"] && !map["CHW"]) map["CHW"] = map["CHA"];
-    _logoCache = map;
-    return map;
+    _logoCache = data || {};
+    return _logoCache;
   } catch (e) {
     console.error("Failed to load team logos:", e);
     return {};
