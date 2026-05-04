@@ -1834,13 +1834,22 @@ const computeSummaryStats = (rawPitches, hand) => {
         ev === "fielders_choice_out") return true;
     return false;
   };
-  // Iterate over ALL pitches (not just paPitches) to capture baserunning outs like caught_stealing
-  // that can occur mid-at-bat and don't end the PA but still consume an out.
+
+  // CRITICAL: events are repeated on EVERY pitch of an at-bat (not just the last pitch).
+  // Iterating over all pitches without deduping caused walks/Ks/outs to be counted
+  // ~4-5x per AB (once per pitch). Build a map of unique ABs first, then count events
+  // exactly once per at-bat.
+  const abEvents = new Map(); // key: "game_pk-at_bat_number" → event string
   for (const p of pitches) {
+    if (!p.game_pk || p.at_bat_number == null) continue;
     const ev = (p.events || "").toLowerCase().trim();
     if (!ev) continue;
+    const key = `${p.game_pk}-${p.at_bat_number}`;
+    if (!abEvents.has(key)) abEvents.set(key, ev);
+  }
+
+  for (const ev of abEvents.values()) {
     if (ev.includes("strikeout")) {
-      // Only count strikeout PA once (these end the at-bat)
       if (ev === "strikeout_double_play") outs += 2;
       else outs += 1;
     } else if (isSingleOut(ev)) {
@@ -1849,20 +1858,41 @@ const computeSummaryStats = (rawPitches, hand) => {
       outs += 2;
     } else if (ev === "triple_play") {
       outs += 3;
-    } else if (ev === "caught_stealing_2b" || ev === "caught_stealing_3b" || ev === "caught_stealing_home" ||
-               ev === "pickoff_1b" || ev === "pickoff_2b" || ev === "pickoff_3b" ||
-               ev === "pickoff_caught_stealing_2b" || ev === "pickoff_caught_stealing_3b" || ev === "pickoff_caught_stealing_home") {
-      outs += 1;
     }
-    // PA-ending events (mutually exclusive with baserunning events above)
+    // PA-ending event tallies
     if (ev.includes("strikeout")) so += 1;
     else if (ev === "walk") bb += 1;
     else if (ev === "intent_walk") { bb += 1; ibb += 1; }
     else if (ev === "hit_by_pitch") hbp += 1;
   }
-  // Count GB/FB/PU from in-play pitches (using bb_type)
+
+  // Baserunning outs (caught_stealing, pickoffs) — these don't end PAs but consume outs.
+  // They appear on individual pitches mid-AB, so we DO count per-pitch occurrences but
+  // need to dedupe by exact (game_pk, at_bat_number, pitch_number) to avoid duplicates.
+  const seenBaserunOuts = new Set();
+  for (const p of pitches) {
+    const ev = (p.events || "").toLowerCase().trim();
+    if (!ev) continue;
+    if (ev === "caught_stealing_2b" || ev === "caught_stealing_3b" || ev === "caught_stealing_home" ||
+        ev === "pickoff_1b" || ev === "pickoff_2b" || ev === "pickoff_3b" ||
+        ev === "pickoff_caught_stealing_2b" || ev === "pickoff_caught_stealing_3b" || ev === "pickoff_caught_stealing_home") {
+      const key = `${p.game_pk}-${p.at_bat_number}-${p.pitch_number}-${ev}`;
+      if (!seenBaserunOuts.has(key)) {
+        seenBaserunOuts.add(key);
+        outs += 1;
+      }
+    }
+  }
+
+  // Count GB/FB/PU from in-play pitches (using bb_type) - dedupe per AB since
+  // bb_type may also be repeated across pitches.
+  const seenInPlayABs = new Set();
   for (const p of pitches) {
     if (!p.is_in_play) continue;
+    if (!p.game_pk || p.at_bat_number == null) continue;
+    const key = `${p.game_pk}-${p.at_bat_number}`;
+    if (seenInPlayABs.has(key)) continue;
+    seenInPlayABs.add(key);
     if (p.bb_type === "ground_ball") gb += 1;
     else if (p.bb_type === "fly_ball") fb += 1;
     else if (p.bb_type === "popup") pu += 1;
