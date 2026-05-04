@@ -1838,14 +1838,16 @@ const computeSummaryStats = (rawPitches, hand) => {
   // CRITICAL: events are repeated on EVERY pitch of an at-bat (not just the last pitch).
   // Iterating over all pitches without deduping caused walks/Ks/outs to be counted
   // ~4-5x per AB (once per pitch). Build a map of unique ABs first, then count events
-  // exactly once per at-bat.
+  // exactly once per at-bat. Within an AB, prefer pitches that actually have an event
+  // string (some pitches may have empty events even within an AB-ending PA).
   const abEvents = new Map(); // key: "game_pk-at_bat_number" → event string
   for (const p of pitches) {
     if (!p.game_pk || p.at_bat_number == null) continue;
     const ev = (p.events || "").toLowerCase().trim();
     if (!ev) continue;
     const key = `${p.game_pk}-${p.at_bat_number}`;
-    if (!abEvents.has(key)) abEvents.set(key, ev);
+    // Keep updating - last non-empty event wins (in case parquet has stale early events)
+    abEvents.set(key, ev);
   }
 
   for (const ev of abEvents.values()) {
@@ -2551,6 +2553,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
               season={cmpMode === "2025" ? "2025" : "2026"}
+              isFullSeason={false}
             />
           )}
         </>
