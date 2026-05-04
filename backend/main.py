@@ -73,6 +73,49 @@ def set_cache(key, data):
 MLB_BASE = "https://statsapi.mlb.com"
 
 
+# ─── Route: Team logos proxy (avoids browser CORS errors) ───
+# ESPN blocks browser CORS but allows server requests. We proxy through here
+# and the frontend hits this endpoint instead. Cached for 24h - logos rarely change.
+@app.get("/api/teams/logos")
+async def get_team_logos():
+    cached = get_cached("team_logos", 86400)  # 24h cache
+    if cached:
+        return cached
+
+    logos = {}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams",
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for t in (data.get("sports") or [{}])[0].get("leagues", [{}])[0].get("teams", []):
+                    team = t.get("team", {})
+                    abbr = team.get("abbreviation", "")
+                    logos_list = team.get("logos") or []
+                    href = logos_list[0].get("href", "") if logos_list else ""
+                    if abbr and href:
+                        logos[abbr] = href
+                # Common abbreviation differences (MLB API uses some variants)
+                aliases = [
+                    ("WSH", "WAS"), ("AZ", "ARI"), ("CHW", "CWS"), ("CHA", "CWS"),
+                    ("CHA", "CHW"), ("KC", "KCR"), ("SD", "SDP"), ("SF", "SFG"),
+                    ("TB", "TBR"),
+                ]
+                for src, dst in aliases:
+                    if src in logos and dst not in logos:
+                        logos[dst] = logos[src]
+                    if dst in logos and src not in logos:
+                        logos[src] = logos[dst]
+    except Exception as e:
+        print(f"[Logos] Failed: {e}")
+
+    set_cache("team_logos", logos)
+    return logos
+
+
 # ─── Route 1: Search for pitchers by name ───
 @app.get("/api/search/pitcher")
 async def search_pitcher(q: str):
@@ -1403,155 +1446,136 @@ async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
 async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     import pandas as pd
     import io
-    import csv
     import asyncio
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
-    # ── Step 1: Load all parquet data (cached 10 min) ──
+    # ── Step 1: Load all parquet data (cached 24h - refreshes overnight) ──
+    # Sourcing from the SAME monthly parquets that cached-season uses, so leaderboard
+    # numbers match the Compare tool exactly. Was Savant CSV before, which caused
+    # subtle metric mismatches and was very slow due to chunked CSV downloads.
     raw_key = "leaderboard_raw"
-    all_df = get_cached(raw_key, 600)
+    all_df = get_cached(raw_key, 86400)  # 24h cache
 
     if all_df is None:
-        start = datetime(2026, 3, 26)
-        end = datetime.now() - timedelta(days=1)  # yesterday (Savant needs processing time)
+        ct = ZoneInfo("America/Chicago")
+        ct_now = datetime.now(ct)
 
-        # ── Fetch ALL pitchers from Savant CSV in date chunks ──
-        # Savant caps at ~40k rows per query, so we fetch in 5-day chunks (~12k rows each)
-        all_rows = []
-        chunk_start = start
-        fetched_chunks = 0
-        failed_chunks = []
+        # Determine which monthly files to fetch (skip future months)
+        current_month = ct_now.month
+        fetched_files = 0
+        failed_files = []
+
+        async def _fetch_month(client, fname):
+            try:
+                resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=45)
+                if resp.status_code == 200:
+                    df = pd.read_parquet(io.BytesIO(resp.content))
+                    return (fname, df)
+            except Exception as e:
+                print(f"[Leaderboard] Failed {fname}: {e}")
+            return (fname, None)
+
+        # Only fetch months we expect to have data (March = month 3, through current)
+        months_to_fetch = [
+            f for f in MONTH_FILES
+            if int(f.split("_")[0]) <= current_month
+        ]
 
         async with httpx.AsyncClient() as client:
-            while chunk_start <= end:
-                chunk_end = min(chunk_start + timedelta(days=4), end)
-                s_str = chunk_start.strftime("%Y-%m-%d")
-                e_str = chunk_end.strftime("%Y-%m-%d")
+            results = await asyncio.gather(
+                *[_fetch_month(client, f) for f in months_to_fetch]
+            )
 
-                params = {
-                    "all": "true",
-                    "hfPT": "", "hfAB": "", "hfGT": "R|", "hfPR": "", "hfZ": "",
-                    "stadium": "", "hfBBL": "", "hfNewZones": "", "hfPull": "",
-                    "hfC": "", "hfSea": "", "hfSit": "", "player_type": "pitcher",
-                    "hfOuts": "", "opponent": "", "pitcher_throws": "", "batter_stands": "",
-                    "hfSA": "", "game_date_gt": s_str, "game_date_lt": e_str,
-                    "hfInfield": "", "team": "", "position": "", "hfOutfield": "",
-                    "hfRO": "", "home_road": "", "hfFlag": "", "hfBBT": "",
-                    "metric_1": "", "hfInn": "", "min_pitches": "0", "min_results": "0",
-                    "group_by": "name", "sort_col": "pitches",
-                    "player_event_sort": "api_p_release_speed",
-                    "sort_order": "desc", "min_pas": "0", "type": "details",
-                }
+        dfs = []
+        for fname, df in results:
+            if df is not None:
+                dfs.append(df)
+                fetched_files += 1
+            else:
+                failed_files.append(fname)
 
-                success = False
-                for attempt in range(3):
-                    try:
-                        resp = await client.get(
-                            "https://baseballsavant.mlb.com/statcast_search/csv",
-                            params=params, timeout=45, follow_redirects=True
-                        )
-                        if resp.status_code == 200 and "pitch_type" in resp.text[:500]:
-                            reader = csv.DictReader(io.StringIO(resp.text))
-                            chunk_rows = list(reader)
-                            all_rows.extend(chunk_rows)
-                            fetched_chunks += 1
-                            success = True
-                            break
-                    except Exception:
-                        pass
-                    if attempt < 2:
-                        await asyncio.sleep(2.0 * (attempt + 1))
+        if dfs:
+            combined = pd.concat(dfs, ignore_index=True)
+            print(f"[Leaderboard] Loaded {len(combined)} rows from {fetched_files} monthly parquets")
 
-                if not success:
-                    failed_chunks.append(f"{s_str} to {e_str}")
+            # Build records with same column names rest of the function expects
+            def _safef(v):
+                try:
+                    if v is None or str(v) in ("", "nan", "NaN", "None"):
+                        return None
+                    return float(v)
+                except (ValueError, TypeError):
+                    return None
 
-                chunk_start = chunk_end + timedelta(days=1)
-                await asyncio.sleep(0.5)  # rate limit courtesy
-
-        if failed_chunks:
-            print(f"[Leaderboard] WARNING: Failed chunks: {failed_chunks}")
-        print(f"[Leaderboard] Fetched {fetched_chunks} Savant chunks, {len(failed_chunks)} failed, {len(all_rows)} total rows")
-
-        if all_rows:
-            # ── Convert Savant CSV rows to DataFrame with leaderboard column names ──
-            def sf(row, key):
-                try: return float(row.get(key, ""))
-                except (ValueError, TypeError): return None
+            CALL_DESC_MAP = {
+                "called_strike": "Called Strike", "swinging_strike": "Swinging Strike",
+                "swinging_strike_blocked": "Swinging Strike (Blocked)",
+                "foul": "Foul", "foul_tip": "Foul Tip", "foul_bunt": "Foul Bunt",
+                "ball": "Ball", "blocked_ball": "Ball In Dirt",
+                "hit_by_pitch": "Hit By Pitch", "missed_bunt": "Swinging Strike",
+                "hit_into_play": "In Play, Out(s)",
+                "hit_into_play_score": "In Play, Run(s)",
+                "hit_into_play_no_out": "In Play, No Out",
+                "pitchout": "Ball", "intent_ball": "Ball",
+            }
 
             records = []
-            for row in all_rows:
-                pitcher_id_str = row.get("pitcher", "")
-                if not pitcher_id_str or not pitcher_id_str.strip().isdigit():
+            for _, row in combined.iterrows():
+                pid_v = row.get("pitcher_id")
+                if pid_v is None or pd.isna(pid_v):
                     continue
-                desc_raw = row.get("description", "")
-                # Map Savant description to spaced format for call_description
-                desc_map = {
-                    "called_strike": "Called Strike", "swinging_strike": "Swinging Strike",
-                    "swinging_strike_blocked": "Swinging Strike (Blocked)",
-                    "foul": "Foul", "foul_tip": "Foul Tip", "foul_bunt": "Foul Bunt",
-                    "ball": "Ball", "blocked_ball": "Ball In Dirt",
-                    "hit_by_pitch": "Hit By Pitch", "missed_bunt": "Swinging Strike",
-                    "hit_into_play": "In Play, Out(s)",
-                    "hit_into_play_score": "In Play, Run(s)",
-                    "hit_into_play_no_out": "In Play, No Out",
-                    "pitchout": "Ball", "intent_ball": "Ball",
-                }
-                call_desc = desc_map.get(desc_raw, desc_raw)
+                try:
+                    pitcher_id_int = int(pid_v)
+                except (ValueError, TypeError):
+                    continue
+
+                desc_raw = str(row.get("call_description", "")).strip().lower()
+                if not desc_raw or desc_raw == "nan":
+                    desc_raw = str(row.get("description", "")).strip().lower()
+                call_desc = CALL_DESC_MAP.get(desc_raw, desc_raw.replace("_", " ").title())
+
+                is_strike = bool(row.get("is_strike", False))
+                is_in_play = bool(row.get("is_in_play", False))
+
+                pfx_x_v = _safef(row.get("pfx_x"))
 
                 records.append({
-                    "pitcher_id": int(pitcher_id_str),
-                    "pitcher_name": "",  # filled in below
-                    "pitcher_hand": row.get("p_throws", ""),
-                    "batter_hand": row.get("stand", ""),
-                    "pitch_type": row.get("pitch_type", ""),
+                    "pitcher_id": pitcher_id_int,
+                    "pitcher_name": str(row.get("pitcher_name", "") or ""),
+                    "pitcher_hand": str(row.get("pitcher_hand", "") or ""),
+                    "batter_hand": str(row.get("stand", "") or ""),
+                    "pitch_type": str(row.get("pitch_type", "") or ""),
                     "call_description": call_desc,
-                    "is_strike": row.get("type", "") == "S",
-                    "is_in_play": row.get("type", "") == "X",
-                    "zone": sf(row, "zone"),
-                    "start_speed": sf(row, "release_speed"),
-                    "spin_rate": sf(row, "release_spin_rate"),
-                    "pfx_z": sf(row, "pfx_z"),
-                    "pfx_x": -sf(row, "pfx_x") if sf(row, "pfx_x") is not None else None,  # negate for pitcher POV
-                    "launch_speed": sf(row, "launch_speed"),
-                    "launch_angle": sf(row, "launch_angle"),
-                    "trajectory": row.get("bb_type", ""),
-                    "events": row.get("events", ""),
-                    "balls": row.get("balls", ""),
-                    "strikes": row.get("strikes", ""),
-                    "game_pk": int(row.get("game_pk", "0")) if str(row.get("game_pk", "")).strip().isdigit() else 0,
-                    "game_date": row.get("game_date", ""),
-                    "at_bat_number": sf(row, "at_bat_number"),
-                    "inning": sf(row, "inning"),
+                    "is_strike": is_strike,
+                    "is_in_play": is_in_play,
+                    "zone": _safef(row.get("zone")),
+                    "start_speed": _safef(row.get("start_speed")),
+                    "spin_rate": _safef(row.get("spin_rate")),
+                    "pfx_z": _safef(row.get("pfx_z")),
+                    "pfx_x": -pfx_x_v if pfx_x_v is not None else None,
+                    "launch_speed": _safef(row.get("launch_speed")),
+                    "launch_angle": _safef(row.get("launch_angle")),
+                    "trajectory": str(row.get("trajectory", "") or ""),
+                    "events": str(row.get("events", "") or ""),
+                    "balls": str(row.get("balls", "") or ""),
+                    "strikes": str(row.get("strikes", "") or ""),
+                    "game_pk": int(row.get("game_pk", 0)) if not pd.isna(row.get("game_pk")) else 0,
+                    "game_date": str(row.get("game_date", "") or ""),
+                    "at_bat_number": _safef(row.get("at_bat_number")),
+                    "inning": _safef(row.get("inning")),
                 })
 
             all_df = pd.DataFrame(records)
-
-            # ── Look up pitcher names from MLB API (batched) ──
-            unique_ids = all_df["pitcher_id"].unique().tolist()
-            name_map = {}
-            try:
-                async with httpx.AsyncClient() as name_client:
-                    for batch_start in range(0, len(unique_ids), 400):
-                        batch_ids = unique_ids[batch_start:batch_start + 400]
-                        id_str = ",".join(str(i) for i in batch_ids)
-                        name_resp = await name_client.get(
-                            f"https://statsapi.mlb.com/api/v1/people?personIds={id_str}",
-                            timeout=15
-                        )
-                        if name_resp.status_code == 200:
-                            for person in name_resp.json().get("people", []):
-                                name_map[person["id"]] = person.get("fullName", "")
-                all_df["pitcher_name"] = all_df["pitcher_id"].map(name_map).fillna("")
-                print(f"[Leaderboard] Resolved {len(name_map)} pitcher names")
-            except Exception as e:
-                print(f"[Leaderboard] Name lookup failed: {e}")
-
             set_cache(raw_key, all_df)
-            from zoneinfo import ZoneInfo
-            ct_now = datetime.now(ZoneInfo("America/Chicago"))
             set_cache("leaderboard_updated", ct_now.strftime("%Y-%m-%d %I:%M %p CT"))
-            set_cache("leaderboard_fetch_stats", {"fetched": fetched_chunks, "failed": len(failed_chunks), "failed_dates": failed_chunks, "source": "savant"})
-            print(f"[Leaderboard] Total rows: {len(all_df)}, pitchers: {all_df['pitcher_id'].nunique()}")
+            set_cache("leaderboard_fetch_stats", {
+                "fetched": fetched_files,
+                "failed": len(failed_files),
+                "failed_files": failed_files,
+                "source": "monthly_parquet",
+            })
+            print(f"[Leaderboard] Built {len(all_df)} pitch records, {all_df['pitcher_id'].nunique()} pitchers")
         else:
             all_df = pd.DataFrame()
 
