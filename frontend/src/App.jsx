@@ -1935,11 +1935,11 @@ const computeSummaryStats = (rawPitches, hand) => {
   const LG_HR_FB_RATE = 0.119; // league-average HR/FB rate (2025: 11.9%)
   let fip = null, xfip = null, siera = null;
   let hr = 0;
+  // Count HR from deduped at-bat events (same dedup as K/BB to avoid 4-5x overcounts)
+  for (const ev of abEvents.values()) {
+    if (ev === "home_run") hr += 1;
+  }
   if (ipNum > 0) {
-    for (const p of pitches) {
-      const ev = (p.events || "").toLowerCase().trim();
-      if (ev === "home_run") hr += 1;
-    }
     fip = (13 * hr + 3 * (bb + hbp) - 2 * so) / ipNum + FIP_CONSTANT;
     // xFIP: replace actual HR with expected HR (FB × league HR/FB rate)
     const expectedHR = fb * LG_HR_FB_RATE;
@@ -2060,7 +2060,21 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
       }
     }
   }
-  const cells = [
+  // For hand-filtered views, GS/IP/ERA aren't meaningful (no such thing as "ERA vs LHH").
+  // Replace with PA count which IS meaningful per-handedness.
+  const isHandFiltered = hand !== "all";
+  const handPaCount = isHandFiltered
+    ? new Set(rawPitches.filter(p => p.batter_hand === hand && p.game_pk && p.at_bat_number != null).map(p => `${p.game_pk}-${p.at_bat_number}`)).size
+    : null;
+  const cells = isHandFiltered ? [
+    { l: "PA", v: handPaCount != null ? handPaCount.toString() : "—" },
+    { l: "FIP", v: fipDisplay },
+    { l: "xFIP", v: xfipDisplay },
+    { l: "SIERA", v: sieraDisplay },
+    { l: "K%", v: kPctDisplay },
+    { l: "BB%", v: bbPctDisplay },
+    { l: "K-BB%", v: kbbPctDisplay },
+  ] : [
     { l: "GS", v: gsDisplay },
     { l: "IP", v: ipDisplay },
     { l: "ERA", v: eraDisplay },
