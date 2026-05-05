@@ -2005,10 +2005,17 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
     const uniqueABs = new Set(handPitches.filter(p => p.game_pk && p.at_bat_number != null).map(p => `${p.game_pk}-${p.at_bat_number}`));
     const pa = uniqueABs.size;
     if (pa > 0) {
-      // K and BB from events are correct for the pitches we have
-      let k = 0, bb = 0;
+      // Dedupe events by (game_pk, at_bat_number) — events repeat on every pitch of an AB.
+      // Without this, K and BB get counted ~5x leading to >100% rates.
+      const handAbEvents = new Map();
       for (const p of handPitches) {
+        if (!p.game_pk || p.at_bat_number == null) continue;
         const ev = (p.events || "").toLowerCase().trim();
+        if (!ev) continue;
+        handAbEvents.set(`${p.game_pk}-${p.at_bat_number}`, ev);
+      }
+      let k = 0, bb = 0;
+      for (const ev of handAbEvents.values()) {
         if (ev.includes("strikeout")) k++;
         else if (ev === "walk" || ev === "intent_walk") bb++; // BB% = walks only, no HBP
       }
