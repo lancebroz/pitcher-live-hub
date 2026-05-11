@@ -1539,6 +1539,539 @@ async def get_starters_today(game_date: str = None):
     return results
 
 
+# ─── Daily Report Endpoint ───
+# Computes per-pitcher diffs between a "current sample" and a "baseline sample".
+# Used to surface what changed in a pitcher's recent start vs their priors.
+# Modes:
+#   - season:           current = the report date's start;  baseline = all prior starts this season (excl. Coors visits)
+#   - last3:            current = the report date's start;  baseline = the 3 starts immediately prior
+#   - last4_vs_prior4:  current = pitcher's last 4 starts;  baseline = the 4 starts before those
+
+@app.get("/api/report")
+async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
+    """
+    Returns:
+        {
+          "date": "...",
+          "mode": "...",
+          "pitchers": [
+            {
+              "pitcher_id": int, "pitcher_name": str, "pitcher_hand": "L"|"R",
+              "team": str, "era": float | None,
+              "change_score": float,
+              "current_pitches": int, "baseline_pitches": int,
+              "notes": [{ "text": "...", "category": "velocity|movement|location|usage|results", "magnitude": float }],
+              "qualified": bool
+            }, ...
+          ]
+        }
+    """
+    import pandas as pd
+    from datetime import datetime as _dt, timedelta as _td
+
+    df = await _load_local_savant_async()
+    if df is None or len(df) == 0:
+        return {"date": date, "mode": mode, "pitchers": []}
+
+    # Make a working copy with required columns coerced
+    work = df.copy()
+    # Normalize game_date to YYYY-MM-DD strings for comparison
+    work["game_date"] = work["game_date"].astype(str).str[:10]
+    work = work[work["game_date"] != "nan"]
+
+    # ── Determine target pitchers ──
+    # If pitcher_id is provided (search), use just that pitcher
+    # Otherwise: all pitchers who started a game on `date`
+    target_pitcher_ids = []
+
+    if pitcher_id > 0:
+        target_pitcher_ids = [pitcher_id]
+    else:
+        # Find pitchers who started a game on the given date.
+        # "Started" = threw the first pitch of the game (pitch_number=1, inning=1).
+        date_df = work[work["game_date"] == date]
+        if len(date_df) > 0:
+            # Group by game_pk + pitcher_id, find who threw earliest pitches
+            for gpk, gdf in date_df.groupby("game_pk"):
+                if len(gdf) == 0:
+                    continue
+                # Find the earliest at-bat in inning 1
+                inning1 = gdf[gdf["inning"] == 1]
+                if len(inning1) == 0:
+                    continue
+                # Find unique pitchers in inning 1 - take the one with the lowest at_bat_number
+                inning1_sorted = inning1.sort_values("at_bat_number")
+                # Get top and bottom of 1st separately - each has a starter
+                for half, half_df in inning1_sorted.groupby("top_bottom"):
+                    if len(half_df) == 0:
+                        continue
+                    first_pitcher_id = half_df.iloc[0]["pitcher_id"]
+                    if pd.notna(first_pitcher_id):
+                        try:
+                            pid_int = int(first_pitcher_id)
+                            # Require at least 40 pitches to qualify as a starter (excludes openers)
+                            pitcher_count = len(gdf[gdf["pitcher_id"].astype(float).astype(int, errors="ignore") == pid_int]) if True else 0
+                            try:
+                                pitcher_count = int((gdf["pitcher_id"].astype(float) == float(pid_int)).sum())
+                            except Exception:
+                                pitcher_count = 0
+                            if pitcher_count >= 40:
+                                target_pitcher_ids.append(pid_int)
+                        except (ValueError, TypeError):
+                            continue
+
+    # Dedupe
+    target_pitcher_ids = list(dict.fromkeys(target_pitcher_ids))
+
+    if not target_pitcher_ids:
+        return {"date": date, "mode": mode, "pitchers": []}
+
+    # ── For each target pitcher, build current vs baseline samples and compute notes ──
+    pitcher_reports = []
+    for pid in target_pitcher_ids:
+        try:
+            pitcher_df = work[work["pitcher_id"].astype(float) == float(pid)]
+        except Exception:
+            continue
+        if len(pitcher_df) == 0:
+            continue
+
+        pitcher_name = pitcher_df.iloc[0].get("pitcher_name", "")
+        pitcher_hand = pitcher_df.iloc[0].get("pitcher_hand", "")
+
+        # Determine pitcher's team from most recent game
+        # If pitcher's team is COL Rockies - we DON'T exclude Coors (it's their home park).
+        # If pitcher is on any other team, exclude games where home_team == COL.
+        pitcher_team = ""
+        try:
+            recent = pitcher_df.sort_values("game_date").iloc[-1]
+            home = recent.get("home_team", "")
+            away = recent.get("away_team", "")
+            # If pitcher's most recent game has home == COL, they're either on Rockies or visited COL
+            # Determine team by looking at top/bottom of inning matchup with pitcher_hand context isn't reliable
+            # Simpler: a pitcher's team is the team that is NOT batting when they're on the mound
+            # When pitcher throws in "top" half = home team pitching (their team is home)
+            # When pitcher throws in "bot" half = away team pitching (their team is away)
+            # Use mode of top/bottom to determine
+            top_bottom_mode = pitcher_df["top_bottom"].mode()
+            if len(top_bottom_mode) > 0:
+                tb = top_bottom_mode.iloc[0]
+                if tb == "Top":
+                    pitcher_team = home  # Pitching in top = home team
+                else:
+                    pitcher_team = away  # Pitching in bottom = away team
+        except Exception:
+            pass
+
+        # ── Build the "starts" list for this pitcher (all games sorted by date) ──
+        # A "start" = a game where this pitcher threw 40+ pitches and entered in inning 1.
+        # We track game_pk + game_date + home_team + away_team + pitch count.
+        starts = []
+        for gpk, gdf in pitcher_df.groupby("game_pk"):
+            # Did this pitcher appear in inning 1?
+            inning1 = gdf[gdf["inning"] == 1]
+            if len(inning1) == 0:
+                continue
+            pcount = len(gdf)
+            if pcount < 40:
+                continue
+            gdate = gdf.iloc[0].get("game_date", "")
+            home = gdf.iloc[0].get("home_team", "")
+            away = gdf.iloc[0].get("away_team", "")
+            starts.append({
+                "game_pk": int(gpk),
+                "game_date": str(gdate)[:10],
+                "home_team": str(home),
+                "away_team": str(away),
+                "pitch_count": pcount,
+            })
+        # Sort by date
+        starts.sort(key=lambda s: s["game_date"])
+
+        # ── Apply Coors exclusion for baseline only ──
+        # Pitcher's road games to COL get excluded from baseline (but kept for "current" if applicable)
+        def is_coors_visit(start, pitcher_team_str):
+            return start["home_team"] == "COL" and pitcher_team_str != "COL"
+
+        # ── Select current vs baseline based on mode ──
+        current_game_pks = set()
+        baseline_game_pks = set()
+
+        if mode == "season":
+            # Current = start that took place on the given date
+            current_starts = [s for s in starts if s["game_date"] == date]
+            baseline_starts = [s for s in starts if s["game_date"] < date and not is_coors_visit(s, pitcher_team)]
+            current_game_pks = {s["game_pk"] for s in current_starts}
+            baseline_game_pks = {s["game_pk"] for s in baseline_starts}
+        elif mode == "last3":
+            # Current = start on the given date; Baseline = 3 starts immediately before
+            current_starts = [s for s in starts if s["game_date"] == date]
+            prior_starts = [s for s in starts if s["game_date"] < date and not is_coors_visit(s, pitcher_team)]
+            baseline_starts = prior_starts[-3:] if len(prior_starts) >= 3 else []
+            current_game_pks = {s["game_pk"] for s in current_starts}
+            baseline_game_pks = {s["game_pk"] for s in baseline_starts}
+        elif mode == "last4_vs_prior4":
+            # Current = pitcher's most recent 4 starts (up to and including the date)
+            # Baseline = the 4 starts before those
+            valid_starts = [s for s in starts if s["game_date"] <= date and not is_coors_visit(s, pitcher_team)]
+            if len(valid_starts) < 8:
+                # Not enough starts - skip this pitcher
+                pitcher_reports.append({
+                    "pitcher_id": pid, "pitcher_name": pitcher_name, "pitcher_hand": pitcher_hand,
+                    "team": pitcher_team, "era": None, "change_score": 0,
+                    "current_pitches": 0, "baseline_pitches": 0, "notes": [], "qualified": False,
+                })
+                continue
+            current_starts = valid_starts[-4:]
+            baseline_starts = valid_starts[-8:-4]
+            current_game_pks = {s["game_pk"] for s in current_starts}
+            baseline_game_pks = {s["game_pk"] for s in baseline_starts}
+
+        # Skip pitcher if either sample is empty
+        if not current_game_pks or not baseline_game_pks:
+            pitcher_reports.append({
+                "pitcher_id": pid, "pitcher_name": pitcher_name, "pitcher_hand": pitcher_hand,
+                "team": pitcher_team, "era": None, "change_score": 0,
+                "current_pitches": 0, "baseline_pitches": 0, "notes": [], "qualified": False,
+            })
+            continue
+
+        current_df = pitcher_df[pitcher_df["game_pk"].astype(float).isin([float(g) for g in current_game_pks])]
+        baseline_df = pitcher_df[pitcher_df["game_pk"].astype(float).isin([float(g) for g in baseline_game_pks])]
+
+        # ── Compute notes for this pitcher ──
+        notes = _compute_pitcher_diff_notes(current_df, baseline_df, pitcher_hand)
+
+        # ── Compute change score (sum of magnitudes for sorting) ──
+        change_score = sum(abs(n.get("magnitude", 0)) for n in notes)
+
+        # ── Compute season ERA from boxscore endpoint cache (best-effort) ──
+        # For simplicity, derive a rough ERA from the data we have if possible
+        # We don't have great ER info in parquet, so just skip ERA for now (frontend can fetch separately if needed)
+        era_value = None
+
+        pitcher_reports.append({
+            "pitcher_id": pid,
+            "pitcher_name": pitcher_name,
+            "pitcher_hand": pitcher_hand,
+            "team": pitcher_team,
+            "era": era_value,
+            "change_score": round(change_score, 2),
+            "current_pitches": int(len(current_df)),
+            "baseline_pitches": int(len(baseline_df)),
+            "notes": notes,
+            "qualified": True,
+        })
+
+    return {
+        "date": date,
+        "mode": mode,
+        "pitchers": pitcher_reports,
+    }
+
+
+def _compute_pitcher_diff_notes(current_df, baseline_df, pitcher_hand):
+    """
+    Compares two pitch sets and produces notes for material differences.
+    Thresholds chosen to surface only meaningful changes given typical sample sizes.
+
+    Returns: list of {text, category, magnitude} dicts.
+    """
+    import pandas as pd
+    notes = []
+
+    if len(current_df) == 0 or len(baseline_df) == 0:
+        return notes
+
+    # ── Velocity / IVB / HB / Release per pitch type ──
+    # Match pitches by pitch_type code. Need 10+ in current AND 30+ in baseline for the type.
+    cur_by_type = current_df.groupby("pitch_type")
+    base_by_type = baseline_df.groupby("pitch_type")
+
+    common_types = set(current_df["pitch_type"].dropna().unique()) & set(baseline_df["pitch_type"].dropna().unique())
+
+    PITCH_NAMES = {
+        "FF": "4-Seam", "SI": "Sinker", "FC": "Cutter",
+        "SL": "Slider", "ST": "Sweeper", "SV": "Slurve",
+        "CU": "Curveball", "KC": "Knuckle Curve", "CS": "Slow Curve",
+        "CH": "Changeup", "FS": "Splitter", "KN": "Knuckleball",
+        "EP": "Eephus", "SC": "Screwball",
+    }
+
+    def safe_mean(series):
+        try:
+            return float(pd.to_numeric(series, errors="coerce").dropna().mean())
+        except Exception:
+            return None
+
+    for pt in common_types:
+        if not pt or str(pt).strip() == "" or str(pt).lower() == "nan":
+            continue
+
+        cur_pt = cur_by_type.get_group(pt) if pt in cur_by_type.groups else None
+        base_pt = base_by_type.get_group(pt) if pt in base_by_type.groups else None
+        if cur_pt is None or base_pt is None:
+            continue
+
+        cur_n = len(cur_pt)
+        base_n = len(base_pt)
+        pitch_label = PITCH_NAMES.get(pt, pt)
+
+        # Velocity (need 10+ current, 30+ baseline)
+        if cur_n >= 10 and base_n >= 30:
+            cv = safe_mean(cur_pt["start_speed"])
+            bv = safe_mean(base_pt["start_speed"])
+            if cv is not None and bv is not None:
+                delta = cv - bv
+                if abs(delta) >= 0.7:
+                    direction = "↑" if delta > 0 else "↓"
+                    notes.append({
+                        "text": f"{pitch_label} velocity {direction} {abs(delta):.1f} mph ({bv:.1f} → {cv:.1f})",
+                        "category": "velocity",
+                        "magnitude": abs(delta) * 10,  # weight velocity highly
+                    })
+
+            # IVB (pfx_z * 12 = inches; data is stored in feet)
+            civb = safe_mean(cur_pt["pfx_z"])
+            bivb = safe_mean(base_pt["pfx_z"])
+            if civb is not None and bivb is not None:
+                civb_in = civb * 12
+                bivb_in = bivb * 12
+                delta_ivb = civb_in - bivb_in
+                if abs(delta_ivb) >= 1.5:
+                    direction = "↑" if delta_ivb > 0 else "↓"
+                    notes.append({
+                        "text": f"{pitch_label} IVB {direction} {abs(delta_ivb):.1f}\" ({bivb_in:.1f} → {civb_in:.1f})",
+                        "category": "movement",
+                        "magnitude": abs(delta_ivb) * 3,
+                    })
+
+            # HB
+            chb = safe_mean(cur_pt["pfx_x"])
+            bhb = safe_mean(base_pt["pfx_x"])
+            if chb is not None and bhb is not None:
+                chb_in = chb * -12  # negate to match Savant pitcher-perspective convention
+                bhb_in = bhb * -12
+                delta_hb = chb_in - bhb_in
+                if abs(delta_hb) >= 1.5:
+                    direction = "↑" if delta_hb > 0 else "↓"
+                    notes.append({
+                        "text": f"{pitch_label} HB {direction} {abs(delta_hb):.1f}\" ({bhb_in:.1f} → {chb_in:.1f})",
+                        "category": "movement",
+                        "magnitude": abs(delta_hb) * 3,
+                    })
+
+            # Release height (z) - 0.2 ft threshold
+            crh = safe_mean(cur_pt["release_z"])
+            brh = safe_mean(base_pt["release_z"])
+            if crh is not None and brh is not None:
+                delta_rh = crh - brh
+                if abs(delta_rh) >= 0.2:
+                    direction = "↑" if delta_rh > 0 else "↓"
+                    notes.append({
+                        "text": f"{pitch_label} release height {direction} {abs(delta_rh):.2f} ft ({brh:.2f} → {crh:.2f})",
+                        "category": "release",
+                        "magnitude": abs(delta_rh) * 20,
+                    })
+
+            # Extension - 0.15 ft threshold
+            cext = safe_mean(cur_pt["extension"])
+            bext = safe_mean(base_pt["extension"])
+            if cext is not None and bext is not None:
+                delta_ext = cext - bext
+                if abs(delta_ext) >= 0.15:
+                    direction = "↑" if delta_ext > 0 else "↓"
+                    notes.append({
+                        "text": f"{pitch_label} extension {direction} {abs(delta_ext):.2f} ft ({bext:.2f} → {cext:.2f})",
+                        "category": "release",
+                        "magnitude": abs(delta_ext) * 25,
+                    })
+
+    # ── Usage shifts by batter hand (per pitch type) ──
+    # Use 'stand' field; require 20+ current pitches to that hand AND 50+ baseline pitches to that hand
+    for batter_side in ["L", "R"]:
+        cur_hand = current_df[current_df["stand"] == batter_side]
+        base_hand = baseline_df[baseline_df["stand"] == batter_side]
+        cur_hand_n = len(cur_hand)
+        base_hand_n = len(base_hand)
+        if cur_hand_n < 20 or base_hand_n < 50:
+            continue
+
+        # Compute usage percentage for each pitch type in both samples
+        cur_usage = (cur_hand["pitch_type"].value_counts(normalize=True) * 100).to_dict()
+        base_usage = (base_hand["pitch_type"].value_counts(normalize=True) * 100).to_dict()
+        all_types = set(cur_usage.keys()) | set(base_usage.keys())
+
+        for pt in all_types:
+            if not pt or str(pt).strip() == "" or str(pt).lower() == "nan":
+                continue
+            cur_pct = cur_usage.get(pt, 0)
+            base_pct = base_usage.get(pt, 0)
+            delta = cur_pct - base_pct
+            if abs(delta) >= 10:
+                direction = "↑" if delta > 0 else "↓"
+                pitch_label = PITCH_NAMES.get(pt, pt)
+                hand_label = "LHH" if batter_side == "L" else "RHH"
+                notes.append({
+                    "text": f"{pitch_label} usage vs {hand_label} {direction} {abs(delta):.0f}pp ({base_pct:.0f}% → {cur_pct:.0f}%)",
+                    "category": "usage",
+                    "magnitude": abs(delta) * 1.5,
+                })
+
+    # ── Results: Zone%, Strike%, Swinging Strike%, Whiff%, Chase% by batter hand ──
+    # Need 40+ pitches to that hand in current AND 100+ in baseline; threshold = 5 percentage points
+    for batter_side in ["L", "R"]:
+        cur_hand = current_df[current_df["stand"] == batter_side]
+        base_hand = baseline_df[baseline_df["stand"] == batter_side]
+        if len(cur_hand) < 40 or len(base_hand) < 100:
+            continue
+        hand_label = "LHH" if batter_side == "L" else "RHH"
+
+        # Helper to extract count for a description-based metric
+        def metric_pct(df_in, predicate):
+            try:
+                if len(df_in) == 0:
+                    return None
+                return 100.0 * predicate(df_in).sum() / len(df_in)
+            except Exception:
+                return None
+
+        # Zone% - zone 1-9 are in-zone
+        def in_zone(df_in):
+            try:
+                z = pd.to_numeric(df_in["zone"], errors="coerce")
+                return (z >= 1) & (z <= 9)
+            except Exception:
+                return pd.Series([False] * len(df_in))
+
+        cur_zone = metric_pct(cur_hand, in_zone)
+        base_zone = metric_pct(base_hand, in_zone)
+        if cur_zone is not None and base_zone is not None:
+            delta = cur_zone - base_zone
+            if abs(delta) >= 8:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"Zone% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_zone:.0f}% → {cur_zone:.0f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta),
+                })
+
+        # Strike% - is_strike OR is_in_play
+        def is_strike_overall(df_in):
+            return df_in["is_strike"].astype(bool) | df_in["is_in_play"].astype(bool)
+
+        cur_str = metric_pct(cur_hand, is_strike_overall)
+        base_str = metric_pct(base_hand, is_strike_overall)
+        if cur_str is not None and base_str is not None:
+            delta = cur_str - base_str
+            if abs(delta) >= 8:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"Strike% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_str:.0f}% → {cur_str:.0f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta),
+                })
+
+        # Swinging strike% - call_description swinging_strike + swinging_strike_blocked + foul_tip + missed_bunt
+        def is_swstr(df_in):
+            cd = df_in["call_description"].astype(str).str.lower()
+            return cd.isin(["swinging_strike", "swinging_strike_blocked", "foul_tip", "missed_bunt"])
+
+        cur_sw = metric_pct(cur_hand, is_swstr)
+        base_sw = metric_pct(base_hand, is_swstr)
+        if cur_sw is not None and base_sw is not None:
+            delta = cur_sw - base_sw
+            if abs(delta) >= 5:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"SwStr% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_sw:.1f}% → {cur_sw:.1f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta) * 1.5,
+                })
+
+        # Whiff% = swstr / swings (where swing = swstr OR foul OR in_play)
+        def is_swing(df_in):
+            cd = df_in["call_description"].astype(str).str.lower()
+            return cd.isin(["swinging_strike", "swinging_strike_blocked", "foul_tip", "missed_bunt", "foul", "foul_bunt"]) | df_in["is_in_play"].astype(bool)
+
+        def whiff_pct(df_in):
+            try:
+                swings = is_swing(df_in).sum()
+                if swings == 0:
+                    return None
+                whiffs = is_swstr(df_in).sum()
+                return 100.0 * whiffs / swings
+            except Exception:
+                return None
+
+        cur_wh = whiff_pct(cur_hand)
+        base_wh = whiff_pct(base_hand)
+        if cur_wh is not None and base_wh is not None:
+            delta = cur_wh - base_wh
+            if abs(delta) >= 5:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"Whiff% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_wh:.1f}% → {cur_wh:.1f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta) * 1.2,
+                })
+
+        # Chase% = swings on out-of-zone pitches / out-of-zone pitches
+        def chase_pct(df_in):
+            try:
+                z = pd.to_numeric(df_in["zone"], errors="coerce")
+                oz = df_in[(z < 1) | (z > 9)]
+                if len(oz) == 0:
+                    return None
+                chases = is_swing(oz).sum()
+                return 100.0 * chases / len(oz)
+            except Exception:
+                return None
+
+        cur_ch = chase_pct(cur_hand)
+        base_ch = chase_pct(base_hand)
+        if cur_ch is not None and base_ch is not None:
+            delta = cur_ch - base_ch
+            if abs(delta) >= 5:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"Chase% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_ch:.1f}% → {cur_ch:.1f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta) * 1.2,
+                })
+
+        # Zone Whiff% = whiffs on in-zone pitches / swings on in-zone pitches
+        def zone_whiff_pct(df_in):
+            try:
+                z = pd.to_numeric(df_in["zone"], errors="coerce")
+                iz = df_in[(z >= 1) & (z <= 9)]
+                if len(iz) == 0:
+                    return None
+                swings = is_swing(iz).sum()
+                if swings == 0:
+                    return None
+                whiffs = is_swstr(iz).sum()
+                return 100.0 * whiffs / swings
+            except Exception:
+                return None
+
+        cur_zw = zone_whiff_pct(cur_hand)
+        base_zw = zone_whiff_pct(base_hand)
+        if cur_zw is not None and base_zw is not None:
+            delta = cur_zw - base_zw
+            if abs(delta) >= 5:
+                direction = "↑" if delta > 0 else "↓"
+                notes.append({
+                    "text": f"Zone Whiff% vs {hand_label} {direction} {abs(delta):.1f}pp ({base_zw:.1f}% → {cur_zw:.1f}%)",
+                    "category": "results",
+                    "magnitude": abs(delta) * 1.2,
+                })
+
+    # Sort notes by magnitude descending (biggest changes first)
+    notes.sort(key=lambda n: n.get("magnitude", 0), reverse=True)
+    return notes
+
+
 @app.get("/api/leaderboard")
 async def get_leaderboard(batter_hand: str = "all", pitch_type: str = "all"):
     """
