@@ -1639,27 +1639,31 @@ async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
         pitcher_name = pitcher_df.iloc[0].get("pitcher_name", "")
         pitcher_hand = pitcher_df.iloc[0].get("pitcher_hand", "")
 
-        # Determine pitcher's team from most recent game
-        # If pitcher's team is COL Rockies - we DON'T exclude Coors (it's their home park).
-        # If pitcher is on any other team, exclude games where home_team == COL.
+        # Determine pitcher's team. For each game this pitcher appeared in:
+        #   - If they pitched in "Top" half = home team was pitching = pitcher is on home team
+        #   - If they pitched in "Bot" half = away team was pitching = pitcher is on away team
+        # Then take the most common team across all games (mode) for stability.
         pitcher_team = ""
         try:
-            recent = pitcher_df.sort_values("game_date").iloc[-1]
-            home = recent.get("home_team", "")
-            away = recent.get("away_team", "")
-            # If pitcher's most recent game has home == COL, they're either on Rockies or visited COL
-            # Determine team by looking at top/bottom of inning matchup with pitcher_hand context isn't reliable
-            # Simpler: a pitcher's team is the team that is NOT batting when they're on the mound
-            # When pitcher throws in "top" half = home team pitching (their team is home)
-            # When pitcher throws in "bot" half = away team pitching (their team is away)
-            # Use mode of top/bottom to determine
-            top_bottom_mode = pitcher_df["top_bottom"].mode()
-            if len(top_bottom_mode) > 0:
-                tb = top_bottom_mode.iloc[0]
+            team_per_game = []
+            for gpk, gdf in pitcher_df.groupby("game_pk"):
+                if len(gdf) == 0:
+                    continue
+                home_team = str(gdf.iloc[0].get("home_team", "") or "")
+                away_team = str(gdf.iloc[0].get("away_team", "") or "")
+                # Find which halves this pitcher threw in for this specific game
+                game_top_bottom = gdf["top_bottom"].mode()
+                if len(game_top_bottom) == 0:
+                    continue
+                tb = game_top_bottom.iloc[0]
                 if tb == "Top":
-                    pitcher_team = home  # Pitching in top = home team
-                else:
-                    pitcher_team = away  # Pitching in bottom = away team
+                    team_per_game.append(home_team)
+                elif tb == "Bot":
+                    team_per_game.append(away_team)
+            # Take the most common team across games
+            if team_per_game:
+                from collections import Counter
+                pitcher_team = Counter(team_per_game).most_common(1)[0][0]
         except Exception:
             pass
 
