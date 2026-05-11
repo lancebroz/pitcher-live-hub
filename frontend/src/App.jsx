@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -2108,7 +2108,34 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
 };
 
 const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true }) => {
-  const metrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, hand || "all") : null, [rawPitches, hand]);
+  // Count situation filter (default: all counts)
+  const [countFilter, setCountFilter] = useState("all");
+
+  // Apply count filter BEFORE everything else - downstream metrics see the filtered set.
+  // Definitions:
+  //   pre2k        - all counts where strikes < 2
+  //   two_strikes  - all counts where strikes = 2
+  //   ahead        - pitcher ahead: 0-1, 0-2, 1-2 (strikes > balls)
+  //   behind       - pitcher behind: 1-0, 2-0, 3-0, 2-1, 3-1 (balls > strikes)
+  //   leverage     - 0-0 and 1-1 (even counts where neither has the edge)
+  const countFilteredPitches = useMemo(() => {
+    if (!rawPitches) return null;
+    if (countFilter === "all") return rawPitches;
+    return rawPitches.filter(p => {
+      // Coerce balls/strikes — they may come through as strings or numbers
+      const b = Number(p.balls);
+      const s = Number(p.strikes);
+      if (Number.isNaN(b) || Number.isNaN(s)) return false;
+      if (countFilter === "pre2k") return s < 2;
+      if (countFilter === "two_strikes") return s === 2;
+      if (countFilter === "ahead") return (b === 0 && s === 1) || (b === 0 && s === 2) || (b === 1 && s === 2);
+      if (countFilter === "behind") return (b === 1 && s === 0) || (b === 2 && s === 0) || (b === 3 && s === 0) || (b === 2 && s === 1) || (b === 3 && s === 1);
+      if (countFilter === "leverage") return (b === 0 && s === 0) || (b === 1 && s === 1);
+      return true;
+    });
+  }, [rawPitches, countFilter]);
+
+  const metrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, hand || "all") : null, [countFilteredPitches, hand]);
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
   const [boxStats, setBoxStats] = useState(null);
@@ -2138,7 +2165,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   // Always publish the canonical order based on the FULL pitch usage (hand="all"),
   // not the currently filtered view, so toggling hand on the top table doesn't reshuffle the bottom.
   // Publish abbreviation codes (FF, SL, etc.) so different display name spellings still match.
-  const orderMetrics = useMemo(() => rawPitches ? computeMetrics(rawPitches, "all") : null, [rawPitches]);
+  const orderMetrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, "all") : null, [countFilteredPitches]);
   useEffect(() => {
     if (onComputed && orderMetrics?.pitchTypeMetrics) {
       onComputed(orderMetrics.pitchTypeMetrics.map(r => PITCH_ABBREV[r.name] || r.name));
@@ -2149,11 +2176,13 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats
   // Skip when custom date range is active — ERA endpoint returns season totals only,
   // which would override the correctly computed filtered stats.
+  // Skip when count filter is active — ERA endpoint can't filter by count situation.
   useEffect(() => {
     setEra(null);
     setIpFromBox(null);
     setBoxStats(null);
     if (!rawPitches || !pitcherId || season === "2025" || !isFullSeason) return;
+    if (countFilter !== "all") return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
@@ -2164,7 +2193,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
       setBoxStats(r ?? null);
     }).catch(() => {});
     return () => { alive = false; };
-  }, [rawPitches, pitcherId, season, isFullSeason]);
+  }, [rawPitches, pitcherId, season, isFullSeason, countFilter]);
 
   if (!rawPitches) return null;
   const allRow = metrics?.allRow;
@@ -2174,21 +2203,53 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px", gap: "12px", flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>{label}</div>
-          {sublabel && <div style={{ fontSize: "11px", color: C.textDim, marginTop: "2px" }}>{sublabel} {hand !== "all" && `(${filteredCount} vs ${hand}HH)`}</div>}
+          {sublabel && (
+            <div style={{ fontSize: "11px", color: C.textDim, marginTop: "2px" }}>
+              {countFilter === "all"
+                ? `${(countFilteredPitches || rawPitches).length} pitches`
+                : `${(countFilteredPitches || []).length} of ${rawPitches.length} pitches`}
+              {hand !== "all" && ` (${filteredCount} vs ${hand}HH)`}
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", gap: "4px" }}>
-          {[{ k: "all", l: "All" }, { k: "L", l: "vs LHH" }, { k: "R", l: "vs RHH" }].map(t => (
-            <button key={t.k} onClick={() => onHandChange(t.k)} style={{
-              background: hand === t.k ? C.accentGlow : "transparent",
-              border: `1px solid ${hand === t.k ? C.accent : C.border}`,
-              borderRadius: "4px", padding: "4px 10px",
-              color: hand === t.k ? C.accent : C.textDim,
-              fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-            }}>{t.l}</button>
-          ))}
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+          <select
+            value={countFilter}
+            onChange={(e) => setCountFilter(e.target.value)}
+            style={{
+              background: countFilter !== "all" ? C.accentGlow : "transparent",
+              border: `1px solid ${countFilter !== "all" ? C.accent : C.border}`,
+              borderRadius: "4px",
+              padding: "4px 10px",
+              color: countFilter !== "all" ? C.accent : C.textDim,
+              fontSize: "10px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              outline: "none",
+            }}
+          >
+            <option value="all">All Counts</option>
+            <option value="pre2k">Pre-Two-Strike</option>
+            <option value="two_strikes">Two Strikes</option>
+            <option value="ahead">Pitcher Ahead</option>
+            <option value="behind">Pitcher Behind</option>
+            <option value="leverage">Leverage (0-0, 1-1)</option>
+          </select>
+          <div style={{ display: "flex", gap: "4px" }}>
+            {[{ k: "all", l: "All" }, { k: "L", l: "vs LHH" }, { k: "R", l: "vs RHH" }].map(t => (
+              <button key={t.k} onClick={() => onHandChange(t.k)} style={{
+                background: hand === t.k ? C.accentGlow : "transparent",
+                border: `1px solid ${hand === t.k ? C.accent : C.border}`,
+                borderRadius: "4px", padding: "4px 10px",
+                color: hand === t.k ? C.accent : C.textDim,
+                fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}>{t.l}</button>
+            ))}
+          </div>
         </div>
       </div>
-      <SummaryStatsBar rawPitches={rawPitches} hand={hand} C={C} eraOverride={era} ipOverride={ipFromBox} boxStats={boxStats} />
+      <SummaryStatsBar rawPitches={countFilteredPitches} hand={hand} C={C} eraOverride={era} ipOverride={ipFromBox} boxStats={boxStats} />
       {!allRow ? (
         <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>No pitches match this filter.</div>
       ) : (
@@ -3253,6 +3314,279 @@ const LeaderboardPage = ({ C, isMobile }) => {
   );
 };
 
+// ─── Daily Pitcher Report ───
+// Shows per-pitcher diffs between recent and baseline performance.
+// Three modes: season-to-date, last 3 starts, last 4 vs prior 4 starts.
+const ReportView = ({ C, onBack, logos, isMobile }) => {
+  // Build a default date (today in local time)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [reportDate, setReportDate] = useState(todayStr);
+  const [mode, setMode] = useState("season"); // "season" | "last3" | "last4_vs_prior4"
+  const [sortBy, setSortBy] = useState("change"); // "change" | "era"
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [showMore, setShowMore] = useState({}); // { pitcher_id: true/false }
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [extraPitcherIds, setExtraPitcherIds] = useState([]); // Added via search
+  const [extraReports, setExtraReports] = useState([]); // Report data for searched pitchers
+
+  // Fetch the main report whenever date or mode changes
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError("");
+    setData(null);
+    setShowMore({});
+    setExtraPitcherIds([]);
+    setExtraReports([]);
+
+    getReport(reportDate, mode).then(r => {
+      if (!alive) return;
+      setData(r);
+      setLoading(false);
+    }).catch(e => {
+      if (!alive) return;
+      setError("Failed to load report");
+      setLoading(false);
+    });
+
+    return () => { alive = false; };
+  }, [reportDate, mode]);
+
+  // Pitcher search (debounced)
+  useEffect(() => {
+    if (searchQuery.trim().length < 2) { setSearchResults([]); return; }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await searchPitchers(searchQuery);
+        if (alive) setSearchResults(results || []);
+      } catch (e) {
+        if (alive) setSearchResults([]);
+      }
+    }, 250);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [searchQuery]);
+
+  // Add a pitcher to the report via search
+  const addPitcher = async (pitcher) => {
+    const pid = pitcher.id;
+    if (extraPitcherIds.includes(pid)) return;
+    // Check if already in main report
+    if (data && data.pitchers && data.pitchers.some(p => p.pitcher_id === pid)) return;
+    setSearchQuery("");
+    setSearchResults([]);
+    try {
+      const r = await getReport(reportDate, mode, pid);
+      if (r && r.pitchers && r.pitchers.length > 0) {
+        setExtraReports(prev => [...prev, ...r.pitchers]);
+        setExtraPitcherIds(prev => [...prev, pid]);
+      }
+    } catch (e) {
+      // Silently fail
+    }
+  };
+
+  // Combine main + extra reports, sort
+  const allReports = useMemo(() => {
+    const main = (data?.pitchers || []).filter(p => p.qualified !== false);
+    const combined = [...main, ...extraReports];
+    // Deduplicate by pitcher_id
+    const seen = new Set();
+    const dedup = [];
+    for (const p of combined) {
+      if (seen.has(p.pitcher_id)) continue;
+      seen.add(p.pitcher_id);
+      dedup.push(p);
+    }
+    // Sort
+    if (sortBy === "era") {
+      dedup.sort((a, b) => {
+        const ea = a.era == null ? 99 : a.era;
+        const eb = b.era == null ? 99 : b.era;
+        return ea - eb;
+      });
+    } else {
+      dedup.sort((a, b) => (b.change_score || 0) - (a.change_score || 0));
+    }
+    return dedup;
+  }, [data, extraReports, sortBy]);
+
+  // Available date options (today + last 7 days)
+  const dateOptions = useMemo(() => {
+    const out = [];
+    const today = new Date();
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+  }, []);
+
+  return (
+    <div style={{ maxWidth: "1200px", margin: "0 auto", padding: isMobile ? "12px" : "24px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
+        <button onClick={onBack} style={{
+          background: "transparent", border: `1px solid ${C.border}`, borderRadius: "6px",
+          padding: "6px 12px", color: C.textDim, fontSize: "12px", fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit",
+        }}>← Back to Live</button>
+        <div style={{ fontSize: isMobile ? "18px" : "22px", fontWeight: 700, color: C.text, letterSpacing: "1px" }}>
+          DAILY PITCHER REPORT
+        </div>
+        <div style={{ width: "100px" }}></div>
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" }}>
+        <div>
+          <label style={{ fontSize: "10px", color: C.textDim, display: "block", marginBottom: "4px", fontWeight: 600 }}>DATE</label>
+          <select value={reportDate} onChange={e => setReportDate(e.target.value)} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "6px 10px", color: C.text, fontSize: "12px", fontFamily: "inherit", cursor: "pointer",
+          }}>
+            {dateOptions.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: "10px", color: C.textDim, display: "block", marginBottom: "4px", fontWeight: 600 }}>COMPARE</label>
+          <select value={mode} onChange={e => setMode(e.target.value)} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "6px 10px", color: C.text, fontSize: "12px", fontFamily: "inherit", cursor: "pointer",
+          }}>
+            <option value="season">vs Season-to-date</option>
+            <option value="last3">vs Last 3 Starts</option>
+            <option value="last4_vs_prior4">Last 4 vs Prior 4 Starts</option>
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: "10px", color: C.textDim, display: "block", marginBottom: "4px", fontWeight: 600 }}>SORT BY</label>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "6px 10px", color: C.text, fontSize: "12px", fontFamily: "inherit", cursor: "pointer",
+          }}>
+            <option value="change">Change Magnitude</option>
+            <option value="era">Season ERA</option>
+          </select>
+        </div>
+        <div style={{ position: "relative", flex: "1", minWidth: "200px" }}>
+          <label style={{ fontSize: "10px", color: C.textDim, display: "block", marginBottom: "4px", fontWeight: 600 }}>ADD PITCHER</label>
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search to add a specific pitcher..."
+            style={{
+              background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+              padding: "6px 10px", color: C.text, fontSize: "12px", fontFamily: "inherit",
+              width: "100%", boxSizing: "border-box", outline: "none",
+            }} />
+          {searchResults.length > 0 && (
+            <div style={{
+              position: "absolute", top: "100%", left: 0, right: 0, marginTop: "4px",
+              background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: "4px",
+              maxHeight: "300px", overflow: "auto", zIndex: 10,
+            }}>
+              {searchResults.slice(0, 8).map(p => (
+                <div key={p.id} onClick={() => addPitcher(p)} style={{
+                  padding: "8px 12px", cursor: "pointer", fontSize: "12px", color: C.text,
+                  borderBottom: `1px solid ${C.border}`,
+                }} onMouseEnter={e => e.currentTarget.style.background = C.accentGlow}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  {p.full_name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Status */}
+      {loading && <div style={{ color: C.textDim, fontSize: "12px", padding: "20px 0" }}>Loading report...</div>}
+      {error && <div style={{ color: "#ef4444", fontSize: "12px", padding: "20px 0" }}>{error}</div>}
+      {!loading && !error && allReports.length === 0 && (
+        <div style={{ color: C.textDim, fontSize: "12px", padding: "20px 0" }}>
+          No pitcher reports available for {reportDate}. Try a different date or use search to add a pitcher.
+        </div>
+      )}
+
+      {/* Reports list */}
+      {!loading && !error && allReports.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {allReports.map(p => {
+            const visibleNotes = showMore[p.pitcher_id] ? p.notes : p.notes.slice(0, 5);
+            const hasMore = p.notes.length > 5;
+            return (
+              <div key={p.pitcher_id} style={{
+                background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: "8px",
+                padding: "14px 16px",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+                  <div>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>
+                      {p.pitcher_name}
+                      <span style={{ fontSize: "10px", color: C.textDim, marginLeft: "8px", fontWeight: 600 }}>
+                        {p.pitcher_hand}HP · {p.team}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "10px", color: C.textDim, marginTop: "2px" }}>
+                      {p.current_pitches} pitches in sample · {p.baseline_pitches} pitches in baseline
+                    </div>
+                  </div>
+                  {p.era != null && (
+                    <div style={{ fontSize: "11px", color: C.textDim }}>
+                      Season ERA: <span style={{ color: C.text, fontWeight: 700 }}>{p.era.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+                {visibleNotes.length === 0 ? (
+                  <div style={{ fontSize: "11px", color: C.textDim, fontStyle: "italic" }}>
+                    No material changes detected for this sample.
+                  </div>
+                ) : (
+                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
+                    {visibleNotes.map((note, idx) => (
+                      <li key={idx} style={{
+                        fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
+                      }}>
+                        <span style={{
+                          position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
+                          borderRadius: "50%", background: noteColor(note.category),
+                        }}></span>
+                        {note.text}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {hasMore && (
+                  <button onClick={() => setShowMore(s => ({ ...s, [p.pitcher_id]: !s[p.pitcher_id] }))} style={{
+                    background: "transparent", border: "none", color: C.accent, fontSize: "11px",
+                    fontWeight: 600, cursor: "pointer", padding: "6px 0 0 12px", fontFamily: "inherit",
+                  }}>
+                    {showMore[p.pitcher_id] ? "Show less" : `Show all ${p.notes.length} notes`}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Color-code the note bullet by category
+function noteColor(category) {
+  const map = {
+    velocity: "#ef4444",     // red
+    movement: "#f59e0b",     // amber
+    release: "#8b5cf6",      // purple
+    usage: "#3b82f6",        // blue
+    results: "#10b981",      // green
+  };
+  return map[category] || "#6b7280";
+}
+
 // ─── Main App ───
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
@@ -3262,7 +3596,7 @@ export default function PitcherTracker() {
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
-  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps" | "leaderboard"
+  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps" | "leaderboard" | "report"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
@@ -3495,7 +3829,19 @@ export default function PitcherTracker() {
               </svg>
               {isMobile ? "Substack" : "Subscribe to my Substack!"}
             </a>
-            {page === "tracker" && <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />}
+            {page === "tracker" && (
+              <>
+                <button onClick={() => setPage("report")} style={{
+                  background: C.accent, color: "#fff", border: "none", borderRadius: "8px",
+                  padding: isMobile ? "6px 12px" : "8px 16px", fontSize: isMobile ? "11px" : "12px",
+                  fontWeight: 700, cursor: "pointer", letterSpacing: "0.5px", fontFamily: "inherit",
+                  whiteSpace: "nowrap",
+                }}>
+                  📊 {isMobile ? "Report" : "Daily Report"}
+                </button>
+                <LiveGameSelector onSelectPitcher={handleSelectFromGame} C={C} logos={teamLogos} />
+              </>
+            )}
           </div>
         </div>
         {page === "tracker" && activePitcher && (
@@ -3776,6 +4122,9 @@ export default function PitcherTracker() {
         )}
         {page === "leaderboard" && (
           <LeaderboardPage C={C} isMobile={isMobile} />
+        )}
+        {page === "report" && (
+          <ReportView C={C} isMobile={isMobile} logos={teamLogos} onBack={() => setPage("tracker")} />
         )}
       </div>
 
