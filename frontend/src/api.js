@@ -119,3 +119,11 @@ export async function getStartersToday(gameDate) {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function getReport(date, mode = "season", pitcherId = 0) {
+  const params = new URLSearchParams({ date, mode });
+  if (pitcherId) params.set("pitcher_id", pitcherId.toString());
+  const res = await fetch(`${API_BASE}/api/report?${params.toString()}`);
+  if (!res.ok) return { pitchers: [] };
+  return res.json();
+}
