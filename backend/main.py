@@ -22,6 +22,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ─── Startup hook: pre-warm the parquet cache so first user request is fast ───
+@app.on_event("startup")
+async def _prewarm_parquet():
+    """
+    Loads the monthly parquets into memory at server startup so the first
+    request to cached-season doesn't have to wait for the GitHub download.
+    Doesn't block startup if it fails - just logs the error.
+    """
+    try:
+        import asyncio
+        # Fire-and-forget. App still starts even if this is slow.
+        asyncio.create_task(_load_local_savant_async())
+        print("[Startup] Parquet pre-warm task scheduled")
+    except Exception as e:
+        print(f"[Startup] Parquet pre-warm failed to schedule: {e}")
+
 # ─── VAA (Vertical Approach Angle) helper ───
 # Standard formula from FanGraphs / Harry Pavlidis (Baseball Prospectus):
 #     vy_f = -sqrt(vy0^2 - 2*ay*(y0-yf))
@@ -816,23 +833,67 @@ async def get_cached_season(pitcher_id: int):
     """
     Returns a pitcher's full 2026 season from the GitHub monthly parquets.
     Cached in memory; near-instant after first load. Refreshes every 24h.
+    Uses a per-pitcher cache + vectorized pandas operations for speed.
     """
+    import pandas as pd
+
+    # Per-pitcher response cache (5 min TTL). Hot pitchers stay instant.
+    cache_key = f"cached_season_resp:{pitcher_id}"
+    cached_resp = get_cached(cache_key, 300)
+    if cached_resp is not None:
+        return cached_resp
+
     df = await _load_local_savant_async()
     if df is None:
         return []
 
-    # Filter to this pitcher (parquet uses 'pitcher_id' column)
-    pid_col = "pitcher_id" if "pitcher_id" in df.columns else ("pitcher" if "pitcher" in df.columns else None)
-    if pid_col is None:
-        return []
-    try:
-        pitcher_df = df[df[pid_col].astype(int) == pitcher_id]
-    except Exception:
-        return []
+    # Pre-built pitcher index for O(1) filter - cached on the dataframe itself.
+    # Avoids the very expensive df["pitcher_id"].astype(int) == pid scan every request.
+    if df.attrs.get("_pid_index_built") is None:
+        try:
+            df["__pid"] = pd.to_numeric(df["pitcher_id"], errors="coerce").fillna(-1).astype("int64")
+            df.attrs["_pid_index_built"] = True
+        except Exception:
+            pass
+
+    if "__pid" in df.columns:
+        pitcher_df = df[df["__pid"] == pitcher_id]
+    else:
+        try:
+            pitcher_df = df[df["pitcher_id"].astype(float).astype("int64") == pitcher_id]
+        except Exception:
+            return []
+
     if len(pitcher_df) == 0:
+        set_cache(cache_key, [])
         return []
 
-    # Map pitch_type codes to pitch_name for fallback
+    # Vectorized column extraction - much faster than iterrows().
+    def col_float(name):
+        if name not in pitcher_df.columns:
+            return [None] * len(pitcher_df)
+        s = pd.to_numeric(pitcher_df[name], errors="coerce")
+        return [None if pd.isna(v) else float(v) for v in s.values]
+
+    def col_str(name, default=""):
+        if name not in pitcher_df.columns:
+            return [default] * len(pitcher_df)
+        out = []
+        for v in pitcher_df[name].astype(str).values:
+            out.append(default if v in ("nan", "None", "NaN", "") else v)
+        return out
+
+    def col_bool(name):
+        if name not in pitcher_df.columns:
+            return [False] * len(pitcher_df)
+        return [bool(v) for v in pitcher_df[name].fillna(False).values]
+
+    def col_int(name, default=0):
+        if name not in pitcher_df.columns:
+            return [default] * len(pitcher_df)
+        s = pd.to_numeric(pitcher_df[name], errors="coerce").fillna(default).astype("int64")
+        return [int(v) for v in s.values]
+
     PT_NAMES = {
         "FF": "4-Seam Fastball", "SI": "Sinker", "FC": "Cutter",
         "SL": "Slider", "ST": "Sweeper", "SV": "Slurve",
@@ -840,8 +901,10 @@ async def get_cached_season(pitcher_id: int):
         "CH": "Changeup", "FS": "Splitter", "KN": "Knuckleball",
         "EP": "Eephus", "SC": "Screwball",
     }
+    PN_TO_PT = {v: k for k, v in PT_NAMES.items()}
+    PN_TO_PT["Four-Seam Fastball"] = "FF"
+    PN_TO_PT["Split-Finger"] = "FS"
 
-    # Map call_description from parquet's snake_case format to readable
     CALL_DESC_MAP = {
         "called_strike": "Called Strike", "swinging_strike": "Swinging Strike",
         "swinging_strike_blocked": "Swinging Strike (Blocked)",
@@ -854,101 +917,111 @@ async def get_cached_season(pitcher_id: int):
         "pitchout": "Ball", "intent_ball": "Ball",
     }
 
+    pitch_types = col_str("pitch_type")
+    pitch_names = col_str("pitch_name")
+    pitch_numbers = col_float("pitch_number")
+    start_speeds = col_float("start_speed")
+    spin_rates = col_float("spin_rate")
+    spin_dirs = col_float("spin_direction")
+    pfx_xs = col_float("pfx_x")
+    pfx_zs = col_float("pfx_z")
+    plate_xs = col_float("plate_x")
+    plate_zs = col_float("plate_z")
+    release_xs = col_float("release_x")
+    release_zs = col_float("release_z")
+    extensions = col_float("extension")
+    vx0s = col_float("vx0")
+    vy0s = col_float("vy0")
+    vz0s = col_float("vz0")
+    axs = col_float("ax")
+    ays = col_float("ay")
+    azs = col_float("az")
+    zones = col_float("zone")
+    descs = col_str("call_description")
+    descs_fallback = col_str("description")
+    events_col = col_str("events")
+    is_in_play_col = col_bool("is_in_play")
+    is_strike_col = col_bool("is_strike")
+    launch_speeds = col_float("launch_speed")
+    launch_angles = col_float("launch_angle")
+    trajectories = col_str("trajectory")
+    bb_types_fallback = col_str("bb_type")
+    stands = col_str("stand")
+    p_throws_col = col_str("pitcher_hand")
+    p_throws_fallback = col_str("p_throws")
+    balls_col = col_str("balls")
+    strikes_col = col_str("strikes")
+    game_dates = col_str("game_date")
+    game_pks = col_int("game_pk")
+    innings = col_float("inning")
+    at_bats = col_float("at_bat_number")
+
+    n = len(pitcher_df)
     pitches = []
-    for _, row in pitcher_df.iterrows():
-        def sf(key):
-            v = row.get(key)
-            if v is not None and str(v) not in ("", "nan", "None", "NaN"):
-                try: return float(v)
-                except (ValueError, TypeError): return None
-            return None
-
-        def ss(key, default=""):
-            v = row.get(key, default)
-            s = str(v) if v is not None else default
-            return default if s in ("nan", "None", "NaN", "") else s
-
-        # Map parquet column names → cached-season output names
-        # Parquet: start_speed, spin_rate, release_x/y/z, extension
-        # Output:  release_speed, release_spin_rate, release_pos_x/z, release_extension
-        release_speed = sf("start_speed") if sf("start_speed") is not None else sf("release_speed")
-        release_spin_rate = sf("spin_rate") if sf("spin_rate") is not None else sf("release_spin_rate")
-        release_pos_x = sf("release_x") if sf("release_x") is not None else sf("release_pos_x")
-        release_pos_z = sf("release_z") if sf("release_z") is not None else sf("release_pos_z")
-        release_extension = sf("extension") if sf("extension") is not None else sf("release_extension")
-
-        pt = ss("pitch_type")
-        pn = ss("pitch_name") or PT_NAMES.get(pt, pt)
-
-        # Reverse fallback: if pitch_type empty but pitch_name valid, derive code from name
+    for i in range(n):
+        pt = pitch_types[i]
+        pn = pitch_names[i] or PT_NAMES.get(pt, pt)
         if not pt and pn:
-            PN_TO_PT = {v: k for k, v in PT_NAMES.items()}
-            PN_TO_PT["Four-Seam Fastball"] = "FF"
-            PN_TO_PT["Split-Finger"] = "FS"
             pt = PN_TO_PT.get(pn, pn[:2].upper() if pn else "UN")
 
-        # Compute VAA from raw kinematics
-        vy0_v = sf("vy0")
-        vz0_v = sf("vz0")
-        ax_v = sf("ax")
-        ay_v = sf("ay")
-        az_v = sf("az")
+        vy0_v, vz0_v = vy0s[i], vz0s[i]
+        ay_v, az_v = ays[i], azs[i]
         vaa_v = _compute_vaa(vy0_v, vz0_v, ay_v, az_v)
 
-        # call_description: prefer parquet's snake_case → readable mapping
-        call_desc_raw = ss("call_description") or ss("description")
-        description_out = CALL_DESC_MAP.get(call_desc_raw.lower(), call_desc_raw) if call_desc_raw else ""
+        call_desc_raw = (descs[i] or descs_fallback[i]).lower()
+        description_out = CALL_DESC_MAP.get(call_desc_raw, call_desc_raw) if call_desc_raw else ""
 
-        # type field for downstream code (S=strike, B=ball, X=in play)
-        is_in_play = bool(row.get("is_in_play", False)) if "is_in_play" in row.index else (ss("type") == "X")
-        is_strike = bool(row.get("is_strike", False)) if "is_strike" in row.index else (ss("type") == "S")
+        is_in_play = is_in_play_col[i]
+        is_strike = is_strike_col[i]
         type_v = "X" if is_in_play else ("S" if is_strike else "B")
 
-        # bb_type / trajectory mapping
-        bb_type = ss("trajectory") or ss("bb_type")
+        bb_type = trajectories[i] or bb_types_fallback[i]
 
         pitches.append({
             "pitch_type": pt,
             "pitch_name": pn,
-            "pitch_number": sf("pitch_number"),
-            "release_speed": release_speed,
-            "release_spin_rate": release_spin_rate,
-            "spin_axis": sf("spin_direction") if sf("spin_direction") is not None else sf("spin_axis"),
-            "pfx_x": sf("pfx_x"),
-            "pfx_z": sf("pfx_z"),
-            "plate_x": sf("plate_x"),
-            "plate_z": sf("plate_z"),
-            "release_pos_x": release_pos_x,
-            "release_pos_z": release_pos_z,
-            "release_extension": release_extension,
-            "vx0": sf("vx0"),
+            "pitch_number": pitch_numbers[i],
+            "release_speed": start_speeds[i],
+            "release_spin_rate": spin_rates[i],
+            "spin_axis": spin_dirs[i],
+            "pfx_x": pfx_xs[i],
+            "pfx_z": pfx_zs[i],
+            "plate_x": plate_xs[i],
+            "plate_z": plate_zs[i],
+            "release_pos_x": release_xs[i],
+            "release_pos_z": release_zs[i],
+            "release_extension": extensions[i],
+            "vx0": vx0s[i],
             "vy0": vy0_v,
             "vz0": vz0_v,
-            "ax": ax_v,
+            "ax": axs[i],
             "ay": ay_v,
             "az": az_v,
             "vaa": vaa_v,
-            "effective_speed": sf("effective_speed"),
-            "zone": sf("zone"),
+            "effective_speed": None,
+            "zone": zones[i],
             "description": description_out,
-            "events": ss("events"),
+            "events": events_col[i],
             "type": type_v,
-            "launch_speed": sf("launch_speed"),
-            "launch_angle": sf("launch_angle"),
-            "estimated_woba_using_speedangle": sf("estimated_woba_using_speedangle"),
+            "launch_speed": launch_speeds[i],
+            "launch_angle": launch_angles[i],
+            "estimated_woba_using_speedangle": None,
             "bb_type": bb_type,
             "is_in_play": is_in_play,
-            "stand": ss("stand"),
-            "p_throws": ss("pitcher_hand") or ss("p_throws"),
-            "balls": ss("balls"),
-            "strikes": ss("strikes"),
-            "game_date": ss("game_date"),
-            "game_pk": int(row.get("game_pk", 0)) if str(row.get("game_pk", "0")) not in ("", "nan", "NaN") else 0,
-            "inning": sf("inning"),
-            "at_bat_number": sf("at_bat_number"),
-            "delta_run_exp": sf("delta_run_exp"),
+            "stand": stands[i],
+            "p_throws": p_throws_col[i] or p_throws_fallback[i],
+            "balls": balls_col[i],
+            "strikes": strikes_col[i],
+            "game_date": game_dates[i],
+            "game_pk": game_pks[i],
+            "inning": innings[i],
+            "at_bat_number": at_bats[i],
+            "delta_run_exp": None,
         })
+
+    set_cache(cache_key, pitches)
     return pitches
+
 
 
 # ─── Route 6: Get 2026 season data from parquet files ───
@@ -1569,6 +1642,13 @@ async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
     import pandas as pd
     from datetime import datetime as _dt, timedelta as _td
 
+    # Cache by (date, mode, pitcher_id) for 10 min. Report is heavy compute
+    # and the underlying data only refreshes every 24h anyway.
+    cache_key = f"report:{date}:{mode}:{pitcher_id}"
+    cached = get_cached(cache_key, 600)
+    if cached is not None:
+        return cached
+
     df = await _load_local_savant_async()
     if df is None or len(df) == 0:
         return {"date": date, "mode": mode, "pitchers": []}
@@ -1767,11 +1847,13 @@ async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
             "qualified": True,
         })
 
-    return {
+    result = {
         "date": date,
         "mode": mode,
         "pitchers": pitcher_reports,
     }
+    set_cache(cache_key, result)
+    return result
 
 
 def _compute_pitcher_diff_notes(current_df, baseline_df, pitcher_hand):
