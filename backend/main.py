@@ -1642,10 +1642,14 @@ async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
     import pandas as pd
     from datetime import datetime as _dt, timedelta as _td
 
-    # Cache by (date, mode, pitcher_id) for 10 min. Report is heavy compute
-    # and the underlying data only refreshes every 24h anyway.
+    # Cache by (date, mode, pitcher_id). Today's report uses a short TTL since
+    # data is still updating; past reports cache for much longer.
+    from datetime import datetime as _dt2
+    from zoneinfo import ZoneInfo as _ZI2
+    today_ct = _dt2.now(_ZI2("America/Chicago")).strftime("%Y-%m-%d")
+    cache_ttl = 120 if date == today_ct else 86400  # 2 min for today, 24h for past
     cache_key = f"report:{date}:{mode}:{pitcher_id}"
-    cached = get_cached(cache_key, 600)
+    cached = get_cached(cache_key, cache_ttl)
     if cached is not None:
         return cached
 
@@ -1667,38 +1671,29 @@ async def get_report(date: str, mode: str = "season", pitcher_id: int = 0):
     if pitcher_id > 0:
         target_pitcher_ids = [pitcher_id]
     else:
-        # Find pitchers who started a game on the given date.
-        # "Started" = threw the first pitch of the game (pitch_number=1, inning=1).
+        # Find starters on the given date.
+        # A starter = a pitcher who threw 40+ pitches in a single game AND appeared in inning 1.
+        # Use vectorized pandas: group by game_pk + pitcher_id, count pitches, check inning 1 appearance.
         date_df = work[work["game_date"] == date]
         if len(date_df) > 0:
-            # Group by game_pk + pitcher_id, find who threw earliest pitches
-            for gpk, gdf in date_df.groupby("game_pk"):
-                if len(gdf) == 0:
-                    continue
-                # Find the earliest at-bat in inning 1
-                inning1 = gdf[gdf["inning"] == 1]
-                if len(inning1) == 0:
-                    continue
-                # Find unique pitchers in inning 1 - take the one with the lowest at_bat_number
-                inning1_sorted = inning1.sort_values("at_bat_number")
-                # Get top and bottom of 1st separately - each has a starter
-                for half, half_df in inning1_sorted.groupby("top_bottom"):
-                    if len(half_df) == 0:
-                        continue
-                    first_pitcher_id = half_df.iloc[0]["pitcher_id"]
-                    if pd.notna(first_pitcher_id):
-                        try:
-                            pid_int = int(first_pitcher_id)
-                            # Require at least 40 pitches to qualify as a starter (excludes openers)
-                            pitcher_count = len(gdf[gdf["pitcher_id"].astype(float).astype(int, errors="ignore") == pid_int]) if True else 0
-                            try:
-                                pitcher_count = int((gdf["pitcher_id"].astype(float) == float(pid_int)).sum())
-                            except Exception:
-                                pitcher_count = 0
-                            if pitcher_count >= 40:
-                                target_pitcher_ids.append(pid_int)
-                        except (ValueError, TypeError):
-                            continue
+            try:
+                # Coerce pitcher_id to int once
+                date_df = date_df.copy()
+                date_df["pitcher_id_int"] = pd.to_numeric(date_df["pitcher_id"], errors="coerce").fillna(-1).astype("int64")
+                date_df["inning_int"] = pd.to_numeric(date_df["inning"], errors="coerce").fillna(0).astype("int64")
+
+                # For each (game_pk, pitcher), count pitches and check if they appeared in inning 1
+                grouped = date_df.groupby(["game_pk", "pitcher_id_int"]).agg(
+                    pitch_count=("pitcher_id_int", "size"),
+                    appeared_inning1=("inning_int", lambda s: (s == 1).any()),
+                ).reset_index()
+
+                # Starter = appeared in inning 1 AND threw 40+ pitches
+                starters = grouped[(grouped["appeared_inning1"]) & (grouped["pitch_count"] >= 40)]
+                target_pitcher_ids = starters["pitcher_id_int"].dropna().astype(int).tolist()
+            except Exception as e:
+                print(f"[Report] Starter detection failed: {e}")
+                target_pitcher_ids = []
 
     # Dedupe
     target_pitcher_ids = list(dict.fromkeys(target_pitcher_ids))
