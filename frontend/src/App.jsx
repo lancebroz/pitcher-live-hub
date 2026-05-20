@@ -2673,9 +2673,26 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-  // 2026 date range filter
+  // 2026 date range filter (single-view mode)
   const [startDate, setStartDate] = useState("2026-03-25");
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+
+  // ─── Compare-mode state ───
+  // When compareMode is true, side-by-side view with independent date selectors per column.
+  // Each column has its own mode + dates. mode is "2026" (Full Season), "2025" (Full Season),
+  // or "2026range" (custom date range within 2026).
+  const [compareMode, setCompareMode] = useState(false);
+  const [leftMode, setLeftMode] = useState("2026");       // left column default: 2026 Full Season
+  const [leftStart, setLeftStart] = useState("2026-03-25");
+  const [leftEnd, setLeftEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [rightMode, setRightMode] = useState("2025");     // right column default: 2025 Full Season
+  const [rightStart, setRightStart] = useState("2026-03-25");
+  const [rightEnd, setRightEnd] = useState(new Date().toISOString().slice(0, 10));
+  // Per-column raw pitch data (loaded independently in compare mode)
+  const [leftData, setLeftData] = useState(null);
+  const [rightData, setRightData] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+
   const searchRef = useRef(null);
   const hmEndPickerRef = useRef(null);
 
@@ -2761,6 +2778,65 @@ const HeatmapsPage = ({ C, isMobile }) => {
     setSearchOpen(false);
   };
 
+  // ─── Helper to load data for a given mode ("2026" full season or "2025" full season) ───
+  // Returns a normalized pitch array (same shape as `pitchData`).
+  // Date filtering happens later in the grouping step; this returns the whole period.
+  const loadDataForMode = async (pitcherId, mode) => {
+    if (mode === "2025") {
+      const raw = await getStatcast(pitcherId, "2025-03-27", "2025-09-28").catch(() => []);
+      return raw && raw.length > 0 ? normAndFilter(raw) : [];
+    }
+    // "2026" or "2026range" - use cached + live merge
+    const [cachedRaw, liveRaw] = await Promise.all([
+      getCachedSeason(pitcherId).catch(() => []),
+      getSeasonData(pitcherId).catch(() => []),
+    ]);
+    let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
+      await getStatcast(pitcherId, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []);
+    let raw;
+    if (savantRaw && savantRaw.length > 0) {
+      const cachedRealGamePks = new Set(
+        savantRaw.filter(p => p.game_pk && p.pitch_type && p.pitch_type.toLowerCase() !== "nan")
+          .map(p => String(p.game_pk))
+      );
+      const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !cachedRealGamePks.has(String(p.game_pk)));
+      raw = [...savantRaw, ...liveSupplement];
+    } else {
+      raw = liveRaw || [];
+    }
+    return raw && raw.length > 0 ? normAndFilter(raw) : [];
+  };
+
+  // ─── Compare-mode data loader ───
+  // Loads both columns in parallel whenever pitcher, leftMode, or rightMode changes.
+  // Date-range modes ("2026range") still load full 2026 data here; filtering happens at render time.
+  useEffect(() => {
+    if (!compareMode || !pitcher) return;
+    let alive = true;
+    const loadBoth = async () => {
+      setCompareLoading(true);
+      setErrMsg("");
+      try {
+        // Coalesce "2026range" to "2026" for the actual fetch
+        const leftFetchMode = leftMode === "2026range" ? "2026" : leftMode;
+        const rightFetchMode = rightMode === "2026range" ? "2026" : rightMode;
+        const [leftResult, rightResult] = await Promise.all([
+          loadDataForMode(pitcher.id, leftFetchMode),
+          loadDataForMode(pitcher.id, rightFetchMode),
+        ]);
+        if (!alive) return;
+        setLeftData(leftResult);
+        setRightData(rightResult);
+      } catch (e) {
+        console.error("Heatmap compare load failed", e);
+        if (alive) setErrMsg("Failed to load comparison data.");
+      }
+      if (alive) setCompareLoading(false);
+    };
+    loadBoth();
+    return () => { alive = false; };
+  }, [compareMode, pitcher, leftMode, rightMode]);
+
   // Filter pitch data by hand, date range, and mode (frequency/whiffs/damage), then group by pitch_name
   const filteredGroups = useMemo(() => {
     if (!pitchData) return null;
@@ -2808,6 +2884,70 @@ const HeatmapsPage = ({ C, isMobile }) => {
   }, [pitchData, hand, year, startDate, endDate, hmMode, hmStyle]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
+
+  // ─── Per-column groups for compare mode ───
+  // Same grouping logic as filteredGroups, but parameterized per column.
+  // Date filtering uses each column's own mode/range.
+  const buildGroupsForColumn = (data, colMode, colStart, colEnd) => {
+    if (!data) return null;
+    const passesMode = (p) => {
+      if (hmMode === "frequency") return true;
+      if (hmMode === "whiffs") return p.is_whiff;
+      if (hmMode === "damage") return p.is_in_play;
+      return true;
+    };
+    const filtered = data.filter(p => {
+      if (hand !== "all" && p.batter_hand !== hand) return false;
+      // Apply date filter only when column is in 2026range mode
+      if (colMode === "2026range" && p.game_date) {
+        if (p.game_date < colStart || p.game_date > colEnd) return false;
+      }
+      if (p.plate_x == null || p.plate_z == null) return false;
+      return passesMode(p);
+    });
+    const groups = new Map();
+    for (const p of filtered) {
+      const name = p.pitch_name || "Unknown";
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(p);
+    }
+    return groups;
+  };
+
+  // Build the combined comparison: union of pitch types across both columns,
+  // each entry has left + right pitch arrays for that type.
+  const compareGroups = useMemo(() => {
+    if (!compareMode) return null;
+    const leftGroups = buildGroupsForColumn(leftData, leftMode, leftStart, leftEnd);
+    const rightGroups = buildGroupsForColumn(rightData, rightMode, rightStart, rightEnd);
+    if (!leftGroups && !rightGroups) return null;
+
+    // Union of pitch type names across both columns
+    const allNames = new Set();
+    if (leftGroups) for (const n of leftGroups.keys()) allNames.add(n);
+    if (rightGroups) for (const n of rightGroups.keys()) allNames.add(n);
+
+    const CANONICAL_ORDER = ["FF", "SI", "FC", "CH", "FS", "FO", "SC", "CU", "KC", "SL", "ST", "SV"];
+    const orderIndex = (code) => {
+      const idx = CANONICAL_ORDER.indexOf(code);
+      return idx >= 0 ? idx : 999;
+    };
+
+    const rows = Array.from(allNames).map(name => {
+      const leftPitches = leftGroups?.get(name) || [];
+      const rightPitches = rightGroups?.get(name) || [];
+      const samplePitch = leftPitches[0] || rightPitches[0];
+      return {
+        name,
+        code: PITCH_ABBREV[name] || samplePitch?.pitch_type || "—",
+        color: getPitchColor(name),
+        leftPitches,
+        rightPitches,
+      };
+    });
+    rows.sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
+    return rows;
+  }, [compareMode, leftData, rightData, leftMode, rightMode, leftStart, leftEnd, rightStart, rightEnd, hand, hmMode]);
 
   return (
     <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
@@ -2863,20 +3003,22 @@ const HeatmapsPage = ({ C, isMobile }) => {
       {/* Controls */}
       {pitcher && (
         <div style={{ display: "flex", gap: "16px", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
-          {/* Year toggle */}
-          <div style={{ display: "flex", gap: "4px" }}>
-            {[{ k: "2026", l: "2026" }, { k: "2025", l: "2025" }].map(t => (
-              <button key={t.k} onClick={() => setYear(t.k)} style={{
-                background: year === t.k ? C.accentGlow : "transparent",
-                border: `1px solid ${year === t.k ? C.accent : C.border}`,
-                borderRadius: "4px", padding: "6px 14px",
-                color: year === t.k ? C.accent : C.textDim,
-                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              }}>{t.l}</button>
-            ))}
-          </div>
+          {/* Year toggle - hidden in compare mode (each column has its own) */}
+          {!compareMode && (
+            <div style={{ display: "flex", gap: "4px" }}>
+              {[{ k: "2026", l: "2026" }, { k: "2025", l: "2025" }].map(t => (
+                <button key={t.k} onClick={() => setYear(t.k)} style={{
+                  background: year === t.k ? C.accentGlow : "transparent",
+                  border: `1px solid ${year === t.k ? C.accent : C.border}`,
+                  borderRadius: "4px", padding: "6px 14px",
+                  color: year === t.k ? C.accent : C.textDim,
+                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}>{t.l}</button>
+              ))}
+            </div>
+          )}
 
-          {/* Hand toggle */}
+          {/* Hand toggle - shared across both modes */}
           <div style={{ display: "flex", gap: "4px" }}>
             {[{ k: "all", l: "All" }, { k: "L", l: "vs LHH" }, { k: "R", l: "vs RHH" }].map(t => (
               <button key={t.k} onClick={() => setHand(t.k)} style={{
@@ -2889,7 +3031,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
-          {/* Mode toggle */}
+          {/* Mode toggle - shared */}
           <div style={{ display: "flex", gap: "4px" }}>
             {[{ k: "frequency", l: "Frequency" }, { k: "whiffs", l: "Whiffs" }, { k: "damage", l: "Damage" }].map(t => (
               <button key={t.k} onClick={() => setHmMode(t.k)} style={{
@@ -2902,7 +3044,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
-          {/* Style toggle */}
+          {/* Style toggle - shared */}
           <div style={{ display: "flex", gap: "4px" }}>
             {[{ k: "gaussian", l: "Gaussian" }, { k: "gaussian_granular", l: "Gaussian - Granular" }].map(t => (
               <button key={t.k} onClick={() => setHmStyle(t.k)} style={{
@@ -2915,8 +3057,8 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
-          {/* Date pickers (2026 only) */}
-          {year === "2026" && (
+          {/* Date pickers (single-view 2026 only) */}
+          {!compareMode && year === "2026" && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               <span style={{ fontSize: "11px", color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Range</span>
               <DatePickerWithHighlights value={startDate} onChange={setStartDate} pitchedDates={pitchedDates} C={C} label="Start"
@@ -2928,44 +3070,152 @@ const HeatmapsPage = ({ C, isMobile }) => {
             </div>
           )}
 
-          {totalPitchCount > 0 && (
+          {/* Compare button - toggles side-by-side view */}
+          <button onClick={() => setCompareMode(m => !m)} style={{
+            background: compareMode ? C.accent : "transparent",
+            border: `1px solid ${compareMode ? C.accent : C.border}`,
+            borderRadius: "4px", padding: "6px 14px",
+            color: compareMode ? "#fff" : C.textDim,
+            fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+            letterSpacing: "0.5px",
+          }}>
+            {compareMode ? "✕ Close Compare" : "Compare"}
+          </button>
+
+          {!compareMode && totalPitchCount > 0 && (
             <span style={{ fontSize: "11px", color: C.accent, fontWeight: 600 }}>{totalPitchCount} pitches</span>
           )}
         </div>
       )}
 
-      {/* Loading / errors */}
-      {loading && <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>Loading {year} data...</div>}
-      {errMsg && !loading && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
-      {!loading && pitchData && totalPitchCount === 0 && pitcher && !errMsg && (
-        <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>No pitches match the current filters.</div>
+      {/* ─── Compare mode: per-column controls + side-by-side grid ─── */}
+      {compareMode && pitcher && (
+        <>
+          {/* Per-column date selectors */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 1fr", gap: "16px", marginBottom: "20px", alignItems: "start" }}>
+            {/* LEFT column controls */}
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.accent, marginBottom: "8px" }}>Left Column</div>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+                {[{ k: "2026", l: "2026 Full" }, { k: "2025", l: "2025 Full" }, { k: "2026range", l: "Custom Range" }].map(t => (
+                  <button key={t.k} onClick={() => setLeftMode(t.k)} style={{
+                    background: leftMode === t.k ? C.accentGlow : "transparent",
+                    border: `1px solid ${leftMode === t.k ? C.accent : C.border}`,
+                    borderRadius: "4px", padding: "4px 10px",
+                    color: leftMode === t.k ? C.accent : C.textDim,
+                    fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                  }}>{t.l}</button>
+                ))}
+              </div>
+              {leftMode === "2026range" && (
+                <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "4px" }}>
+                  <DatePickerWithHighlights value={leftStart} onChange={setLeftStart} pitchedDates={new Set()} C={C} label="Start" />
+                  <span style={{ fontSize: "10px", color: C.textDim }}>to</span>
+                  <DatePickerWithHighlights value={leftEnd} onChange={setLeftEnd} pitchedDates={new Set()} C={C} label="End" />
+                </div>
+              )}
+            </div>
+
+            {/* Center spacer (empty - matches pitch type name column in grid) */}
+            <div />
+
+            {/* RIGHT column controls */}
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.accent, marginBottom: "8px" }}>Right Column</div>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+                {[{ k: "2026", l: "2026 Full" }, { k: "2025", l: "2025 Full" }, { k: "2026range", l: "Custom Range" }].map(t => (
+                  <button key={t.k} onClick={() => setRightMode(t.k)} style={{
+                    background: rightMode === t.k ? C.accentGlow : "transparent",
+                    border: `1px solid ${rightMode === t.k ? C.accent : C.border}`,
+                    borderRadius: "4px", padding: "4px 10px",
+                    color: rightMode === t.k ? C.accent : C.textDim,
+                    fontSize: "10px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                  }}>{t.l}</button>
+                ))}
+              </div>
+              {rightMode === "2026range" && (
+                <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "4px" }}>
+                  <DatePickerWithHighlights value={rightStart} onChange={setRightStart} pitchedDates={new Set()} C={C} label="Start" />
+                  <span style={{ fontSize: "10px", color: C.textDim }}>to</span>
+                  <DatePickerWithHighlights value={rightEnd} onChange={setRightEnd} pitchedDates={new Set()} C={C} label="End" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Compare loading / errors */}
+          {compareLoading && <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px", textAlign: "center" }}>Loading comparison data...</div>}
+          {errMsg && !compareLoading && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
+
+          {/* Side-by-side grid: pitch type rows, left tile / name / right tile */}
+          {!compareLoading && compareGroups && compareGroups.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {compareGroups.map(row => (
+                <CompareRow key={row.name} row={row} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} isMobile={isMobile} />
+              ))}
+            </div>
+          )}
+
+          {!compareLoading && compareGroups && compareGroups.length === 0 && pitcher && (
+            <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px", textAlign: "center" }}>No pitches match the current filters in either column.</div>
+          )}
+
+          {/* Legend (shared) */}
+          {compareGroups && compareGroups.length > 0 && (
+            <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
+                {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density" : "Expected Damage (xwOBA)"}
+              </span>
+              <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
+              <div style={{
+                width: "180px", height: "10px", borderRadius: "3px",
+                background: (hmMode === "damage" || hmMode === "whiffs")
+                  ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
+                  : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
+              }} />
+              <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Heatmap grid: max 4 across, additional rows wrap */}
-      {filteredGroups && filteredGroups.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
-          {filteredGroups.map(g => (
-            <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} />
-          ))}
-        </div>
-      )}
+      {/* ─── Single-view mode (existing behavior) ─── */}
+      {!compareMode && (
+        <>
+          {/* Loading / errors */}
+          {loading && <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>Loading {year} data...</div>}
+          {errMsg && !loading && <div style={{ padding: "12px", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>{errMsg}</div>}
+          {!loading && pitchData && totalPitchCount === 0 && pitcher && !errMsg && (
+            <div style={{ padding: "40px 0", color: C.textDim, fontSize: "12px" }}>No pitches match the current filters.</div>
+          )}
 
-      {/* Legend */}
-      {filteredGroups && filteredGroups.length > 0 && (
-        <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
-            {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density"
-              : "Expected Damage (xwOBA)"}
-          </span>
-          <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
-          <div style={{
-            width: "180px", height: "10px", borderRadius: "3px",
-            background: (hmMode === "damage" || hmMode === "whiffs")
-              ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
-              : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
-          }} />
-          <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
-        </div>
+          {/* Heatmap grid: max 4 across, additional rows wrap */}
+          {filteredGroups && filteredGroups.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
+              {filteredGroups.map(g => (
+                <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} />
+              ))}
+            </div>
+          )}
+
+          {/* Legend */}
+          {filteredGroups && filteredGroups.length > 0 && (
+            <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
+                {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density"
+                  : "Expected Damage (xwOBA)"}
+              </span>
+              <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
+              <div style={{
+                width: "180px", height: "10px", borderRadius: "3px",
+                background: (hmMode === "damage" || hmMode === "whiffs")
+                  ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
+                  : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
+              }} />
+              <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -3000,6 +3250,78 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
           : <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
         }
       </div>
+    </div>
+  );
+};
+
+// ─── CompareRow: a single row in the side-by-side comparison view ───
+// Layout: [left tile] [pitch type name + color dot] [right tile]
+// Each tile is rendered with the same Gaussian canvas the single-view uses.
+const CompareRow = ({ row, C, hmStyle, hmMode, hand, isMobile }) => {
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+  const [leftSize, setLeftSize] = useState({ w: 220, h: 220 });
+  const [rightSize, setRightSize] = useState({ w: 220, h: 220 });
+
+  useEffect(() => {
+    if (!leftRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0].contentRect;
+      setLeftSize({ w: Math.floor(r.width * 2), h: Math.floor(r.width * 2) });
+    });
+    ro.observe(leftRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!rightRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0].contentRect;
+      setRightSize({ w: Math.floor(r.width * 2), h: Math.floor(r.width * 2) });
+    });
+    ro.observe(rightRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const isGranular = hmStyle === "gaussian_granular";
+
+  const renderTile = (pitches, containerRef, size) => (
+    <div style={{ background: "#0a0a12", border: "1px solid #222", borderRadius: "8px", padding: "12px" }}>
+      <div style={{ fontSize: "10px", color: "#888", marginBottom: "6px", textAlign: "right" }}>{pitches.length} pitches</div>
+      <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
+        {pitches.length > 0
+          ? <GaussianHeatmapCanvas pitches={pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} granular={isGranular} />
+          : <div style={{ width: "100%", height: "100%", background: "#0a0a12", display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: "11px" }}>No data</div>
+        }
+      </div>
+    </div>
+  );
+
+  if (isMobile) {
+    // On mobile: stack the columns vertically with the name at the top
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", justifyContent: "center" }}>
+          <span style={{ display: "inline-block", width: "12px", height: "12px", borderRadius: "50%", background: row.color }} />
+          <span style={{ fontSize: "14px", fontWeight: 700, color: C.text }}>{row.name}</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          {renderTile(row.leftPitches, leftRef, leftSize)}
+          {renderTile(row.rightPitches, rightRef, rightSize)}
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop: tile | name | tile
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 1fr", gap: "16px", alignItems: "center" }}>
+      {renderTile(row.leftPitches, leftRef, leftSize)}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ display: "inline-block", width: "12px", height: "12px", borderRadius: "50%", background: row.color, marginBottom: "6px" }} />
+        <div style={{ fontSize: "13px", fontWeight: 700, color: C.text, lineHeight: 1.2 }}>{row.name}</div>
+      </div>
+      {renderTile(row.rightPitches, rightRef, rightSize)}
     </div>
   );
 };
