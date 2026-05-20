@@ -3090,7 +3090,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
 
       {/* ─── Compare mode: per-column controls + side-by-side grid ─── */}
       {compareMode && pitcher && (
-        <>
+        <div style={{ maxWidth: isMobile ? "100%" : "900px", margin: "0 auto" }}>
           {/* Per-column date selectors */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 1fr", gap: "16px", marginBottom: "20px", alignItems: "start" }}>
             {/* LEFT column controls */}
@@ -3176,7 +3176,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
               <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
             </div>
           )}
-        </>
+        </div>
       )}
 
       {/* ─── Single-view mode (existing behavior) ─── */}
