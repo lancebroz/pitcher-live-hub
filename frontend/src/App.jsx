@@ -937,7 +937,7 @@ const approxXwoba = (ev, la) => {
   return 0.1;
 };
 
-const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
+const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = false }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -954,9 +954,12 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
 
     if (!pitches.length) return;
 
-    const gridW = 200, gridH = 200;
+    // Granular: finer grid (300x300 vs 200x200) + tighter Gaussian (smaller sigma).
+    // This produces sharper, more localized hot spots vs the smoother default view.
+    const gridW = granular ? 300 : 200;
+    const gridH = granular ? 300 : 200;
     const grid = new Float32Array(gridW * gridH);
-    const sigma = mode === "damage" ? 0.35 : 0.30;
+    const sigma = granular ? (mode === "damage" ? 0.20 : 0.17) : (mode === "damage" ? 0.35 : 0.30);
     const bw2 = sigma * sigma;
 
     // Stamp each pitch onto the grid (negate plate_x for pitcher POV)
@@ -1052,7 +1055,7 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand }) => {
     ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
     ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fill();
     ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1.5; ctx.stroke();
-  }, [pitches, width, height, mode, hand]);
+  }, [pitches, width, height, mode, hand, granular]);
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
 
@@ -2666,7 +2669,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [year, setYear] = useState("2026");
   const [hand, setHand] = useState("all");
   const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
-  const [hmStyle, setHmStyle] = useState("gaussian"); // "grid" | "gaussian"
+  const [hmStyle, setHmStyle] = useState("gaussian"); // "gaussian" | "gaussian_granular"
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -2769,10 +2772,8 @@ const HeatmapsPage = ({ C, isMobile }) => {
       if (hmMode === "frequency") return true;
       if (hmMode === "whiffs") return p.is_whiff;
       if (hmMode === "damage") {
-        // Gaussian: show all balls in play (canvas weights by xwOBA)
-        // Grid: show only extra-base hits
-        if (hmStyle === "gaussian") return p.is_in_play;
-        return isXBH(p.events);
+        // Both gaussian variants: show all balls in play (canvas weights by xwOBA)
+        return p.is_in_play;
       }
       return true;
     };
@@ -2903,7 +2904,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
 
           {/* Style toggle */}
           <div style={{ display: "flex", gap: "4px" }}>
-            {[{ k: "gaussian", l: "Gaussian" }, { k: "grid", l: "Grid" }].map(t => (
+            {[{ k: "gaussian", l: "Gaussian" }, { k: "gaussian_granular", l: "Gaussian - Granular" }].map(t => (
               <button key={t.k} onClick={() => setHmStyle(t.k)} style={{
                 background: hmStyle === t.k ? C.accentGlow : "transparent",
                 border: `1px solid ${hmStyle === t.k ? C.accent : C.border}`,
@@ -2954,16 +2955,14 @@ const HeatmapsPage = ({ C, isMobile }) => {
         <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
             {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density"
-              : (hmStyle === "gaussian" ? "Expected Damage (xwOBA)" : "Extra-Base Hit Density")}
+              : "Expected Damage (xwOBA)"}
           </span>
           <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
           <div style={{
             width: "180px", height: "10px", borderRadius: "3px",
-            background: hmStyle === "gaussian" && (hmMode === "damage" || hmMode === "whiffs")
+            background: (hmMode === "damage" || hmMode === "whiffs")
               ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
-              : hmStyle === "gaussian"
-              ? "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)"
-              : "linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)",
+              : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
           }} />
           <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
         </div>
@@ -2984,7 +2983,8 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
-  const isGaussian = hmStyle === "gaussian";
+  const isGaussian = hmStyle === "gaussian" || hmStyle === "gaussian_granular";
+  const isGranular = hmStyle === "gaussian_granular";
   return (
     <div style={{ background: isGaussian ? "#0a0a12" : C.surface, border: `1px solid ${isGaussian ? "#222" : C.border}`, borderRadius: "8px", padding: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
@@ -2996,7 +2996,7 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
       </div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
         {isGaussian
-          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} />
+          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} granular={isGranular} />
           : <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
         }
       </div>
