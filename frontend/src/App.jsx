@@ -2702,6 +2702,25 @@ const HeatmapsPage = ({ C, isMobile }) => {
     return new Set(pitchData.map(p => p.game_date).filter(d => d && d !== "nan"));
   }, [pitchData]);
 
+  // Compare-mode: each column's pitched-dates set comes from that column's loaded data.
+  // Only includes 2026 dates (custom range only operates on 2026); 2025 dates filtered out.
+  const leftPitchedDates = useMemo(() => {
+    if (!leftData) return new Set();
+    return new Set(
+      leftData
+        .map(p => p.game_date)
+        .filter(d => d && d !== "nan" && d.startsWith("2026"))
+    );
+  }, [leftData]);
+  const rightPitchedDates = useMemo(() => {
+    if (!rightData) return new Set();
+    return new Set(
+      rightData
+        .map(p => p.game_date)
+        .filter(d => d && d !== "nan" && d.startsWith("2026"))
+    );
+  }, [rightData]);
+
   // Search
   useEffect(() => {
     if (searchValue.trim().length < 2) { setSearchResults([]); return; }
@@ -3109,9 +3128,9 @@ const HeatmapsPage = ({ C, isMobile }) => {
               </div>
               {leftMode === "2026range" && (
                 <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "4px" }}>
-                  <DatePickerWithHighlights value={leftStart} onChange={setLeftStart} pitchedDates={new Set()} C={C} label="Start" />
+                  <DatePickerWithHighlights value={leftStart} onChange={setLeftStart} pitchedDates={leftPitchedDates} C={C} label="Start" />
                   <span style={{ fontSize: "10px", color: C.textDim }}>to</span>
-                  <DatePickerWithHighlights value={leftEnd} onChange={setLeftEnd} pitchedDates={new Set()} C={C} label="End" />
+                  <DatePickerWithHighlights value={leftEnd} onChange={setLeftEnd} pitchedDates={leftPitchedDates} C={C} label="End" />
                 </div>
               )}
             </div>
@@ -3135,9 +3154,9 @@ const HeatmapsPage = ({ C, isMobile }) => {
               </div>
               {rightMode === "2026range" && (
                 <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "4px" }}>
-                  <DatePickerWithHighlights value={rightStart} onChange={setRightStart} pitchedDates={new Set()} C={C} label="Start" />
+                  <DatePickerWithHighlights value={rightStart} onChange={setRightStart} pitchedDates={rightPitchedDates} C={C} label="Start" />
                   <span style={{ fontSize: "10px", color: C.textDim }}>to</span>
-                  <DatePickerWithHighlights value={rightEnd} onChange={setRightEnd} pitchedDates={new Set()} C={C} label="End" />
+                  <DatePickerWithHighlights value={rightEnd} onChange={setRightEnd} pitchedDates={rightPitchedDates} C={C} label="End" />
                 </div>
               )}
             </div>
