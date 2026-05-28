@@ -2654,6 +2654,63 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               isFullSeason={false}
             />
           )}
+
+          {/* "View as Heatmap Compare" button - shows when a comparison is loaded.
+              Opens a new tab pre-configured with the same pitcher + date selections,
+              defaulting to the Gaussian-Granular heatmap style. */}
+          {!cmpLoading && cmpData && cmpData.length > 0 && pitcher && (
+            <div style={{ marginTop: "20px", textAlign: "center" }}>
+              <button
+                onClick={() => {
+                  // Build URL params. Top section becomes left column, bottom becomes right column.
+                  const params = new URLSearchParams();
+                  params.set("pitcher_id", String(pitcher.id));
+                  if (pitcher.name) params.set("pitcher_name", pitcher.name);
+                  if (pitcher.throws) params.set("pitcher_hand", pitcher.throws);
+
+                  // Left column = top section in Compare
+                  // topUseRange=false means Full Season 2026, true means custom range
+                  if (topUseRange) {
+                    params.set("left_mode", "2026range");
+                    params.set("left_start", topStart);
+                    params.set("left_end", topEnd);
+                  } else {
+                    params.set("left_mode", "2026");
+                  }
+
+                  // Right column = bottom section in Compare
+                  // cmpMode="2025" means 2025 Full Season, "2026range" means custom 2026 range
+                  if (cmpMode === "2025") {
+                    params.set("right_mode", "2025");
+                  } else {
+                    params.set("right_mode", "2026range");
+                    params.set("right_start", cmpStart);
+                    params.set("right_end", cmpEnd);
+                  }
+
+                  params.set("style", "gaussian_granular");
+
+                  // Open new tab to the same site with the params attached
+                  const url = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+                  window.open(url, "_blank");
+                }}
+                style={{
+                  background: C.accent,
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "6px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                🔥 View as Heatmap Compare
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -2692,6 +2749,50 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [leftData, setLeftData] = useState(null);
   const [rightData, setRightData] = useState(null);
   const [compareLoading, setCompareLoading] = useState(false);
+
+  // ─── URL param handler: lets the Compare tool open a pre-configured heatmap compare view ───
+  // Expected params (all optional, but should be passed together):
+  //   pitcher_id  - MLB ID, used to construct pitcher object
+  //   pitcher_name - display name
+  //   pitcher_hand - "L" or "R"
+  //   left_mode  - "2026" | "2025" | "2026range"
+  //   left_start, left_end - YYYY-MM-DD (only when left_mode = "2026range")
+  //   right_mode - "2026" | "2025" | "2026range"
+  //   right_start, right_end - YYYY-MM-DD (only when right_mode = "2026range")
+  //   style - "gaussian" | "gaussian_granular" (defaults to gaussian_granular when launched from Compare)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get("pitcher_id");
+    if (!pid) return;
+    const name = params.get("pitcher_name") || "";
+    const throws = params.get("pitcher_hand") || "";
+    const lMode = params.get("left_mode");
+    const lStart = params.get("left_start");
+    const lEnd = params.get("left_end");
+    const rMode = params.get("right_mode");
+    const rStart = params.get("right_start");
+    const rEnd = params.get("right_end");
+    const style = params.get("style");
+
+    // Apply each setting if present. Open compare view and load the pitcher.
+    if (lMode) setLeftMode(lMode);
+    if (lStart) setLeftStart(lStart);
+    if (lEnd) setLeftEnd(lEnd);
+    if (rMode) setRightMode(rMode);
+    if (rStart) setRightStart(rStart);
+    if (rEnd) setRightEnd(rEnd);
+    if (style === "gaussian" || style === "gaussian_granular") setHmStyle(style);
+
+    setCompareMode(true);
+    setPitcher({ id: parseInt(pid, 10), name, throws });
+    setSearchValue(name);
+    // Clear the URL params after consuming them so refreshes don't re-trigger
+    try {
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, "", cleanUrl);
+    } catch (e) { /* fine if browser blocks this */ }
+  }, []); // run once on mount
 
   const searchRef = useRef(null);
   const hmEndPickerRef = useRef(null);
@@ -3937,7 +4038,11 @@ export default function PitcherTracker() {
   const [activePitcher, setActivePitcher] = useState(null);
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
-  const [page, setPage] = useState("tracker"); // "tracker" | "compare" | "heatmaps" | "leaderboard" | "report"
+  // Default to "heatmaps" when arriving via deep link (from Compare's "View as Heatmap" button).
+  // Otherwise default to "tracker" as before.
+  const initialPage = (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("pitcher_id"))
+    ? "heatmaps" : "tracker";
+  const [page, setPage] = useState(initialPage); // "tracker" | "compare" | "heatmaps" | "leaderboard" | "report"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
