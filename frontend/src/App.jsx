@@ -1298,6 +1298,52 @@ const computePitchRunValue = (p) => {
 };
 
 // ─── Normalize API pitch data into internal format ───
+// Compute the extrapolated release point at the ball's actual release from the pitcher's hand.
+// MLB tracking captures position at y=50 ft from home plate, but Savant publishes "Vertical/Horizontal Release Pt"
+// extrapolated back to where the ball actually leaves the hand (y = 60.5 - release_extension).
+// Without this correction, our displayed release height was ~0.2-0.3 ft below Savant's published values.
+// Uses standard projectile motion: pos_at_release = pos_at_50 + v0*dt + 0.5*a*dt²
+// where dt is the (negative) time delta to travel from y=50 back to y=release.
+const computeReleaseAtHand = (p) => {
+  const pos50_x = p.release_pos_x;
+  const pos50_z = p.release_pos_z;
+  const vy0 = p.vy0;
+  const vx0 = p.vx0;
+  const vz0 = p.vz0;
+  const ax = p.ax;
+  const ay = p.ay;
+  const az = p.az;
+  const extension = p.release_extension;
+  // If we lack any required kinematic field, return the raw value unchanged
+  if (pos50_z == null || vy0 == null || ay == null || vz0 == null || az == null || extension == null) {
+    return { release_pos_x: pos50_x, release_pos_z: pos50_z };
+  }
+  // Target y-coordinate: where the ball leaves the hand (rubber at 60.5 - extension)
+  const y_release = 60.5 - extension;
+  // We need dt such that starting at (y=50, vy=vy0) and going backward in time, we end up at y=y_release.
+  // y(t) = 50 + vy0*t + 0.5*ay*t² = y_release
+  // Solve for t: 0.5*ay*t² + vy0*t + (50 - y_release) = 0
+  // dt should be negative since we're going backward in time (from y=50 to y > 50).
+  const A = 0.5 * ay;
+  const B = vy0;
+  const C_ = 50 - y_release; // y_release > 50, so C_ < 0
+  const discriminant = B * B - 4 * A * C_;
+  if (discriminant < 0) {
+    return { release_pos_x: pos50_x, release_pos_z: pos50_z };
+  }
+  const sqrtDisc = Math.sqrt(discriminant);
+  // Two roots: pick the one closer to zero (smallest |t|) since release was a short time before y=50 measurement
+  const t1 = (-B + sqrtDisc) / (2 * A);
+  const t2 = (-B - sqrtDisc) / (2 * A);
+  const dt = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+  // Now apply kinematics to compute x and z at that release time
+  const z_release = pos50_z + vz0 * dt + 0.5 * az * dt * dt;
+  const x_release = (pos50_x != null && vx0 != null && ax != null)
+    ? pos50_x + vx0 * dt + 0.5 * ax * dt * dt
+    : pos50_x;
+  return { release_pos_x: x_release, release_pos_z: z_release };
+};
+
 const normalizeLivePitch = (p) => {
   const desc = (p.description || "").toLowerCase();
   const isFoulTip = desc.includes("foul_tip") || desc.includes("foul tip");
@@ -1314,6 +1360,10 @@ const normalizeLivePitch = (p) => {
   // HB is flipped (negated) for pitcher's perspective
   const pfx_z_inches = p.pfx_z != null ? p.pfx_z * 12 : null;
   const pfx_x_inches = p.pfx_x != null ? p.pfx_x * -12 : null;
+
+  // Compute extrapolated release point at the ball's actual release from the hand.
+  // This matches Savant's "Vertical/Horizontal Release Pt" convention.
+  const { release_pos_x: rel_x_hand, release_pos_z: rel_z_hand } = computeReleaseAtHand(p);
 
   // Backend sometimes returns blank pitch_type even when pitch_name is valid.
   // Derive the code from the name so the filter in normAndFilter doesn't strip these.
@@ -1341,8 +1391,8 @@ const normalizeLivePitch = (p) => {
     spin_efficiency: p.spin_efficiency || null,
     pfx_z: pfx_z_inches,
     pfx_x: pfx_x_inches,
-    release_pos_z: p.release_pos_z,
-    release_pos_x: p.release_pos_x,
+    release_pos_z: rel_z_hand,
+    release_pos_x: rel_x_hand,
     vaa: p.vaa || null,
     release_extension: p.release_extension,
     plate_x: p.plate_x,
