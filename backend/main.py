@@ -388,6 +388,7 @@ async def get_game_pitches(game_pk: int, pitcher_id: int):
 
             pitches.append({
                 "pitch_number": len(pitches) + 1,
+                "play_id": event.get("playId", "") or "",
                 "pitch_type": pitch_type.get("code", ""),
                 "pitch_name": pitch_type.get("description", ""),
                 "release_speed": pitch_data.get("startSpeed"),
@@ -947,6 +948,8 @@ async def get_cached_season(pitcher_id: int):
     trajectories = col_str("trajectory")
     bb_types_fallback = col_str("bb_type")
     stands = col_str("stand")
+    batter_names = col_str("batter_name")
+    play_ids = col_str("play_id")
     p_throws_col = col_str("pitcher_hand")
     p_throws_fallback = col_str("p_throws")
     balls_col = col_str("balls")
@@ -1009,11 +1012,13 @@ async def get_cached_season(pitcher_id: int):
             "bb_type": bb_type,
             "is_in_play": is_in_play,
             "stand": stands[i],
+            "batter_name": batter_names[i],
             "p_throws": p_throws_col[i] or p_throws_fallback[i],
             "balls": balls_col[i],
             "strikes": strikes_col[i],
             "game_date": game_dates[i],
             "game_pk": game_pks[i],
+            "play_id": play_ids[i],
             "inning": innings[i],
             "at_bat_number": at_bats[i],
             "delta_run_exp": None,
@@ -1437,6 +1442,7 @@ async def _get_season_data_impl(pitcher_id: int):
                                 "strikes": str(count_obj.get("strikes", 0)),
                                 "game_date": game_date_str,
                                 "game_pk": gpk,
+                                "play_id": event.get("playId", "") or "",
                                 "inning": inning,
                                 "at_bat_number": play.get("atBatIndex", 0),
                                 "events": "",
