@@ -4368,6 +4368,10 @@ export default function PitcherTracker() {
   const [activeGame, setActiveGame] = useState(null);
   const [gamePk, setGamePk] = useState(null);
   const [pitcherGameStats, setPitcherGameStats] = useState(null);
+  // Chronological list of the pitcher's games this season: [{game_pk, game_date}, ...].
+  // Built in the background when a pitcher is opened from a live game; powers the
+  // ◀ ▶ start-to-start navigation arrows in the live view header.
+  const [gameLog, setGameLog] = useState(null);
   const [teamLogos, setTeamLogos] = useState({});
   const pollRef = useRef(null);
   const endPickerRef = useRef(null);
@@ -4396,10 +4400,12 @@ export default function PitcherTracker() {
     setPitchData(filtered);
   }, [seasonStart, seasonEnd, historicalPitchData, view]);
 
-  // Live polling: re-fetch pitch data every 15 seconds during live games
+  // Live polling: re-fetch pitch data every 15 seconds during live games.
+  // Paused when the user has navigated ◀ ▶ to a different (finished) start.
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
-    if (view === "live" && gamePk && pitcherId) {
+    const viewingCurrentGame = !activeGame || Number(activeGame.game_pk) === Number(gamePk);
+    if (view === "live" && gamePk && pitcherId && viewingCurrentGame) {
       pollRef.current = setInterval(async () => {
         try {
           const raw = await getGamePitches(gamePk, pitcherId);
@@ -4416,7 +4422,7 @@ export default function PitcherTracker() {
       }, 15000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [view, gamePk, pitcherId]);
+  }, [view, gamePk, pitcherId, activeGame]);
 
   // When switching views, swap the displayed data
   const handleViewSwitch = async (newView) => {
@@ -4499,6 +4505,7 @@ export default function PitcherTracker() {
     setSeason2025PitchData(null);
     setActiveGame(null);
     setGamePk(null);
+    setGameLog(null);
   };
 
   // Load pitcher from live game selector
@@ -4513,6 +4520,27 @@ export default function PitcherTracker() {
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setSeason2025PitchData(null);
+
+    // Build the season game log in the BACKGROUND (doesn't block the live load).
+    // Distinct (game_pk, game_date) pairs from cached-season, sorted chronologically.
+    // Today's game is appended if the parquet doesn't have it yet (in-progress).
+    setGameLog(null);
+    getCachedSeason(pitcher.id).then(raw => {
+      const seen = new Map();
+      for (const q of raw || []) {
+        const d = q.game_date ? String(q.game_date).slice(0, 10) : "";
+        if (q.game_pk && d && d !== "nan" && !seen.has(Number(q.game_pk))) {
+          seen.set(Number(q.game_pk), d);
+        }
+      }
+      const log = Array.from(seen, ([pk, date]) => ({ game_pk: pk, game_date: date }))
+        .sort((a, b) => a.game_date.localeCompare(b.game_date));
+      if (!log.some(g => g.game_pk === Number(game.game_pk))) {
+        log.push({ game_pk: Number(game.game_pk), game_date: new Date().toISOString().slice(0, 10) });
+      }
+      setGameLog(log);
+    }).catch(() => setGameLog([]));
+
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
@@ -4522,6 +4550,34 @@ export default function PitcherTracker() {
       setActivePitcher(pitcher.name);
     } catch (e) {
       console.error("Failed to load pitches:", e);
+    }
+    setIsLoading(false);
+  };
+
+  // Navigate to the pitcher's previous (-1) or next (+1) start, loading that
+  // game's pitch data + per-game stat line. Used by the ◀ ▶ arrows in the header.
+  const navigateGame = async (delta) => {
+    if (!gameLog || !pitcherId || !gamePk) return;
+    const idx = gameLog.findIndex(g => g.game_pk === Number(gamePk));
+    if (idx === -1) return;
+    const target = gameLog[idx + delta];
+    if (!target) return;
+    setGamePk(target.game_pk);
+    setView("live");
+    setIsLoading(true);
+    try {
+      const raw = await getGamePitches(target.game_pk, pitcherId);
+      const normalized = normAndFilter(raw);
+      setLivePitchData(normalized);
+      setPitchData(normalized);
+      // Per-game stat line for the navigated game
+      try {
+        const pitchers = await getGamePitchers(target.game_pk);
+        const me = (pitchers || []).find(p => p.id === pitcherId);
+        setPitcherGameStats(me?.game_stats || null);
+      } catch { setPitcherGameStats(null); }
+    } catch (e) {
+      console.error("Game navigation failed:", e);
     }
     setIsLoading(false);
   };
@@ -4607,7 +4663,34 @@ export default function PitcherTracker() {
               {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
             </div>
             <div style={{ fontSize: "11px", color: C.textDim, display: "flex", alignItems: "center", justifyContent: isMobile ? "flex-start" : "flex-end", gap: "6px", flexWrap: "wrap" }}>
-              {view === "live" && currentGame && (
+              {/* ◀ ▶ start-to-start navigation (live view, once the game log loads) */}
+              {view === "live" && gameLog && gamePk && (() => {
+                const idx = gameLog.findIndex(g => g.game_pk === Number(gamePk));
+                if (idx === -1) return null;
+                const viewedDate = gameLog[idx].game_date;
+                const isCurrentGame = activeGame && Number(activeGame.game_pk) === Number(gamePk);
+                const arrowStyle = (enabled) => ({
+                  background: "transparent", border: `1px solid ${enabled ? C.border : "transparent"}`,
+                  borderRadius: "4px", padding: "2px 8px", fontSize: "11px", fontWeight: 700,
+                  color: enabled ? C.text : C.borderLight, cursor: enabled ? "pointer" : "default",
+                  fontFamily: "inherit", lineHeight: 1.4,
+                });
+                return (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", marginRight: "4px" }}>
+                    <button onClick={() => idx > 0 && navigateGame(-1)} disabled={idx === 0}
+                      title={idx > 0 ? `Previous start (${gameLog[idx - 1].game_date})` : "First start of season"}
+                      style={arrowStyle(idx > 0)}>◀</button>
+                    <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, fontVariantNumeric: "tabular-nums" }}>
+                      {viewedDate}{!isCurrentGame && <span style={{ marginLeft: "4px", color: C.accent }}>(start {idx + 1}/{gameLog.length})</span>}
+                    </span>
+                    <button onClick={() => idx < gameLog.length - 1 && navigateGame(1)} disabled={idx >= gameLog.length - 1}
+                      title={idx < gameLog.length - 1 ? `Next start (${gameLog[idx + 1].game_date})` : "Most recent start"}
+                      style={arrowStyle(idx < gameLog.length - 1)}>▶</button>
+                  </span>
+                );
+              })()}
+              {/* Matchup/status banner only applies to the game the pitcher was opened from */}
+              {view === "live" && currentGame && (!gameLog || Number(currentGame.game_pk) === Number(gamePk)) && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
                   <TeamLogo abbr={currentGame.away_team} logos={teamLogos} size={16} />
                   {currentGame.away_team} @ {currentGame.home_team}
