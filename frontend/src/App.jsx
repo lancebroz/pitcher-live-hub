@@ -2411,6 +2411,10 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
+  // Snapshot for the "Plot Compare" section. Holds {left, right} each with
+  // {pitches, label, metrics}. Set only when the button is clicked, so changing
+  // dates above does NOT live-update the plots — re-click the button to refresh.
+  const [plotCompare, setPlotCompare] = useState(null);
   const [topStart, setTopStart] = useState("2026-03-25");
   const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
   const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
@@ -2451,6 +2455,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setTopData(null);
     setCmpData(null);
     setErrMsg("");
+    setPlotCompare(null);
     setTopUseRange(false);
     setTopStart("2026-03-25");
     setTopEnd(new Date().toISOString().slice(0, 10));
@@ -2712,37 +2717,44 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
             <div style={{ marginTop: "20px", textAlign: "center" }}>
               <button
                 onClick={() => {
-                  // Build URL params. Top section becomes left column, bottom becomes right column.
+                  // Build URL params. Columns are ordered CHRONOLOGICALLY:
+                  // older period on the LEFT, newer period on the RIGHT.
                   const params = new URLSearchParams();
                   params.set("pitcher_id", String(pitcher.id));
                   if (pitcher.name) params.set("pitcher_name", pitcher.name);
                   if (pitcher.throws) params.set("pitcher_hand", pitcher.throws);
 
-                  // Left column = top section in Compare
-                  // topUseRange=false means Full Season 2026, true means custom range
-                  if (topUseRange) {
-                    params.set("left_mode", "2026range");
-                    params.set("left_start", topStart);
-                    params.set("left_end", topEnd);
-                  } else {
-                    params.set("left_mode", "2026");
-                  }
+                  // Describe each section as a {mode, start, end} config
+                  const topCfg = topUseRange
+                    ? { mode: "2026range", start: topStart, end: topEnd, sortKey: topStart }
+                    : { mode: "2026", sortKey: "2026-03-25" };
+                  const bottomCfg = cmpMode === "2025"
+                    ? { mode: "2025", sortKey: "2025-03-27" }
+                    : { mode: "2026range", start: cmpStart, end: cmpEnd, sortKey: cmpStart };
 
-                  // Right column = bottom section in Compare
-                  // cmpMode="2025" means 2025 Full Season, "2026range" means custom 2026 range
-                  if (cmpMode === "2025") {
-                    params.set("right_mode", "2025");
-                  } else {
-                    params.set("right_mode", "2026range");
-                    params.set("right_start", cmpStart);
-                    params.set("right_end", cmpEnd);
-                  }
+                  // Older period (earlier start date) goes left; ISO date strings compare correctly
+                  const leftCfg = bottomCfg.sortKey <= topCfg.sortKey ? bottomCfg : topCfg;
+                  const rightCfg = leftCfg === bottomCfg ? topCfg : bottomCfg;
+
+                  params.set("left_mode", leftCfg.mode);
+                  if (leftCfg.start) { params.set("left_start", leftCfg.start); params.set("left_end", leftCfg.end); }
+                  params.set("right_mode", rightCfg.mode);
+                  if (rightCfg.start) { params.set("right_start", rightCfg.start); params.set("right_end", rightCfg.end); }
 
                   params.set("style", "gaussian_granular");
 
-                  // Open new tab to the same site with the params attached
+                  // Open new tab to the same site with the params attached.
+                  // Use an anchor-click rather than window.open() — browsers treat this
+                  // as a genuine user-initiated navigation, so it's far less likely to be
+                  // blocked by popup blockers and reliably opens a new tab (not a window).
                   const url = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-                  window.open(url, "_blank");
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.target = "_blank";
+                  a.rel = "noopener noreferrer";
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
                 }}
                 style={{
                   background: C.accent,
@@ -2759,6 +2771,84 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               >
                 🔥 View as Heatmap Compare
               </button>
+              <button
+                onClick={() => {
+                  // Snapshot the CURRENT selections. Plots won't change until this
+                  // button is clicked again with new windows selected.
+                  const topPitches = topUseRange
+                    ? (topData || []).filter(p => {
+                        if (!p.game_date) return false;
+                        const gd = String(p.game_date).slice(0, 10);
+                        return gd >= topStart && gd <= topEnd;
+                      })
+                    : (topData || []);
+                  const topSnap = {
+                    pitches: topPitches,
+                    label: topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Full Season",
+                    metrics: computeMetrics(topPitches, "all"),
+                  };
+                  const botSnap = {
+                    pitches: cmpData,
+                    label: cmpMode === "2025" ? "2025 Full Season" : `2026: ${cmpStart} → ${cmpEnd}`,
+                    metrics: computeMetrics(cmpData, "all"),
+                  };
+                  // Chronological order: older period left, newer right
+                  const topKey = topUseRange ? topStart : "2026-03-25";
+                  const botKey = cmpMode === "2025" ? "2025-03-27" : cmpStart;
+                  const [left, right] = botKey <= topKey ? [botSnap, topSnap] : [topSnap, botSnap];
+                  setPlotCompare({ left, right });
+                }}
+                style={{
+                  background: "transparent",
+                  color: C.accent,
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: "6px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.5px",
+                  marginLeft: "10px",
+                }}
+              >
+                📍 Plot Compare
+              </button>
+            </div>
+          )}
+
+          {/* Plot Compare section - renders from the snapshot taken at button click.
+              Older period left, newer right. Persists until the button is re-clicked
+              (which re-snapshots the then-current selections) or pitcher changes. */}
+          {plotCompare && (
+            <div style={{ marginTop: "24px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
+                  Pitch Plot Compare
+                </div>
+                <button onClick={() => setPlotCompare(null)} style={{
+                  background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+                  padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>✕ Close</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
+                {[plotCompare.left, plotCompare.right].map((side, idx) => (
+                  <div key={idx}>
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "8px", textAlign: "center" }}>
+                      {side.label}
+                      <span style={{ color: C.textDim, fontWeight: 600, marginLeft: "8px" }}>
+                        {(side.pitches || []).length} pitches
+                      </span>
+                    </div>
+                    {side.pitches && side.pitches.length > 0 && side.metrics ? (
+                      <PitchLocationPlot pitchData={side.pitches} pitchTypeMetrics={side.metrics.pitchTypeMetrics} C={C} />
+                    ) : (
+                      <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>No data</div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </>
