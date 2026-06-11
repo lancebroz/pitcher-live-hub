@@ -535,9 +535,28 @@ const SortIcon = ({ active, dir }) => (
 );
 
 // ─── Movement Plot ───
-const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
-  const [showAvg, setShowAvg] = useState(false);
-  const [mvHand, setMvHand] = useState("all");
+// Open MLB's pitch-level research/video page in a new tab.
+// Requires game_pk + the per-pitch play_id UUID from the MLB live feed.
+// 2025 Savant CSV data has no play IDs, so those pitches simply aren't clickable;
+// 2026 pitches gain IDs as the parquet backfill completes.
+const openPitchResearch = (p) => {
+  if (!p || !p.game_pk || !p.play_id) return;
+  const a = document.createElement("a");
+  a.href = `https://research.mlb.com/games/${p.game_pk}/plays/${p.play_id}`;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+const MovementPlot = ({ pitchTypeMetrics, C, view: currentView, defaultShowAvg = false, hand: handProp, onHandChange }) => {
+  const [showAvg, setShowAvg] = useState(defaultShowAvg);
+  // Hand filter can be CONTROLLED by a parent (Plot Compare syncs both plots to one
+  // shared hand state) or fall back to internal state (Tracker, standalone use).
+  const [mvHandLocal, setMvHandLocal] = useState("all");
+  const mvHand = handProp !== undefined ? handProp : mvHandLocal;
+  const setMvHand = onHandChange || setMvHandLocal;
   const grouped = {};
   let maxAbs = 0;
   pitchTypeMetrics.forEach(pt => {
@@ -549,6 +568,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
         velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
         description: p.description, events: p.events,
         game_date: p.game_date || "",
+        game_pk: p.game_pk, play_id: p.play_id || "",
       });
       if (Math.abs(p.pfx_x) > maxAbs) maxAbs = Math.abs(p.pfx_x);
       if (Math.abs(p.pfx_z) > maxAbs) maxAbs = Math.abs(p.pfx_z);
@@ -616,6 +636,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                     {d.game_date && <div>{d.game_date}</div>}
                     <div>Inning {d.inning} · Count: {d.count}</div>
                     {d.description && <div>Result: {({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: d.events ? d.events.replace(/_/g, " ") : "In Play" }[d.description] || d.description)}</div>}
+                    {d.play_id && <div style={{ color: C.accent, marginTop: "2px" }}>Click dot → video</div>}
                   </div>
                 </div>
               );
@@ -623,8 +644,10 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
             {Object.values(grouped).map(g => (
               <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={3.3}
                 isAnimationActive={false}
+                onClick={(pt) => openPitchResearch(pt?.payload || pt)}
                 shape={(props) => (
-                  <circle cx={props.cx} cy={props.cy} r={3.3} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45} />
+                  <circle cx={props.cx} cy={props.cy} r={3.3} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45}
+                    style={{ cursor: props.payload?.play_id ? "pointer" : "default" }} />
                 )}
               />
             ))}
@@ -1174,6 +1197,10 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
 // Wrapped in memo so it renders exactly once per snapshot: without this, every hover on the
 // Compare tables (hoveredCode state) re-rendered both plots' thousands of SVG dots and froze the page.
 const PlotCompareSection = memo(({ snapshot, C, isMobile, onClear }) => {
+  // ONE hand filter shared by both plots: clicking All/LHH/RHH on either plot
+  // switches both, keeping the comparison apples-to-apples.
+  // (Hook must run unconditionally, before the early return.)
+  const [sharedHand, setSharedHand] = useState("all");
   if (!snapshot) return null;
   return (
     <div style={{ marginTop: "24px" }}>
@@ -1197,7 +1224,13 @@ const PlotCompareSection = memo(({ snapshot, C, isMobile, onClear }) => {
               </span>
             </div>
             {side.metrics && side.metrics.pitchTypeMetrics && side.metrics.pitchTypeMetrics.length > 0 ? (
-              <MovementPlot pitchTypeMetrics={side.metrics.pitchTypeMetrics} C={C} />
+              <MovementPlot
+                pitchTypeMetrics={side.metrics.pitchTypeMetrics}
+                C={C}
+                defaultShowAvg={true}
+                hand={sharedHand}
+                onHandChange={setSharedHand}
+              />
             ) : (
               <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>No data</div>
             )}
@@ -1481,6 +1514,7 @@ const normalizeLivePitch = (p) => {
     delta_run_exp: p.delta_run_exp != null ? p.delta_run_exp : computePitchRunValue(p),
     game_date: p.game_date || "",
     game_pk: p.game_pk || 0,
+    play_id: p.play_id || "",  // MLB per-pitch UUID → research.mlb.com deep link
     at_bat_number: p.at_bat_number || null,
     events: p.events || "",
   };
@@ -1911,6 +1945,71 @@ const COMPARE_COLS = [
   { key: "rv100", label: "RV/100", w: 60 },
 ];
 
+// ─── Pitch List Modal ───
+// Generic popup listing individual pitches (date · batter · count · velo).
+// Rows that carry a play_id deep-link to MLB's research/video page for that
+// exact pitch (https://research.mlb.com/games/{game_pk}/plays/{play_id}).
+// 2025 Savant data and pre-backfill 2026 games have no play IDs → rows render
+// unclickable and a footnote explains why.
+const PitchListModal = ({ popup, C, onClose }) => {
+  if (!popup) return null;
+  const sorted = [...popup.pitches].sort((a, b) => (b.game_date || "").localeCompare(a.game_date || ""));
+  const anyLinks = sorted.some(p => p.play_id && p.game_pk);
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "20px",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px",
+        width: "min(480px, 100%)", maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.accent }}>
+            {popup.title} <span style={{ color: C.textDim, fontWeight: 600 }}>({sorted.length})</span>
+          </div>
+          <button onClick={onClose} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>✕ Close</button>
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {sorted.map((p, i) => {
+            const clickable = !!(p.play_id && p.game_pk);
+            return (
+              <div
+                key={i}
+                onClick={() => clickable && openPitchResearch(p)}
+                title={clickable ? "Open this pitch on MLB research" : undefined}
+                style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px",
+                  padding: "10px 16px", borderBottom: `1px solid ${C.border}`,
+                  cursor: clickable ? "pointer" : "default", fontSize: "12px",
+                }}
+              >
+                <div style={{ color: C.text, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ fontWeight: 600 }}>{p.game_date || "—"}</span>
+                  <span style={{ color: C.textDim, marginLeft: "8px" }}>vs {p.batter_name || "—"}</span>
+                </div>
+                <div style={{ color: C.textDim, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                  {p.count || "—"} · {p.release_speed != null ? `${Number(p.release_speed).toFixed(1)}` : "—"}
+                  {clickable && <span style={{ color: C.accent, marginLeft: "8px" }}>▶</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {!anyLinks && (
+          <div style={{ padding: "10px 16px", fontSize: "10px", color: C.textDim, borderTop: `1px solid ${C.border}` }}>
+            Video links unavailable — play IDs missing (2025 data, or 2026 games awaiting the parquet backfill).
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // Compute high-level pitcher stats (GS, IP, ERA, SIERA, K%, BB%, K-BB%) from raw pitches.
 // Filtered by batter handedness if hand !== "all".
 const computeSummaryStats = (rawPitches, hand) => {
@@ -2232,6 +2331,8 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
   const [boxStats, setBoxStats] = useState(null);
+  // Pitch-list popup ({title, pitches}) — opened by clicking the Whiff% cell.
+  const [pitchListPopup, setPitchListPopup] = useState(null);
 
   // Apply pitchOrder if provided: sort matching pitch types into the top table's order,
   // then append any additional pitch types not in the order at the bottom.
@@ -2431,6 +2532,24 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                       </span>
                     : c.key === "pitchPct"
                     ? (allRow.count > 0 ? `${Math.round((row.count / allRow.count) * 100)}%` : "—")
+                    : c.key === "whiffRate"
+                    ? (() => {
+                        // Clickable whiff cell: lists each whiff (date/batter/count) with
+                        // deep links to MLB research video where play IDs exist.
+                        const whiffs = (row.rawPitches || []).filter(p => p.is_whiff);
+                        const v = row[c.key] != null ? row[c.key] : "—";
+                        if (whiffs.length === 0) return v;
+                        return (
+                          <span
+                            onClick={() => setPitchListPopup({ title: `${row.name} — Whiffs`, pitches: whiffs })}
+                            title="Click to list whiffs"
+                            style={{
+                              color: C.accent, cursor: "pointer",
+                              textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "3px",
+                            }}
+                          >{v}</span>
+                        );
+                      })()
                     : (row[c.key] != null ? row[c.key] : "—")}
                 </td>
               ))}
@@ -2440,6 +2559,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
         </tbody>
       </table>
       )}
+      <PitchListModal popup={pitchListPopup} C={C} onClose={() => setPitchListPopup(null)} />
     </div>
   );
 };
