@@ -156,9 +156,10 @@ async def search_pitcher(q: str):
 
     results = []
     for person in data.get("people", []):
-        # Filter to pitchers
+        # Filter to pitchers. Include "TWP" (two-way players, e.g. Shohei Ohtani)
+        # who pitch but whose primary position isn't "P".
         pos = person.get("primaryPosition", {}).get("abbreviation", "")
-        if pos == "P":
+        if pos in ("P", "TWP"):
             team = person.get("currentTeam", {}).get("abbreviation", "")
             throw_hand = person.get("pitchHand", {}).get("code", "")
             results.append({
