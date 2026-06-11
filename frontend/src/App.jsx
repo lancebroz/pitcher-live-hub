@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
 
@@ -1168,6 +1168,46 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
     </div>
   );
 };
+
+// ─── Plot Compare section (Compare tool) ───
+// Renders two MOVEMENT plots side by side from a frozen snapshot (older left, newer right).
+// Wrapped in memo so it renders exactly once per snapshot: without this, every hover on the
+// Compare tables (hoveredCode state) re-rendered both plots' thousands of SVG dots and froze the page.
+const PlotCompareSection = memo(({ snapshot, C, isMobile, onClear }) => {
+  if (!snapshot) return null;
+  return (
+    <div style={{ marginTop: "24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
+          Movement Plot Compare
+        </div>
+        <button onClick={() => onClear(null)} style={{
+          background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+          padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit",
+        }}>✕ Close</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
+        {[snapshot.left, snapshot.right].map((side, idx) => (
+          <div key={idx}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "8px", textAlign: "center" }}>
+              {side.label}
+              <span style={{ color: C.textDim, fontWeight: 600, marginLeft: "8px" }}>
+                {side.count} pitches
+              </span>
+            </div>
+            {side.metrics && side.metrics.pitchTypeMetrics && side.metrics.pitchTypeMetrics.length > 0 ? (
+              <MovementPlot pitchTypeMetrics={side.metrics.pitchTypeMetrics} C={C} />
+            ) : (
+              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>No data</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 // ─── Sortable Table ───
 const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, setHandFilter, allRow }) => {
   const [sortKey, setSortKey] = useState(null);
@@ -2218,7 +2258,17 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   // Always publish the canonical order based on the FULL pitch usage (hand="all"),
   // not the currently filtered view, so toggling hand on the top table doesn't reshuffle the bottom.
   // Publish abbreviation codes (FF, SL, etc.) so different display name spellings still match.
-  const orderMetrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, "all") : null, [countFilteredPitches]);
+  // PERF: when hand is "all" (the default on every load), `metrics` above IS the
+  // all-hands computation, so reuse it instead of running computeMetrics twice over
+  // the full season. Deps intentionally exclude hand/metrics: the order is frozen
+  // from whatever the data looked like when it arrived, which is the desired behavior.
+  const orderMetrics = useMemo(
+    () => {
+      if (!countFilteredPitches) return null;
+      return (hand || "all") === "all" ? metrics : computeMetrics(countFilteredPitches, "all");
+    },
+    [countFilteredPitches] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   useEffect(() => {
     if (onComputed && orderMetrics?.pitchTypeMetrics) {
       onComputed(orderMetrics.pitchTypeMetrics.map(r => PITCH_ABBREV[r.name] || r.name));
@@ -2448,7 +2498,12 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
+  // Sequence token so a late background merge from a previous pitcher can't
+  // clobber the data after the user has already switched to a new pitcher.
+  const loadSeqRef = useRef(0);
+
   const loadPitcher = async (p) => {
+    const seq = ++loadSeqRef.current;
     setPitcher(p);
     setSearchValue(p.name);
     setSearchOpen(false);
@@ -2462,24 +2517,54 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
 
     setTopLoading(true);
     try {
-      // Try instant local cache first, fall back to Savant CSV
-      const [cachedRaw, liveRaw] = await Promise.all([
-        getCachedSeason(p.id).catch(() => []),
-        getSeasonData(p.id).catch(() => []),
-      ]);
-      let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
-        await getStatcast(p.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []);
-      let merged;
-      if (savantRaw && savantRaw.length > 0) {
+      // PROGRESSIVE LOAD: kick off both fetches in parallel, but render as soon
+      // as cached-season returns (fast, ~hundreds of ms) instead of also waiting
+      // for the live /season endpoint, which hits MLB live feeds server-side and
+      // can take several seconds. Today's live data merges in quietly when ready.
+      const cachedPromise = getCachedSeason(p.id).catch(() => []);
+      const livePromise = getSeasonData(p.id).catch(() => []);
+
+      const cachedRaw = await cachedPromise;
+      if (seq !== loadSeqRef.current) return; // user switched pitchers mid-flight
+
+      if (cachedRaw && cachedRaw.length > 0) {
+        // PHASE 1: render immediately from the cache
+        setTopData(normAndFilter(cachedRaw));
+        setTopLoading(false);
+
+        // PHASE 2: merge today's live supplement in the background when it lands.
         // Build dedup set ONLY from games that have REAL pitch data in the cache
         // (i.e. valid pitch_type, not just game_pk stubs). Otherwise cached-season's
         // empty placeholder rows for in-progress games would block today's live data.
+        livePromise.then(liveRaw => {
+          if (seq !== loadSeqRef.current) return;
+          if (!liveRaw || liveRaw.length === 0) return;
+          const cachedRealGamePks = new Set(
+            cachedRaw
+              .filter(q => q.game_pk && q.pitch_type && q.pitch_type.toLowerCase() !== "nan")
+              .map(q => String(q.game_pk))
+          );
+          const liveSupplement = liveRaw.filter(q => q.game_pk && !cachedRealGamePks.has(String(q.game_pk)));
+          if (liveSupplement.length === 0) return; // nothing new today - skip the re-render
+          setTopData(normAndFilter([...cachedRaw, ...liveSupplement]));
+        });
+        return;
+      }
+
+      // FALLBACK (cache empty): Savant CSV + live merge, same as before
+      const [savantRaw, liveRaw] = await Promise.all([
+        getStatcast(p.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []),
+        livePromise,
+      ]);
+      if (seq !== loadSeqRef.current) return;
+      let merged;
+      if (savantRaw && savantRaw.length > 0) {
         const cachedRealGamePks = new Set(
           savantRaw
-            .filter(p => p.game_pk && p.pitch_type && p.pitch_type.toLowerCase() !== "nan")
-            .map(p => String(p.game_pk))
+            .filter(q => q.game_pk && q.pitch_type && q.pitch_type.toLowerCase() !== "nan")
+            .map(q => String(q.game_pk))
         );
-        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !cachedRealGamePks.has(String(p.game_pk)));
+        const liveSupplement = (liveRaw || []).filter(q => q.game_pk && !cachedRealGamePks.has(String(q.game_pk)));
         merged = [...savantRaw, ...liveSupplement];
       } else {
         merged = liveRaw || [];
@@ -2487,9 +2572,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       setTopData(normAndFilter(merged));
     } catch (e) {
       console.error("Top load failed", e);
-      setErrMsg("Failed to load 2026 season data.");
+      if (seq === loadSeqRef.current) setErrMsg("Failed to load 2026 season data.");
     }
-    setTopLoading(false);
+    if (seq === loadSeqRef.current) setTopLoading(false);
   };
 
   const loadComparison = async () => {
@@ -2527,9 +2612,6 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     clearTimeout(timeoutId);
     setCmpLoading(false);
   };
-
-  const topMetrics = useMemo(() => topData ? computeMetrics(topData, "all") : null, [topData]);
-  const cmpMetrics = useMemo(() => cmpData ? computeMetrics(cmpData, "all") : null, [cmpData]);
 
   const cmpLabel = cmpMode === "2025" ? "2025 Full Season" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
 
@@ -2783,12 +2865,12 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
                       })
                     : (topData || []);
                   const topSnap = {
-                    pitches: topPitches,
+                    count: topPitches.length,
                     label: topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Full Season",
                     metrics: computeMetrics(topPitches, "all"),
                   };
                   const botSnap = {
-                    pitches: cmpData,
+                    count: (cmpData || []).length,
                     label: cmpMode === "2025" ? "2025 Full Season" : `2026: ${cmpStart} → ${cmpEnd}`,
                     metrics: computeMetrics(cmpData, "all"),
                   };
@@ -2817,40 +2899,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
             </div>
           )}
 
-          {/* Plot Compare section - renders from the snapshot taken at button click.
-              Older period left, newer right. Persists until the button is re-clicked
-              (which re-snapshots the then-current selections) or pitcher changes. */}
-          {plotCompare && (
-            <div style={{ marginTop: "24px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
-                  Pitch Plot Compare
-                </div>
-                <button onClick={() => setPlotCompare(null)} style={{
-                  background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
-                  padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
-                  cursor: "pointer", fontFamily: "inherit",
-                }}>✕ Close</button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
-                {[plotCompare.left, plotCompare.right].map((side, idx) => (
-                  <div key={idx}>
-                    <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "8px", textAlign: "center" }}>
-                      {side.label}
-                      <span style={{ color: C.textDim, fontWeight: 600, marginLeft: "8px" }}>
-                        {(side.pitches || []).length} pitches
-                      </span>
-                    </div>
-                    {side.pitches && side.pitches.length > 0 && side.metrics ? (
-                      <PitchLocationPlot pitchData={side.pitches} pitchTypeMetrics={side.metrics.pitchTypeMetrics} C={C} />
-                    ) : (
-                      <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>No data</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Plot Compare section - frozen snapshot, older left / newer right.
+              Memoized so table hovers and other state churn don't re-render it. */}
+          <PlotCompareSection snapshot={plotCompare} C={C} isMobile={isMobile} onClear={setPlotCompare} />
         </>
       )}
     </div>
