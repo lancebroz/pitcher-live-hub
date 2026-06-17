@@ -193,6 +193,28 @@ const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return 
 const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
 const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
 
+// ─── Location-adjusted VAA (aVAA) ───
+// Normalizes raw VAA for pitch height within a pitch type (Chamberlain / FanGraphs).
+// expected_VAA(z) = a + b*plate_z; aVAA = actual - expected.
+// Positive = flatter than expected for that height; negative = steeper than expected.
+// Baseline is a fixed league reference (must mirror VAA_BASELINE in the backend).
+const VAA_BASELINE = {
+  FF: [-8.5250, 1.4500], SI: [-9.4500, 1.5000], FC: [-9.9500, 1.5000],
+  CH: [-10.2750, 1.5500], FS: [-10.6750, 1.5500], FO: [-10.6750, 1.5500],
+  SL: [-10.8500, 1.6200], ST: [-10.6500, 1.6200], SV: [-11.3250, 1.6500],
+  CU: [-13.1500, 1.7000], KC: [-12.9500, 1.7000], CS: [-13.2500, 1.7000],
+  SC: [-9.8750, 1.5500], EP: [-13.2500, 1.7000], KN: [-9.7500, 1.5000],
+};
+const computeAVAA = (p) => {
+  if (p == null || p.vaa == null || p.plate_z == null) return null;
+  const code = (p.pitch_type || PITCH_ABBREV[p.pitch_name] || "").toUpperCase();
+  const c = VAA_BASELINE[code];
+  if (!c) return null;
+  return p.vaa - (c[0] + c[1] * p.plate_z);
+};
+// avg helper for aVAA values already extracted as an array of pitches
+const avgAVAA = (pts) => avg1(pts.map(p => computeAVAA(p)));
+
 const computeMetrics = (pitches, hf) => {
   if (!pitches?.length) return null;
   let f = hf === "all" ? pitches : pitches.filter(p => p.batter_hand === hf);
@@ -221,6 +243,7 @@ const computeMetrics = (pitches, hf) => {
       avgIVB: avg1(pts.map(p => p.pfx_z)), avgHB: avg1(pts.map(p => p.pfx_x)),
       avgRelH: avg1(pts.map(p => p.release_pos_z)), avgRelS: avg1(pts.map(p => p.release_pos_x)),
       avgExt: avg1(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
+      avgAVAA: avgAVAA(pts),
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
@@ -258,6 +281,7 @@ const computeMetrics = (pitches, hf) => {
     avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
     avgExt: avg1(allPts.map(p => p.release_extension)),
     avgVAA: avg1(allPts.map(p => p.vaa)),
+    avgAVAA: "—",
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
@@ -1802,7 +1826,7 @@ const STUFF_COLS = [
   { key: "avgSpin", label: "Spin" },
   { key: "avgIVB", label: "IVB" }, { key: "avgHB", label: "HB" },
   { key: "avgRelH", label: "RelH" }, { key: "avgRelS", label: "RelS" },
-  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" },
+  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" }, { key: "avgAVAA", label: "aVAA" },
 ];
 const PERF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
@@ -1929,6 +1953,7 @@ const COMPARE_COLS = [
   { key: "avgRelS", label: "RelS", w: 55 },
   { key: "avgExt", label: "Ext", w: 55 },
   { key: "avgVAA", label: "VAA", w: 55 },
+  { key: "avgAVAA", label: "aVAA", w: 55 },
   { key: "strikeRate", label: "Strike%", w: 65 },
   { key: "zoneRate", label: "Zone%", w: 60 },
   { key: "cswRate", label: "CSW%", w: 60 },
@@ -3805,6 +3830,8 @@ const LB_COLS = [
   { key: "avg_spin", label: "Spin", w: 55 },
   { key: "avg_ivb", label: "IVB", w: 45 },
   { key: "avg_hb", label: "HB", w: 45 },
+  { key: "avg_vaa", label: "VAA", w: 48 },
+  { key: "avg_avaa", label: "aVAA", w: 50 },
   { key: "strike_rate", label: "Str%", w: 50 },
   { key: "zone_rate", label: "Zone%", w: 55 },
   { key: "csw_rate", label: "CSW%", w: 55 },
@@ -3881,7 +3908,8 @@ const LeaderboardPage = ({ C, isMobile }) => {
     const numCols = LB_COLS.filter(c => c.key !== "pitcher_name" && c.key !== "pitcher_hand");
     const rateKeys = new Set(["strike_rate", "zone_rate", "csw_rate", "cstr_rate", "swstr_rate",
       "whiff_rate", "chase_rate", "zone_whiff_rate", "gb_rate", "fb_rate", "barrel_rate", "rv_100",
-      "avg_velo", "avg_spin", "avg_ivb", "avg_hb"]);
+      "avg_velo", "avg_spin", "avg_ivb", "avg_hb", "avg_vaa", "avg_avaa"]);
+    const twoDecKeys = new Set(["avg_vaa", "avg_avaa"]);
     const avgs = {};
     for (const col of numCols) {
       const vals = displayData.map(p => p[col.key]).filter(v => v != null && v !== "—");
@@ -3893,7 +3921,7 @@ const LeaderboardPage = ({ C, isMobile }) => {
           const v = p[col.key], w = p.total_pitches || 0;
           if (v != null && v !== "—" && w > 0) { wSum += Number(v) * w; wTotal += w; }
         }
-        avgs[col.key] = wTotal > 0 ? (col.key === "avg_spin" ? Math.round(wSum / wTotal) : Number((wSum / wTotal).toFixed(1))) : "—";
+        avgs[col.key] = wTotal > 0 ? (col.key === "avg_spin" ? Math.round(wSum / wTotal) : Number((wSum / wTotal).toFixed(twoDecKeys.has(col.key) ? 2 : 1))) : "—";
       } else {
         const sum = vals.reduce((a, b) => a + Number(b), 0);
         const mean = sum / vals.length;
