@@ -1946,34 +1946,50 @@ const COMPARE_COLS = [
 ];
 
 // ─── Pitch List Modal ───
-// Generic popup listing individual pitches (date · batter · count · velo).
-// Rows that carry a play_id deep-link to MLB's research/video page for that
-// exact pitch (https://research.mlb.com/games/{game_pk}/plays/{play_id}).
-// 2025 Savant data and pre-backfill 2026 games have no play IDs → rows render
-// unclickable and a footnote explains why.
+// Popup listing individual pitches in a labeled grid: Date | Batter | Count | Velo | ▶.
+// Rows that carry a play_id deep-link to MLB's research/video page for that exact
+// pitch (https://research.mlb.com/games/{game_pk}/plays/{play_id}). 2025 Savant data
+// and pre-backfill 2026 games have no play IDs → those rows render without the button.
 const PitchListModal = ({ popup, C, onClose }) => {
+  const [hoverIdx, setHoverIdx] = useState(-1);
   if (!popup) return null;
   const sorted = [...popup.pitches].sort((a, b) => (b.game_date || "").localeCompare(a.game_date || ""));
   const anyLinks = sorted.some(p => p.play_id && p.game_pk);
+  const GRID = "92px 1fr 64px 72px 44px";
   return (
     <div onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center", padding: "20px",
     }}>
       <div onClick={e => e.stopPropagation()} style={{
-        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px",
-        width: "min(480px, 100%)", maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "hidden",
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px",
+        width: "min(560px, 100%)", maxHeight: "72vh", display: "flex", flexDirection: "column", overflow: "hidden",
+        boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: C.accent }}>
-            {popup.title} <span style={{ color: C.textDim, fontWeight: 600 }}>({sorted.length})</span>
+        {/* Title bar */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.accent }}>
+            {popup.title} <span style={{ color: C.textDim, fontWeight: 600, letterSpacing: "0.5px" }}>({sorted.length})</span>
           </div>
           <button onClick={onClose} style={{
-            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
-            padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px",
+            padding: "5px 12px", color: C.textDim, fontSize: "10px", fontWeight: 600,
             cursor: "pointer", fontFamily: "inherit",
           }}>✕ Close</button>
         </div>
+        {/* Column headers */}
+        <div style={{
+          display: "grid", gridTemplateColumns: GRID, gap: "12px", alignItems: "center",
+          padding: "10px 20px", borderBottom: `1px solid ${C.border}`,
+          fontSize: "9px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim,
+        }}>
+          <span>Date</span>
+          <span>Batter</span>
+          <span style={{ textAlign: "center" }}>Count</span>
+          <span style={{ textAlign: "right" }}>Velo</span>
+          <span style={{ textAlign: "center" }}>{anyLinks ? "Video" : ""}</span>
+        </div>
+        {/* Rows */}
         <div style={{ overflowY: "auto" }}>
           {sorted.map((p, i) => {
             const clickable = !!(p.play_id && p.game_pk);
@@ -1981,27 +1997,45 @@ const PitchListModal = ({ popup, C, onClose }) => {
               <div
                 key={i}
                 onClick={() => clickable && openPitchResearch(p)}
+                onMouseEnter={() => setHoverIdx(i)}
+                onMouseLeave={() => setHoverIdx(-1)}
                 title={clickable ? "Open this pitch on MLB research" : undefined}
                 style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px",
-                  padding: "10px 16px", borderBottom: `1px solid ${C.border}`,
-                  cursor: clickable ? "pointer" : "default", fontSize: "12px",
+                  display: "grid", gridTemplateColumns: GRID, gap: "12px", alignItems: "center",
+                  padding: "13px 20px", borderBottom: `1px solid ${C.border}`,
+                  cursor: clickable ? "pointer" : "default", fontSize: "13px",
+                  background: clickable && hoverIdx === i ? C.accentGlow : "transparent",
+                  transition: "background 0.1s ease",
                 }}
               >
-                <div style={{ color: C.text, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  <span style={{ fontWeight: 600 }}>{p.game_date || "—"}</span>
-                  <span style={{ color: C.textDim, marginLeft: "8px" }}>vs {p.batter_name || "—"}</span>
-                </div>
-                <div style={{ color: C.textDim, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
-                  {p.count || "—"} · {p.release_speed != null ? `${Number(p.release_speed).toFixed(1)}` : "—"}
-                  {clickable && <span style={{ color: C.accent, marginLeft: "8px" }}>▶</span>}
-                </div>
+                <span style={{ color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                  {p.game_date || "—"}
+                </span>
+                <span style={{ color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p.batter_name ? `vs ${p.batter_name}` : "—"}
+                </span>
+                <span style={{ color: C.text, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+                  {p.count || "—"}
+                </span>
+                <span style={{ color: C.text, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                  {p.release_speed != null ? `${Number(p.release_speed).toFixed(1)} mph` : "—"}
+                </span>
+                <span style={{ display: "flex", justifyContent: "center" }}>
+                  {clickable && (
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: "26px", height: "26px", borderRadius: "50%",
+                      background: C.accent, color: "#fff", fontSize: "10px",
+                      paddingLeft: "2px", // optical centering for the ▶ glyph
+                    }}>▶</span>
+                  )}
+                </span>
               </div>
             );
           })}
         </div>
         {!anyLinks && (
-          <div style={{ padding: "10px 16px", fontSize: "10px", color: C.textDim, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ padding: "12px 20px", fontSize: "10px", color: C.textDim, borderTop: `1px solid ${C.border}` }}>
             Video links unavailable — play IDs missing (2025 data, or 2026 games awaiting the parquet backfill).
           </div>
         )}
@@ -2376,21 +2410,22 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
     }
   }, [orderMetrics]);
 
-  // Fetch real ERA + IP from boxscores whenever the underlying pitch set changes
-  // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats
-  // Skip when custom date range is active — ERA endpoint returns season totals only,
-  // which would override the correctly computed filtered stats.
-  // Skip when count filter is active — ERA endpoint can't filter by count situation.
+  // Fetch real ERA + IP from official sources whenever the underlying pitch set changes.
+  // Full season → MLB season stats API (exact official totals).
+  // Custom range → boxscore aggregation over ONLY the range's game_pks (scope="games"),
+  //                so range views get a true range ERA instead of season numbers.
+  // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats.
+  // Skip when count filter is active — boxscores can't filter by count situation.
   useEffect(() => {
     setEra(null);
     setIpFromBox(null);
     setBoxStats(null);
-    if (!rawPitches || !pitcherId || season === "2025" || !isFullSeason) return;
+    if (!rawPitches || !pitcherId || season === "2025") return;
     if (countFilter !== "all") return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
-    getPitcherEra(pitcherId, gamePks).then(r => {
+    getPitcherEra(pitcherId, gamePks, isFullSeason ? "season" : "games").then(r => {
       if (!alive) return;
       setEra(r?.era ?? null);
       setIpFromBox(r?.innings ?? null);
@@ -2532,25 +2567,28 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                       </span>
                     : c.key === "pitchPct"
                     ? (allRow.count > 0 ? `${Math.round((row.count / allRow.count) * 100)}%` : "—")
-                    : c.key === "whiffRate"
-                    ? (() => {
-                        // Clickable whiff cell: lists each whiff (date/batter/count) with
-                        // deep links to MLB research video where play IDs exist.
-                        const whiffs = (row.rawPitches || []).filter(p => p.is_whiff);
+                    : (() => {
+                        // Clickable cells: whiff / barrel / zone each open a pitch list
+                        // (date/batter/count/velo) with MLB research deep links where
+                        // play IDs exist. Any other column renders plainly.
+                        const CLICK_CELLS = {
+                          whiffRate: { label: "Whiffs", filter: p => p.is_whiff },
+                          barrelRate: { label: "Barrels", filter: p => p.is_barrel },
+                          zoneRate: { label: "In-Zone Pitches", filter: p => p.is_in_zone },
+                        };
+                        const cfg = CLICK_CELLS[c.key];
                         const v = row[c.key] != null ? row[c.key] : "—";
-                        if (whiffs.length === 0) return v;
+                        if (!cfg) return v;
+                        const subset = (row.rawPitches || []).filter(cfg.filter);
+                        if (subset.length === 0) return v;
                         return (
                           <span
-                            onClick={() => setPitchListPopup({ title: `${row.name} — Whiffs`, pitches: whiffs })}
-                            title="Click to list whiffs"
-                            style={{
-                              color: C.accent, cursor: "pointer",
-                              textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "3px",
-                            }}
+                            onClick={() => setPitchListPopup({ title: `${row.name} — ${cfg.label}`, pitches: subset })}
+                            title={`Click to list ${cfg.label.toLowerCase()}`}
+                            style={{ color: C.accent, cursor: "pointer", fontWeight: 600 }}
                           >{v}</span>
                         );
-                      })()
-                    : (row[c.key] != null ? row[c.key] : "—")}
+                      })()}
                 </td>
               ))}
               </tr>
