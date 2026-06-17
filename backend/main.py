@@ -72,6 +72,39 @@ def _compute_vaa(vy0, vz0, ay, az, y0=50.0, yf=1.417):
     except (ValueError, TypeError, ZeroDivisionError):
         return None
 
+# ─── Location-adjusted VAA (aVAA) ───
+# Raw VAA is heavily confounded by pitch height: a pitch crossing low in the zone is
+# mechanically steeper than the same pitch up, independent of the pitcher's "stuff".
+# Following Alex Chamberlain's FanGraphs VAA primer, we normalize for plate_z WITHIN a
+# pitch type: expected_VAA(z) = a + b*z, and aVAA = actual_VAA - expected_VAA.
+#   Positive aVAA = FLATTER than expected for that height (good for 4-seamers up).
+#   Negative aVAA = STEEPER than expected (good for sinkers down).
+# Baseline coefficients are a fixed league reference (anchored to published per-pitch-type
+# mid-zone VAA means + the well-documented ~1.45°/ft height slope), so "above average"
+# stays a stable yardstick rather than drifting with the in-season sample.
+VAA_BASELINE = {
+    "FF": (-8.5250, 1.4500), "SI": (-9.4500, 1.5000), "FC": (-9.9500, 1.5000),
+    "CH": (-10.2750, 1.5500), "FS": (-10.6750, 1.5500), "FO": (-10.6750, 1.5500),
+    "SL": (-10.8500, 1.6200), "ST": (-10.6500, 1.6200), "SV": (-11.3250, 1.6500),
+    "CU": (-13.1500, 1.7000), "KC": (-12.9500, 1.7000), "CS": (-13.2500, 1.7000),
+    "SC": (-9.8750, 1.5500), "EP": (-13.2500, 1.7000), "KN": (-9.7500, 1.5000),
+}
+
+def _compute_avaa(vaa, plate_z, pitch_type):
+    """Location-adjusted VAA for a single pitch. Returns None if inputs are missing
+    or the pitch type has no baseline."""
+    try:
+        if vaa is None or plate_z is None:
+            return None
+        coeffs = VAA_BASELINE.get((pitch_type or "").upper())
+        if coeffs is None:
+            return None
+        a, b = coeffs
+        expected = a + b * float(plate_z)
+        return round(float(vaa) - expected, 2)
+    except (ValueError, TypeError):
+        return None
+
 # ─── Simple cache so we don't spam MLB servers ───
 _cache = {}
 
@@ -2255,6 +2288,13 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
 
                 pfx_x_v = _safef(row.get("pfx_x"))
 
+                # Per-pitch VAA + location-adjusted aVAA for leaderboard aggregation.
+                _pz = _safef(row.get("plate_z"))
+                _pt = str(row.get("pitch_type", "") or "")
+                _vaa = _compute_vaa(_safef(row.get("vy0")), _safef(row.get("vz0")),
+                                    _safef(row.get("ay")), _safef(row.get("az")))
+                _avaa = _compute_avaa(_vaa, _pz, _pt)
+
                 records.append({
                     "pitcher_id": pitcher_id_int,
                     "pitcher_name": str(row.get("pitcher_name", "") or ""),
@@ -2269,6 +2309,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     "spin_rate": _safef(row.get("spin_rate")),
                     "pfx_z": _safef(row.get("pfx_z")),
                     "pfx_x": -pfx_x_v if pfx_x_v is not None else None,
+                    "vaa": _vaa,
+                    "avaa": _avaa,
                     "launch_speed": _safef(row.get("launch_speed")),
                     "launch_angle": _safef(row.get("launch_angle")),
                     "trajectory": str(row.get("trajectory", "") or ""),
@@ -2426,6 +2468,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
             spin = g["spin_rate"].dropna()
             ivb = g["pfx_z"].dropna()
             hb = g["pfx_x"].dropna()
+            vaa_vals = pd.to_numeric(g["vaa"], errors="coerce").dropna() if "vaa" in g.columns else pd.Series([], dtype=float)
+            avaa_vals = pd.to_numeric(g["avaa"], errors="coerce").dropna() if "avaa" in g.columns else pd.Series([], dtype=float)
 
             pitchers.append({
                 "pitcher_id": int(pid),
@@ -2440,6 +2484,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 "avg_spin": int(round(float(spin.mean()))) if len(spin) > 0 else None,
                 "avg_ivb": round(float(ivb.mean()) * 12, 1) if len(ivb) > 0 else None,
                 "avg_hb": round(float(hb.mean()) * -12, 1) if len(hb) > 0 else None,
+                "avg_vaa": round(float(vaa_vals.mean()), 2) if len(vaa_vals) > 0 else None,
+                "avg_avaa": round(float(avaa_vals.mean()), 2) if len(avaa_vals) > 0 else None,
                 "strike_rate": round(float(g["_is_strike_fg"].sum()) / n * 100, 1) if n > 0 else None,
                 "zone_rate": round(int(g["_in_zone"].sum()) / n * 100, 1) if n > 0 else None,
                 "csw_rate": round((cstr + swstr) / n * 100, 1) if n > 0 else None,
