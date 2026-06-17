@@ -1033,21 +1033,33 @@ async def get_cached_season(pitcher_id: int):
 # ─── Route 6: Get 2026 season data from parquet files ───
 
 @app.get("/api/pitcher/{pitcher_id}/era")
-async def get_pitcher_era(pitcher_id: int, game_pks: str = ""):
+async def get_pitcher_era(pitcher_id: int, game_pks: str = "", scope: str = "season"):
     """
-    Returns season pitching stats for a pitcher.
-    Primary source: MLB season stats API (exact official numbers).
-    Fallback: boxscore aggregation across game_pks.
+    Returns pitching stats for a pitcher.
+    scope="season" (default): MLB season stats API (exact official season numbers),
+                              boxscore aggregation as a fallback.
+    scope="games": skips the season API and aggregates official boxscore lines over
+                   ONLY the supplied game_pks — gives exact stats for a custom date
+                   range (the Compare tool's range views use this).
     """
     import asyncio
 
-    cache_key = f"era_season:{pitcher_id}"
-    cached = get_cached(cache_key, 300)
-    if cached:
-        return cached
+    if scope == "games":
+        # Cache per distinct game set (short TTL since today's box can still change)
+        pk_sig = ",".join(sorted(x for x in game_pks.split(",") if x.strip().isdigit()))
+        cache_key = f"era_games:{pitcher_id}:{pk_sig}"
+        cached = get_cached(cache_key, 300)
+        if cached:
+            return cached
+    else:
+        cache_key = f"era_season:{pitcher_id}"
+        cached = get_cached(cache_key, 300)
+        if cached:
+            return cached
 
-    # ── Primary: MLB Season Stats API ──
-    try:
+    # ── Primary: MLB Season Stats API (skipped for scope="games") ──
+    if scope != "games":
+      try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
                 f"{MLB_BASE}/api/v1/people/{pitcher_id}/stats?stats=season&season=2026&group=pitching",
@@ -1092,7 +1104,7 @@ async def get_pitcher_era(pitcher_id: int, game_pks: str = ""):
                 print(f"[ERA {pitcher_id}] Season API: K={result['strikeouts']} BB={result['walks']} HR={result['home_runs']} BF={result['batters_faced']} IP={innings_display} ERA={result['era']}")
                 set_cache(cache_key, result)
                 return result
-    except Exception as e:
+      except Exception as e:
         print(f"[ERA {pitcher_id}] Season API failed: {e}, falling back to boxscore aggregation")
 
     # ── Fallback: Boxscore aggregation ──
