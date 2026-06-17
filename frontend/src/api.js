@@ -80,10 +80,10 @@ export async function getStatcastSampled(pitcherId, startDate, endDate, sampleSi
   return res.json();
 }
 
-export async function getPitcherEra(pitcherId, gamePks) {
+export async function getPitcherEra(pitcherId, gamePks, scope = "season") {
   if (!gamePks || gamePks.length === 0) return { era: null, earned_runs: 0, innings: 0, games: 0 };
   const res = await fetch(
-    `${API_BASE}/api/pitcher/${pitcherId}/era?game_pks=${gamePks.join(",")}`
+    `${API_BASE}/api/pitcher/${pitcherId}/era?game_pks=${gamePks.join(",")}&scope=${scope}`
   );
   if (!res.ok) return { era: null, earned_runs: 0, innings: 0, games: 0 };
   return res.json();
