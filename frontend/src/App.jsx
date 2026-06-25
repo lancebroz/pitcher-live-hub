@@ -1527,6 +1527,12 @@ const normalizeLivePitch = (p) => {
     batter_hand: p.batter_hand || p.stand || "R",
     bb_type: p.bb_type || "",
     count: p.count || `${p.balls || 0}-${p.strikes || 0}`,
+    // Keep raw balls/strikes too — the Compare count filter needs them numerically.
+    // Fall back to parsing the count string ("1-2") when only that is present.
+    balls: (p.balls != null && p.balls !== "") ? Number(p.balls)
+           : (typeof p.count === "string" && p.count.includes("-") ? Number(p.count.split("-")[0]) : null),
+    strikes: (p.strikes != null && p.strikes !== "") ? Number(p.strikes)
+           : (typeof p.count === "string" && p.count.includes("-") ? Number(p.count.split("-")[1]) : null),
     batter_name: p.batter_name || "",
     inning: p.inning || 0,
     launch_speed: p.launch_speed,
@@ -2358,9 +2364,13 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true }) => {
-  // Count situation filter (default: all counts)
-  const [countFilter, setCountFilter] = useState("all");
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true, countFilter: countFilterProp, onCountFilterChange }) => {
+  // Count situation filter (default: all counts).
+  // Controlled by ComparePage when props are supplied (keeps top + bottom tables in
+  // sync); otherwise falls back to internal state for standalone use.
+  const [countFilterLocal, setCountFilterLocal] = useState("all");
+  const countFilter = countFilterProp !== undefined ? countFilterProp : countFilterLocal;
+  const setCountFilter = onCountFilterChange || setCountFilterLocal;
 
   // Apply count filter BEFORE everything else - downstream metrics see the filtered set.
   // Definitions:
@@ -2644,6 +2654,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
+  // Shared count-situation filter so the top table and bottom comparison stay in sync.
+  const [countFilter, setCountFilter] = useState("all");
   // Snapshot for the "Plot Compare" section. Holds {left, right} each with
   // {pitches, label, metrics}. Set only when the button is clicked, so changing
   // dates above does NOT live-update the plots — re-click the button to refresh.
@@ -2912,6 +2924,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               onHoverCode={setHoveredCode}
               season="2026"
               isFullSeason={isFullSeason}
+              countFilter={countFilter}
+              onCountFilterChange={setCountFilter}
             />
           </>
         );
@@ -2972,6 +2986,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               onHoverCode={setHoveredCode}
               season={cmpMode === "2025" ? "2025" : "2026"}
               isFullSeason={false}
+              countFilter={countFilter}
+              onCountFilterChange={setCountFilter}
             />
           )}
 
