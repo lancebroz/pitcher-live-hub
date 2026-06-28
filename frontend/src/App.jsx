@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
+import { PITCH_BASELINES } from "./pitchBaselines.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -2364,6 +2365,66 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
+// ─── Compare-tool cell color coding ───
+// Colors stat cells green (good) → neutral → red (bad) based on how far the pitcher's
+// per-pitch-type value sits from the frozen 2025-2026 league baseline (mean/std) for
+// the SAME pitch type, batter hand, and count situation. Subtle translucent fills.
+//
+// "Good direction" per stat: +1 means higher is better (for the pitcher); -1 means lower
+// is better. Velocity/movement are neutral context (not colored as good/bad here unless
+// listed). aVAA is excluded (sign meaning depends on pitch type).
+const STAT_GOOD_DIR = {
+  // Stuff/movement: higher generally better for the pitcher. RelH is neutral (not colored).
+  avgVelo: 1, avgIVB: 1, avgHB: 1, avgExt: 1,
+  strikeRate: 1, zoneRate: 0, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
+  chaseRate: 1, zoneWhiffRate: 1, gbRate: 0, fbRate: 0, barrelRate: -1,
+  xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
+};
+// zoneRate/gbRate/fbRate have dir 0 → context stats, shown but not colored good/bad.
+// Count-filter key (UI value) → baseline key segment
+const COUNT_KEY_MAP = { all: "all", pre2k: "pre2k", two_strikes: "two_strikes", ahead: "ahead", behind: "behind", leverage: "leverage" };
+
+// Look up the league baseline [mean, std, n] for a given pitch name / hand / count / stat.
+// Falls back hand "all" then count "all" when a specific bucket is missing/thin.
+const getBaseline = (pitchName, hand, countFilter, statKey) => {
+  const cnt = COUNT_KEY_MAP[countFilter] || "all";
+  const h = (hand === "L" || hand === "R") ? hand : "all";
+  const tries = [`${pitchName}|${h}|${cnt}`, `${pitchName}|all|${cnt}`, `${pitchName}|${h}|all`, `${pitchName}|all|all`];
+  for (const k of tries) {
+    const b = PITCH_BASELINES[k];
+    if (b && b[statKey]) return b[statKey];
+  }
+  return null;
+};
+
+// Normal CDF for percentile from z-score (Abramowitz-Stegun approximation).
+const _normCdf = (z) => {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+};
+
+// Returns { bg, avg, pct, z } for a cell, or null if not colorable.
+const getCellColor = (statKey, rawValue, pitchName, hand, countFilter) => {
+  const dir = STAT_GOOD_DIR[statKey];
+  if (!dir) return null; // not a colored stat
+  const base = getBaseline(pitchName, hand, countFilter, statKey);
+  if (!base) return null;
+  const [mean, std] = base;
+  const v = typeof rawValue === "string" ? parseFloat(rawValue) : rawValue;
+  if (v == null || isNaN(v) || !std || std === 0) return null;
+  const z = (v - mean) / std;
+  const goodness = dir * z; // positive = better than average for the pitcher
+  // Translucent fill: clamp to ±2σ, alpha grows with |goodness|. Neutral within ~0.4σ.
+  const mag = Math.max(0, Math.min(1, (Math.abs(goodness) - 0.4) / 1.6));
+  const alpha = (0.05 + 0.30 * mag).toFixed(3);
+  const bg = goodness >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+  // Percentile from the pitcher's perspective (higher = better regardless of direction)
+  const pct = Math.round(_normCdf(goodness) * 100);
+  return { bg: Math.abs(goodness) < 0.4 ? "transparent" : bg, avg: mean, pct, z: goodness };
+};
+
 const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true, countFilter: countFilterProp, onCountFilterChange }) => {
   // Count situation filter (default: all counts).
   // Controlled by ComparePage when props are supplied (keeps top + bottom tables in
@@ -2587,14 +2648,25 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                   cursor: "default",
                 }}
               >
-                {COMPARE_COLS.map(c => (
-                <td key={c.key} style={{
-                  padding: "8px 6px",
-                  textAlign: c.align || "right",
-                  color: C.text,
-                  fontVariantNumeric: "tabular-nums",
-                  whiteSpace: "nowrap",
-                }}>
+                {COMPARE_COLS.map(c => {
+                  // Color coding: per-pitch-type rows only (not the All row), for stats
+                  // with a defined good-direction. Compares vs frozen league baseline at
+                  // the current hand + count context.
+                  const cc = (!row.isAllRow && c.key !== "name")
+                    ? getCellColor(c.key, row[c.key], row.name, hand, countFilter)
+                    : null;
+                  const tip = cc
+                    ? `League avg ${typeof cc.avg === "number" ? cc.avg.toFixed(c.key.startsWith("avg") || c.key.includes("OBA") || c.key.includes("SLG") ? 3 : 1) : cc.avg} · ${cc.pct}th pctile`
+                    : undefined;
+                  return (
+                  <td key={c.key} title={tip} style={{
+                    padding: "8px 6px",
+                    textAlign: c.align || "right",
+                    color: C.text,
+                    fontVariantNumeric: "tabular-nums",
+                    whiteSpace: "nowrap",
+                    background: cc ? cc.bg : "transparent",
+                  }}>
                   {c.key === "name"
                     ? <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                         <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: row.color }} />
@@ -2625,7 +2697,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                         );
                       })()}
                 </td>
-              ))}
+              );})}
               </tr>
             );
           })}
