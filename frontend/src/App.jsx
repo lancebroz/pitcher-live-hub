@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
 import { PITCH_BASELINES } from "./pitchBaselines.js";
+import { USAGE_2025 } from "./usageData2025.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -1217,6 +1218,259 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
   );
 };
 
+// ─── Usage Compare section (Compare tool) ───
+// Replicates the standalone Usage Analyzer (usage.lancebroz.com) inline: two
+// side-by-side pitch-usage tables (older left, newer right) broken down by count
+// situation, with diff-coloring on the right table. 2026 usage is fetched live from
+// the aggregated GitHub JSON; 2025 usage comes from the bundled USAGE_2025 snapshot.
+
+// Count-situation buckets — match the Usage Analyzer's COUNT_CATEGORIES exactly.
+const USAGE_COUNT_CATEGORIES = {
+  "Early Count":     [["0", "0"], ["0", "1"], ["1", "0"]],
+  "Pitcher Ahead":   [["0", "1"], ["0", "2"], ["1", "2"], ["2", "2"]],
+  "Pitcher Behind":  [["1", "0"], ["2", "0"], ["3", "0"], ["2", "1"], ["3", "1"]],
+  "Pre Two Strikes": [["0", "0"], ["0", "1"], ["1", "0"], ["1", "1"], ["2", "1"], ["3", "1"]],
+};
+const USAGE_ALL_COUNTS = [
+  ["0", "0"], ["0", "1"], ["0", "2"], ["1", "0"], ["1", "1"], ["1", "2"],
+  ["2", "0"], ["2", "1"], ["2", "2"], ["3", "0"], ["3", "1"], ["3", "2"],
+];
+const USAGE_COLUMN_ORDER = ["All Counts", "Early Count", "Pitcher Ahead", "Pitcher Behind", "Pre Two Strikes"];
+const USAGE_AGG_2026_URL = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/pitch_usage_by_count.json";
+
+// Normalize "Last, First" <-> "First Last" for cross-dataset name matching.
+const _usageNormalizeName = (name) => {
+  if (!name) return "";
+  if (name.includes(", ")) {
+    const parts = name.split(", ");
+    return (parts[1] + " " + parts[0]).toLowerCase().trim();
+  }
+  return name.toLowerCase().trim();
+};
+// Find a pitcher key inside a usage dataset, tolerant of name-format differences.
+const _usageFindPitcher = (data, pitcherName) => {
+  if (!data || !pitcherName) return null;
+  if (data[pitcherName]) return pitcherName;
+  const target = _usageNormalizeName(pitcherName);
+  for (const k of Object.keys(data)) {
+    if (_usageNormalizeName(k) === target) return k;
+  }
+  return null;
+};
+// Compute usage % per pitch type per count-category for one pitcher/stand.
+// Mirrors the Usage Analyzer's calculateUsageForData. fullPitchList (optional) forces
+// both tables to show the same set of pitch rows (union of repertoires).
+const _usageCalculate = (data, pitcherName, stand, fullPitchList) => {
+  if (!data || !pitcherName) return null;
+  const matched = _usageFindPitcher(data, pitcherName);
+  if (!matched) return null;
+  const pd = data[matched] && data[matched][stand];
+  if (!pd) return null;
+  const pitchTypes = (fullPitchList && fullPitchList.length > 0) ? fullPitchList : Object.keys(pd);
+  const result = {};
+
+  // All Counts
+  let allTotal = 0; const allByPitch = {};
+  pitchTypes.forEach((pt) => {
+    let sum = 0; const c = pd[pt] || {};
+    USAGE_ALL_COUNTS.forEach(([b, s]) => { sum += c[b + "-" + s] || 0; });
+    allByPitch[pt] = sum; allTotal += sum;
+  });
+  pitchTypes.forEach((pt) => {
+    result[pt] = { "All Counts": allTotal > 0 ? Math.round((allByPitch[pt] / allTotal) * 100) : 0 };
+  });
+  // Each count category
+  Object.entries(USAGE_COUNT_CATEGORIES).forEach(([cat, counts]) => {
+    let catTotal = 0; const byPitch = {};
+    pitchTypes.forEach((pt) => {
+      let sum = 0; const c = pd[pt] || {};
+      counts.forEach(([b, s]) => { sum += c[b + "-" + s] || 0; });
+      byPitch[pt] = sum; catTotal += sum;
+    });
+    pitchTypes.forEach((pt) => {
+      result[pt][cat] = catTotal > 0 ? Math.round((byPitch[pt] / catTotal) * 100) : 0;
+    });
+  });
+  return result;
+};
+// Union of pitch types across both datasets (so both tables share row order),
+// sorted by the newer period's overall usage.
+const _usageRepertoire = (laterData, earlierData, pitcherName, stand) => {
+  const rep = {};
+  [laterData, earlierData].forEach((data) => {
+    if (!data) return;
+    const m = _usageFindPitcher(data, pitcherName);
+    if (m && data[m] && data[m][stand]) Object.keys(data[m][stand]).forEach((pt) => { rep[pt] = true; });
+  });
+  const codes = Object.keys(rep);
+  // Sort by later period's All-Counts usage desc
+  const laterUsage = _usageCalculate(laterData, pitcherName, stand, codes);
+  return codes.sort((a, b) => ((laterUsage?.[b]?.["All Counts"] || 0) - (laterUsage?.[a]?.["All Counts"] || 0)));
+};
+
+// One usage table (themed). showDiff colors each cell vs the baseline (earlier) table.
+const _UsageTable = ({ usage, baseline, title, pitchOrder, showDiff, isLater, C }) => {
+  if (!usage) {
+    return (
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ background: C.surface, borderRadius: "12px", border: `1px solid ${C.border}`, overflow: "hidden" }}>
+          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: isLater ? "rgba(34,197,94,0.06)" : C.surfaceAlt || "rgba(59,130,246,0.04)" }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: isLater ? "#22c55e" : C.text }}>{title}</div>
+          </div>
+          <div style={{ padding: "32px 16px", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+            No usage data for this period
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const rows = pitchOrder.map((code) => [code, usage[code] || {}]);
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ background: C.surface, borderRadius: "12px", border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: isLater ? "rgba(34,197,94,0.06)" : "rgba(59,130,246,0.04)" }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: isLater ? "#22c55e" : C.text }}>{title}</div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: C.bg }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em" }}>Pitch</th>
+                {USAGE_COLUMN_ORDER.map((cat) => (
+                  <th key={cat} style={{ padding: "10px 6px", textAlign: "center", fontSize: "9px", fontWeight: 700, color: cat === "All Counts" ? C.text : C.textDim, textTransform: "uppercase", letterSpacing: "0.03em", background: cat === "All Counts" ? "rgba(59,130,246,0.08)" : "transparent" }}>
+                    {cat.replace("Pitcher ", "P. ")}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([code, cats], idx) => (
+                <tr key={code} style={{ borderBottom: `1px solid ${C.border}`, background: idx % 2 === 0 ? "transparent" : "rgba(127,127,127,0.04)" }}>
+                  <td style={{ padding: "9px 12px" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}>
+                      <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: getPitchColor(code), boxShadow: `0 0 6px ${getPitchColor(code)}60` }} />
+                      <span style={{ fontWeight: 600, fontSize: "12px", color: C.text }}>{code}</span>
+                    </span>
+                  </td>
+                  {USAGE_COLUMN_ORDER.map((cat) => {
+                    const pct = cats[cat] || 0;
+                    const isAll = cat === "All Counts";
+                    let bg = isAll ? "rgba(148,163,184,0.08)" : "transparent";
+                    let fg = C.text;
+                    if (showDiff && baseline) {
+                      const baseVal = (baseline[code] && baseline[code][cat]) || 0;
+                      const diff = pct - baseVal;
+                      if (diff >= 5) { bg = "rgba(34,197,94,0.22)"; fg = "#22c55e"; }
+                      else if (diff <= -5) { bg = "rgba(239,68,68,0.22)"; fg = "#ef4444"; }
+                    }
+                    return (
+                      <td key={cat} style={{ padding: "9px 5px", textAlign: "center", background: isAll ? "rgba(59,130,246,0.04)" : "transparent" }}>
+                        <span style={{ display: "inline-block", padding: "4px 9px", borderRadius: "6px", fontSize: "12px", fontWeight: 600, background: bg, color: fg, minWidth: "40px" }}>{pct}%</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Inline usage comparison. `config` holds the frozen selection:
+//   { pitcherName, leftLabel, rightLabel, leftYear, rightYear, left2026Window, right2026Window }
+// where *Year is "2025" | "2026". For 2026 windows we filter the live aggregated JSON's
+// monthly/games breakdown when a date range is given; otherwise full-season 2026.
+const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
+  const [stand, setStand] = useState("R");          // batter handedness (usage splits by stand)
+  const [agg2026, setAgg2026] = useState(null);      // live aggregated 2026 usage JSON
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!config) return;
+    // Only need the live 2026 file if either side is 2026.
+    const needs2026 = config.leftYear === "2026" || config.rightYear === "2026";
+    if (!needs2026) return;
+    let alive = true;
+    setLoading(true); setErr("");
+    fetch(USAGE_AGG_2026_URL + "?t=" + Date.now())
+      .then((r) => r.json())
+      .then((j) => { if (alive) setAgg2026(j); })
+      .catch((e) => { if (alive) setErr(e.message || "Failed to load 2026 usage"); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [config]);
+
+  if (!config) return null;
+
+  // Resolve each side's usage dataset (keyed pitcher -> stand -> pitchCode -> count -> n).
+  const dataForYear = (year) => (year === "2025" ? USAGE_2025 : (agg2026 ? agg2026.data : null));
+  const leftData = dataForYear(config.leftYear);
+  const rightData = dataForYear(config.rightYear);
+
+  const repertoire = (leftData || rightData)
+    ? _usageRepertoire(rightData, leftData, config.pitcherName, stand)
+    : [];
+  const leftUsage = _usageCalculate(leftData, config.pitcherName, stand, repertoire);
+  const rightUsage = _usageCalculate(rightData, config.pitcherName, stand, repertoire);
+
+  const waiting = loading && (!leftData || !rightData);
+
+  return (
+    <div style={{ marginTop: "24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
+          Usage Compare
+        </div>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          {/* Batter-hand (stand) toggle — usage is split by who's batting */}
+          <div style={{ display: "flex", gap: "2px", border: `1px solid ${C.border}`, borderRadius: "6px", overflow: "hidden" }}>
+            {["R", "L"].map((s) => (
+              <button key={s} onClick={() => setStand(s)} style={{
+                background: stand === s ? C.accentGlow : "transparent",
+                border: "none", padding: "4px 12px", cursor: "pointer", fontFamily: "inherit",
+                color: stand === s ? C.accent : C.textDim, fontSize: "11px", fontWeight: 700,
+              }}>vs {s}HB</button>
+            ))}
+          </div>
+          <button onClick={() => onClear(null)} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>✕ Close</button>
+        </div>
+      </div>
+
+      <div style={{ fontSize: "11px", color: C.textDim, marginBottom: "12px" }}>
+        Each cell is the share of pitches of that type within the count situation. On the
+        right (newer) table, green = thrown ≥5% more than the left period, red = ≥5% less.
+      </div>
+
+      {err && (
+        <div style={{ padding: "12px 16px", borderRadius: "8px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>
+          Couldn't load 2026 usage data: {err}
+        </div>
+      )}
+
+      {waiting ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>Loading usage data…</div>
+      ) : (!leftUsage && !rightUsage) ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+          No usage data found for {config.pitcherName} (vs {stand}HB). Usage data covers qualified pitchers only.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
+          <_UsageTable usage={leftUsage} baseline={null} title={config.leftLabel} pitchOrder={repertoire} showDiff={false} isLater={false} C={C} />
+          <_UsageTable usage={rightUsage} baseline={leftUsage} title={config.rightLabel} pitchOrder={repertoire} showDiff={true} isLater={true} C={C} />
+        </div>
+      )}
+    </div>
+  );
+});
+
 // ─── Plot Compare section (Compare tool) ───
 // Renders two MOVEMENT plots side by side from a frozen snapshot (older left, newer right).
 // Wrapped in memo so it renders exactly once per snapshot: without this, every hover on the
@@ -2376,20 +2630,34 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
 const STAT_GOOD_DIR = {
   // Stuff/movement: higher generally better for the pitcher. RelH is neutral (not colored).
   avgVelo: 1, avgIVB: 1, avgHB: 1, avgExt: 1,
-  strikeRate: 1, zoneRate: 0, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
-  chaseRate: 1, zoneWhiffRate: 1, gbRate: 0, fbRate: 0, barrelRate: -1,
+  strikeRate: 1, zoneRate: 1, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
+  chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1,
   xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
 };
-// zoneRate/gbRate/fbRate have dir 0 → context stats, shown but not colored good/bad.
+// Directions reflect conventional pitcher value: more zone/called-strikes/grounders = good
+// (green when above the matched league avg); more fly balls = worse (HR risk). All colored
+// against the pitcher-hand × batter-hand × count-specific baseline.
 // Count-filter key (UI value) → baseline key segment
 const COUNT_KEY_MAP = { all: "all", pre2k: "pre2k", two_strikes: "two_strikes", ahead: "ahead", behind: "behind", leverage: "leverage" };
 
-// Look up the league baseline [mean, std, n] for a given pitch name / hand / count / stat.
-// Falls back hand "all" then count "all" when a specific bucket is missing/thin.
-const getBaseline = (pitchName, hand, countFilter, statKey) => {
+// Look up the league baseline [mean, std, n] for a pitch / pitcher-hand / batter-hand /
+// count / stat. Key schema: "{pitch}|{pitcherHand}|{batterHand}|{count}".
+// pitcherHand is essential (HB and other stats differ by throwing hand), so the fallback
+// chain relaxes batter-hand then count, but keeps pitcher-hand fixed. If pitcher-hand is
+// unknown, no baseline is returned (better no color than a wrong-hand comparison).
+const getBaseline = (pitchName, pitcherHand, hand, countFilter, statKey) => {
+  const ph = (pitcherHand === "L" || pitcherHand === "R") ? pitcherHand : null;
+  if (!ph) return null;
   const cnt = COUNT_KEY_MAP[countFilter] || "all";
   const h = (hand === "L" || hand === "R") ? hand : "all";
-  const tries = [`${pitchName}|${h}|${cnt}`, `${pitchName}|all|${cnt}`, `${pitchName}|${h}|all`, `${pitchName}|all|all`];
+  // The "All" summary row uses the pitch-type-agnostic ALL baseline.
+  const pn = (pitchName === "All") ? "ALL" : pitchName;
+  const tries = [
+    `${pn}|${ph}|${h}|${cnt}`,
+    `${pn}|${ph}|all|${cnt}`,
+    `${pn}|${ph}|${h}|all`,
+    `${pn}|${ph}|all|all`,
+  ];
   for (const k of tries) {
     const b = PITCH_BASELINES[k];
     if (b && b[statKey]) return b[statKey];
@@ -2406,10 +2674,10 @@ const _normCdf = (z) => {
 };
 
 // Returns { bg, avg, pct, z } for a cell, or null if not colorable.
-const getCellColor = (statKey, rawValue, pitchName, hand, countFilter) => {
+const getCellColor = (statKey, rawValue, pitchName, pitcherHand, hand, countFilter) => {
   const dir = STAT_GOOD_DIR[statKey];
   if (!dir) return null; // not a colored stat
-  const base = getBaseline(pitchName, hand, countFilter, statKey);
+  const base = getBaseline(pitchName, pitcherHand, hand, countFilter, statKey);
   if (!base) return null;
   const [mean, std] = base;
   const v = typeof rawValue === "string" ? parseFloat(rawValue) : rawValue;
@@ -2425,13 +2693,28 @@ const getCellColor = (statKey, rawValue, pitchName, hand, countFilter) => {
   return { bg: Math.abs(goodness) < 0.4 ? "transparent" : bg, avg: mean, pct, z: goodness };
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true, countFilter: countFilterProp, onCountFilterChange }) => {
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitcherHand: pitcherHandProp, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true, countFilter: countFilterProp, onCountFilterChange }) => {
   // Count situation filter (default: all counts).
   // Controlled by ComparePage when props are supplied (keeps top + bottom tables in
   // sync); otherwise falls back to internal state for standalone use.
   const [countFilterLocal, setCountFilterLocal] = useState("all");
   const countFilter = countFilterProp !== undefined ? countFilterProp : countFilterLocal;
   const setCountFilter = onCountFilterChange || setCountFilterLocal;
+
+  // Resolve pitcher throwing hand for baseline lookup. Prefer the explicit prop; if it's
+  // missing/blank, derive it from release side: mean release_pos_x < 0 → RHP, > 0 → LHP
+  // (the ball is released on the throwing-arm side of the rubber).
+  const pitcherHand = useMemo(() => {
+    if (pitcherHandProp === "L" || pitcherHandProp === "R") return pitcherHandProp;
+    if (!rawPitches || rawPitches.length === 0) return null;
+    let sum = 0, k = 0;
+    for (const p of rawPitches) {
+      const x = p.release_pos_x;
+      if (x != null && !isNaN(x)) { sum += x; k++; }
+    }
+    if (k === 0) return null;
+    return (sum / k) < 0 ? "R" : "L";
+  }, [pitcherHandProp, rawPitches]);
 
   // Apply count filter BEFORE everything else - downstream metrics see the filtered set.
   // Definitions:
@@ -2649,11 +2932,12 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                 }}
               >
                 {COMPARE_COLS.map(c => {
-                  // Color coding: per-pitch-type rows only (not the All row), for stats
-                  // with a defined good-direction. Compares vs frozen league baseline at
-                  // the current hand + count context.
-                  const cc = (!row.isAllRow && c.key !== "name")
-                    ? getCellColor(c.key, row[c.key], row.name, hand, countFilter)
+                  // Color coding: applies to per-pitch-type rows AND the All summary row.
+                  // Per-pitch rows compare vs that pitch type's league baseline; the All
+                  // row compares vs the pitch-type-agnostic ALL baseline (handled inside
+                  // getBaseline). Only stats with a defined good-direction are colored.
+                  const cc = (c.key !== "name")
+                    ? getCellColor(c.key, row[c.key], row.name, pitcherHand, hand, countFilter)
                     : null;
                   const tip = cc
                     ? `League avg ${typeof cc.avg === "number" ? cc.avg.toFixed(c.key.startsWith("avg") || c.key.includes("OBA") || c.key.includes("SLG") ? 3 : 1) : cc.avg} · ${cc.pct}th pctile`
@@ -2732,6 +3016,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   // {pitches, label, metrics}. Set only when the button is clicked, so changing
   // dates above does NOT live-update the plots — re-click the button to refresh.
   const [plotCompare, setPlotCompare] = useState(null);
+  // Snapshot for the inline "Usage Compare" section. Holds a frozen {pitcherName,
+  // leftLabel, rightLabel, leftYear, rightYear} config. Set only on button click.
+  const [usageCompare, setUsageCompare] = useState(null);
   const [topStart, setTopStart] = useState("2026-03-25");
   const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
   const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
@@ -2778,6 +3065,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setCmpData(null);
     setErrMsg("");
     setPlotCompare(null);
+    setUsageCompare(null);
     setTopUseRange(false);
     setTopStart("2026-03-25");
     setTopEnd(new Date().toISOString().slice(0, 10));
@@ -2991,6 +3279,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hand={topHand}
               onHandChange={setTopHand}
               pitcherId={pitcher.id}
+              pitcherHand={pitcher.throws}
               onComputed={setTopPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
@@ -3053,6 +3342,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hand={cmpHand}
               onHandChange={setCmpHand}
               pitcherId={pitcher.id}
+              pitcherHand={pitcher.throws}
               pitchOrder={topPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
@@ -3167,12 +3457,50 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               >
                 📍 Plot Compare
               </button>
+              <button
+                onClick={() => {
+                  // Freeze the current selection into a usage-compare config. Usage data
+                  // is keyed by SEASON (2025 full / 2026 full), so a 2026 custom date
+                  // range still maps to the 2026 aggregated season file. Labels reflect
+                  // the exact window the user picked; chronological order = older left.
+                  const topLabel = topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Season";
+                  const botLabel = cmpMode === "2025" ? "2025 Season" : `2026: ${cmpStart} → ${cmpEnd}`;
+                  const topCfg = { year: "2026", label: topLabel, sortKey: topUseRange ? topStart : "2026-03-25" };
+                  const botCfg = { year: cmpMode === "2025" ? "2025" : "2026", label: botLabel, sortKey: cmpMode === "2025" ? "2025-03-27" : cmpStart };
+                  const [L, R] = botCfg.sortKey <= topCfg.sortKey ? [botCfg, topCfg] : [topCfg, botCfg];
+                  setUsageCompare({
+                    pitcherName: pitcher.name,
+                    leftYear: L.year, leftLabel: L.label,
+                    rightYear: R.year, rightLabel: R.label,
+                  });
+                }}
+                style={{
+                  background: "transparent",
+                  color: C.accent,
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: "6px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.5px",
+                  marginLeft: "10px",
+                }}
+              >
+                📊 Usage Compare
+              </button>
             </div>
           )}
 
           {/* Plot Compare section - frozen snapshot, older left / newer right.
               Memoized so table hovers and other state churn don't re-render it. */}
           <PlotCompareSection snapshot={plotCompare} C={C} isMobile={isMobile} onClear={setPlotCompare} />
+
+          {/* Usage Compare section - inline pitch-usage breakdown by count situation,
+              replicating the standalone Usage Analyzer. 2026 usage fetched live; 2025
+              from bundled snapshot. */}
+          <UsageCompareSection config={usageCompare} C={C} isMobile={isMobile} onClear={setUsageCompare} />
         </>
       )}
     </div>
