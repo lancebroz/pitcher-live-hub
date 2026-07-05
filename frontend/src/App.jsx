@@ -1236,7 +1236,68 @@ const USAGE_ALL_COUNTS = [
   ["2", "0"], ["2", "1"], ["2", "2"], ["3", "0"], ["3", "1"], ["3", "2"],
 ];
 const USAGE_COLUMN_ORDER = ["All Counts", "Early Count", "Pitcher Ahead", "Pitcher Behind", "Pre Two Strikes"];
-const USAGE_AGG_2026_URL = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/pitch_usage_by_count.json";
+// 2026 aggregated usage JSON — ordered fallback chain. Each source serves the same file
+// with CORS enabled:
+//  1. GitHub raw (primary; fastest, verified).
+//  2. GitHub API raw-content endpoint (verified CORS; 60 req/hr per client IP, which the
+//     session cache makes irrelevant — one request per visit).
+//  3. jsDelivr mirror (last resort; may 403 on repo size, harmless to try).
+const USAGE_AGG_2026_SOURCES = [
+  { url: "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/pitch_usage_by_count.json", headers: {} },
+  { url: "https://api.github.com/repos/lancebroz/mlb-pitcher-data/contents/data/aggregated/pitch_usage_by_count.json", headers: { Accept: "application/vnd.github.raw" } },
+  { url: "https://cdn.jsdelivr.net/gh/lancebroz/mlb-pitcher-data@main/data/aggregated/pitch_usage_by_count.json", headers: {} },
+];
+
+// Module-level cache + in-flight promise so the 5.5MB usage file is fetched at most once
+// per page session and shared across every open/re-mount of the Usage Compare view.
+let _usageAggCache = null;      // resolved JSON, kept for the session
+let _usageAggPromise = null;    // in-flight fetch promise (dedupes concurrent opens)
+
+// Fetch one source with a hard timeout so a stalled connection rejects cleanly instead of
+// hanging forever (a hung request is what surfaces as "Failed to fetch" on re-open).
+// 45s covers the 5.5MB download on slow connections; fast connections finish in 1-3s.
+const _fetchWithTimeout = (source, ms) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  // NOTE: no cache-busting query param — the file has a short max-age and updates at most
+  // daily, so letting the browser/CDN cache it is what makes re-opens fast and reliable.
+  return fetch(source.url, { signal: ctrl.signal, cache: "default", headers: source.headers || {} })
+    .then((r) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .finally(() => clearTimeout(timer));
+};
+
+// Load the 2026 usage JSON with caching, per-source fallback, and one retry each.
+// Returns a promise resolving to the parsed JSON (or rejecting after all attempts fail).
+const loadUsageAgg2026 = () => {
+  if (_usageAggCache) return Promise.resolve(_usageAggCache);
+  if (_usageAggPromise) return _usageAggPromise;
+
+  const attempt = async () => {
+    let lastErr = null;
+    // Try each source; give each two tries with a short backoff before moving on.
+    for (const source of USAGE_AGG_2026_SOURCES) {
+      for (let tryNum = 0; tryNum < 2; tryNum++) {
+        try {
+          const json = await _fetchWithTimeout(source, 45000);
+          // Guard against a non-usage payload (e.g. an API error JSON slipping through).
+          if (!json || typeof json !== "object" || !json.data) throw new Error("Unexpected payload");
+          _usageAggCache = json;
+          return json;
+        } catch (e) {
+          lastErr = e;
+          if (tryNum === 0) await new Promise((res) => setTimeout(res, 600));
+        }
+      }
+    }
+    throw lastErr || new Error("Failed to load usage data");
+  };
+
+  _usageAggPromise = attempt().finally(() => { _usageAggPromise = null; });
+  return _usageAggPromise;
+};
 
 // Normalize "Last, First" <-> "First Last" for cross-dataset name matching.
 const _usageNormalizeName = (name) => {
@@ -1385,7 +1446,8 @@ const _UsageTable = ({ usage, baseline, title, pitchOrder, showDiff, isLater, C 
 // monthly/games breakdown when a date range is given; otherwise full-season 2026.
 const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
   const [stand, setStand] = useState("R");          // batter handedness (usage splits by stand)
-  const [agg2026, setAgg2026] = useState(null);      // live aggregated 2026 usage JSON
+  // Seed from the session cache so re-opening the view is instant and never re-fetches.
+  const [agg2026, setAgg2026] = useState(_usageAggCache);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
@@ -1394,15 +1456,31 @@ const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
     // Only need the live 2026 file if either side is 2026.
     const needs2026 = config.leftYear === "2026" || config.rightYear === "2026";
     if (!needs2026) return;
+    // Already have it cached — nothing to do.
+    if (_usageAggCache) { setAgg2026(_usageAggCache); setErr(""); return; }
+
     let alive = true;
     setLoading(true); setErr("");
-    fetch(USAGE_AGG_2026_URL + "?t=" + Date.now())
-      .then((r) => r.json())
-      .then((j) => { if (alive) setAgg2026(j); })
-      .catch((e) => { if (alive) setErr(e.message || "Failed to load 2026 usage"); })
+    loadUsageAgg2026()
+      .then((j) => { if (alive) { setAgg2026(j); setErr(""); } })
+      .catch((e) => {
+        if (alive) setErr(e && e.message === "The user aborted a request."
+          ? "The 2026 usage data timed out. Check your connection and try reopening."
+          : "Couldn't reach the 2026 usage data. It may be a temporary network issue — try reopening.");
+      })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [config]);
+
+  // Manual retry: clear the cached failure path and re-request.
+  const retry = () => {
+    _usageAggPromise = null;
+    setErr(""); setLoading(true);
+    loadUsageAgg2026()
+      .then((j) => { setAgg2026(j); setErr(""); })
+      .catch(() => setErr("Still couldn't load the 2026 usage data. Please try again in a moment."))
+      .finally(() => setLoading(false));
+  };
 
   if (!config) return null;
 
@@ -1450,8 +1528,13 @@ const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
       </div>
 
       {err && (
-        <div style={{ padding: "12px 16px", borderRadius: "8px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>
-          Couldn't load 2026 usage data: {err}
+        <div style={{ padding: "12px 16px", borderRadius: "8px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444", fontSize: "12px", marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <span>{err}</span>
+          <button onClick={retry} disabled={loading} style={{
+            background: "transparent", border: "1px solid rgba(239,68,68,0.5)", borderRadius: "5px",
+            padding: "5px 12px", color: "#ef4444", fontSize: "11px", fontWeight: 700,
+            cursor: loading ? "default" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1,
+          }}>{loading ? "Retrying…" : "↻ Retry"}</button>
         </div>
       )}
 
@@ -2892,20 +2975,33 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
         </thead>
         <tbody>
           <tr style={{ borderBottom: `2px solid ${C.accent}`, background: C.accentGlow }}>
-            {COMPARE_COLS.map(c => (
-              <td key={c.key} style={{
+            {COMPARE_COLS.map(c => {
+              // Color the All (summary) row cells too — compares each stat vs the
+              // pitch-type-agnostic ALL baseline (pitcher-hand × batter-hand × count).
+              // Only stats with a good-direction AND an ALL baseline color; the rest
+              // (name, pitchPct, movement, BIP-estimator stats) stay on the accent wash.
+              const cc = (c.key !== "name" && c.key !== "pitchPct")
+                ? getCellColor(c.key, allRow[c.key], "All", pitcherHand, hand, countFilter)
+                : null;
+              const tip = cc
+                ? `League avg ${typeof cc.avg === "number" ? cc.avg.toFixed(c.key.startsWith("avg") || c.key.includes("OBA") || c.key.includes("SLG") ? 3 : 1) : cc.avg} · ${cc.pct}th pctile`
+                : undefined;
+              return (
+              <td key={c.key} title={tip} style={{
                 padding: "12px 6px",
                 textAlign: c.align || "right",
                 color: c.key === "name" ? C.accent : C.text,
                 fontWeight: 700,
                 fontVariantNumeric: "tabular-nums",
                 whiteSpace: "nowrap",
+                background: cc ? cc.bg : "transparent",
               }}>
                 {c.key === "name" ? "All"
                   : c.key === "pitchPct" ? "100%"
                   : (allRow[c.key] != null ? allRow[c.key] : "—")}
               </td>
-            ))}
+              );
+            })}
           </tr>
           {orderedPitchTypes.map((row, i) => {
             const code = PITCH_ABBREV[row.name] || row.name;
