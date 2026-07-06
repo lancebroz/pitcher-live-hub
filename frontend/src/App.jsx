@@ -1318,6 +1318,38 @@ const _usageFindPitcher = (data, pitcherName) => {
   }
   return null;
 };
+// Build a date-filtered usage dataset for one pitcher by summing the per-game usage
+// matrices from the aggregated JSON's `games` log over [start, end] (inclusive, ISO
+// dates compare lexicographically). Returns { [matchedName]: {stand: {pitch: {count: n}}} }
+// so it plugs into the same lookup path as the season datasets, or null when the pitcher
+// has no games in the window (renders as "No usage data for this period").
+const _usageRangeData = (agg, pitcherName, start, end) => {
+  if (!agg || !agg.games || !pitcherName) return null;
+  const matched = _usageFindPitcher(agg.games, pitcherName);
+  if (!matched) return null;
+  const list = agg.games[matched] && agg.games[matched].games;
+  if (!Array.isArray(list)) return null;
+  const total = {};
+  let found = false;
+  for (const gm of list) {
+    if (!gm || !gm.date || !gm.usage) continue;
+    if (gm.date < start || gm.date > end) continue;
+    found = true;
+    for (const st of Object.keys(gm.usage)) {
+      const byPitch = gm.usage[st] || {};
+      const tStand = total[st] || (total[st] = {});
+      for (const pt of Object.keys(byPitch)) {
+        const byCount = byPitch[pt] || {};
+        const tPitch = tStand[pt] || (tStand[pt] = {});
+        for (const cnt of Object.keys(byCount)) {
+          tPitch[cnt] = (tPitch[cnt] || 0) + (byCount[cnt] || 0);
+        }
+      }
+    }
+  }
+  if (!found) return null;
+  return { [matched]: total };
+};
 // Compute usage % per pitch type per count-category for one pitcher/stand.
 // Mirrors the Usage Analyzer's calculateUsageForData. fullPitchList (optional) forces
 // both tables to show the same set of pitch rows (union of repertoires).
@@ -1482,12 +1514,30 @@ const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
       .finally(() => setLoading(false));
   };
 
-  if (!config) return null;
-
   // Resolve each side's usage dataset (keyed pitcher -> stand -> pitchCode -> count -> n).
-  const dataForYear = (year) => (year === "2025" ? USAGE_2025 : (agg2026 ? agg2026.data : null));
-  const leftData = dataForYear(config.leftYear);
-  const rightData = dataForYear(config.rightYear);
+  // 2025 → bundled full-season snapshot. 2026 full season → aggregated `data`. 2026 with a
+  // custom date range → sum the per-game matrices from the `games` log over that window,
+  // so each side reflects the exact period selected above (fixes both sides showing
+  // identical full-season data when comparing two 2026 windows).
+  // Memoized; hooks must run before the early return below.
+  const leftData = useMemo(() => {
+    if (!config) return null;
+    if (config.leftYear === "2025") return USAGE_2025;
+    if (!agg2026) return null;
+    return (config.leftStart && config.leftEnd)
+      ? _usageRangeData(agg2026, config.pitcherName, config.leftStart, config.leftEnd)
+      : agg2026.data;
+  }, [config, agg2026]);
+  const rightData = useMemo(() => {
+    if (!config) return null;
+    if (config.rightYear === "2025") return USAGE_2025;
+    if (!agg2026) return null;
+    return (config.rightStart && config.rightEnd)
+      ? _usageRangeData(agg2026, config.pitcherName, config.rightStart, config.rightEnd)
+      : agg2026.data;
+  }, [config, agg2026]);
+
+  if (!config) return null;
 
   const repertoire = (leftData || rightData)
     ? _usageRepertoire(rightData, leftData, config.pitcherName, stand)
@@ -3555,19 +3605,23 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               </button>
               <button
                 onClick={() => {
-                  // Freeze the current selection into a usage-compare config. Usage data
-                  // is keyed by SEASON (2025 full / 2026 full), so a 2026 custom date
-                  // range still maps to the 2026 aggregated season file. Labels reflect
-                  // the exact window the user picked; chronological order = older left.
+                  // Freeze the current selection into a usage-compare config, including
+                  // each side's date window. Full-season sides (2025, or 2026 without a
+                  // custom range) carry null dates and use the season dataset; 2026 sides
+                  // with a range are filtered from the per-game usage log at view time.
+                  // Chronological order = older left.
                   const topLabel = topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Season";
                   const botLabel = cmpMode === "2025" ? "2025 Season" : `2026: ${cmpStart} → ${cmpEnd}`;
-                  const topCfg = { year: "2026", label: topLabel, sortKey: topUseRange ? topStart : "2026-03-25" };
-                  const botCfg = { year: cmpMode === "2025" ? "2025" : "2026", label: botLabel, sortKey: cmpMode === "2025" ? "2025-03-27" : cmpStart };
+                  const topCfg = { year: "2026", label: topLabel, sortKey: topUseRange ? topStart : "2026-03-25",
+                                   start: topUseRange ? topStart : null, end: topUseRange ? topEnd : null };
+                  const botCfg = { year: cmpMode === "2025" ? "2025" : "2026", label: botLabel,
+                                   sortKey: cmpMode === "2025" ? "2025-03-27" : cmpStart,
+                                   start: cmpMode === "2025" ? null : cmpStart, end: cmpMode === "2025" ? null : cmpEnd };
                   const [L, R] = botCfg.sortKey <= topCfg.sortKey ? [botCfg, topCfg] : [topCfg, botCfg];
                   setUsageCompare({
                     pitcherName: pitcher.name,
-                    leftYear: L.year, leftLabel: L.label,
-                    rightYear: R.year, rightLabel: R.label,
+                    leftYear: L.year, leftLabel: L.label, leftStart: L.start, leftEnd: L.end,
+                    rightYear: R.year, rightLabel: R.label, rightStart: R.start, rightEnd: R.end,
                   });
                 }}
                 style={{
