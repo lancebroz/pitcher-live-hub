@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo, Component } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
 import { PITCH_BASELINES } from "./pitchBaselines.js";
@@ -8,6 +8,56 @@ const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell, ReferenceArea
 } = recharts;
+
+// ─── Error boundary ───
+// Catches render/effect exceptions inside the wrapped view and shows a recoverable
+// card instead of unmounting the whole app (which looks like a white/broken page and
+// forces a full reload). "Reset view" remounts the children cleanly; switching tabs
+// (resetKey change) also auto-clears the error.
+class ViewErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, resetCount: 0 };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("View crashed:", error, info?.componentStack);
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    const C = this.props.C || {};
+    if (this.state.error) {
+      const msg = String((this.state.error && this.state.error.message) || this.state.error || "Unknown error");
+      return (
+        <div style={{ padding: "48px 24px", textAlign: "center" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: C.text || "#e2e8f0", marginBottom: "8px" }}>
+            This view hit an unexpected error.
+          </div>
+          <div style={{ fontSize: "11px", color: C.textDim || "#94a3b8", marginBottom: "16px", fontFamily: "monospace", maxWidth: "640px", margin: "0 auto 16px", overflowWrap: "break-word" }}>
+            {msg}
+          </div>
+          <button
+            onClick={() => this.setState(s => ({ error: null, resetCount: s.resetCount + 1 }))}
+            style={{
+              background: C.accent || "#3b82f6", color: "#fff", border: "none", borderRadius: "6px",
+              padding: "10px 22px", fontSize: "12px", fontWeight: 700, cursor: "pointer",
+              fontFamily: "inherit", letterSpacing: "0.5px",
+            }}
+          >
+            ↻ Reset view
+          </button>
+        </div>
+      );
+    }
+    return <div key={this.state.resetCount}>{this.props.children}</div>;
+  }
+}
 
 // ─── Responsive hook ───
 const useIsMobile = (breakpoint = 768) => {
@@ -2773,6 +2823,23 @@ const STAT_GOOD_DIR = {
 // Count-filter key (UI value) → baseline key segment
 const COUNT_KEY_MAP = { all: "all", pre2k: "pre2k", two_strikes: "two_strikes", ahead: "ahead", behind: "behind", leverage: "leverage" };
 
+// Count-situation predicate shared by the Compare tool and the Heatmaps tool.
+// Definitions MUST stay in sync with the frozen baselines and the Compare tables:
+//   pre2k = strikes < 2 · two_strikes = strikes = 2 · ahead = 0-1, 0-2, 1-2
+//   behind = 1-0, 2-0, 3-0, 2-1, 3-1 · leverage = 0-0, 1-1
+const pitchMatchesCount = (p, countFilter) => {
+  if (!countFilter || countFilter === "all") return true;
+  const b = Number(p.balls);
+  const s = Number(p.strikes);
+  if (Number.isNaN(b) || Number.isNaN(s)) return false;
+  if (countFilter === "pre2k") return s < 2;
+  if (countFilter === "two_strikes") return s === 2;
+  if (countFilter === "ahead") return (b === 0 && s === 1) || (b === 0 && s === 2) || (b === 1 && s === 2);
+  if (countFilter === "behind") return (b === 1 && s === 0) || (b === 2 && s === 0) || (b === 3 && s === 0) || (b === 2 && s === 1) || (b === 3 && s === 1);
+  if (countFilter === "leverage") return (b === 0 && s === 0) || (b === 1 && s === 1);
+  return true;
+};
+
 // Look up the league baseline [mean, std, n] for a pitch / pitcher-hand / batter-hand /
 // count / stat. Key schema: "{pitch}|{pitcherHand}|{batterHand}|{count}".
 // pitcherHand is essential (HB and other stats differ by throwing hand), so the fallback
@@ -2859,18 +2926,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   const countFilteredPitches = useMemo(() => {
     if (!rawPitches) return null;
     if (countFilter === "all") return rawPitches;
-    return rawPitches.filter(p => {
-      // Coerce balls/strikes — they may come through as strings or numbers
-      const b = Number(p.balls);
-      const s = Number(p.strikes);
-      if (Number.isNaN(b) || Number.isNaN(s)) return false;
-      if (countFilter === "pre2k") return s < 2;
-      if (countFilter === "two_strikes") return s === 2;
-      if (countFilter === "ahead") return (b === 0 && s === 1) || (b === 0 && s === 2) || (b === 1 && s === 2);
-      if (countFilter === "behind") return (b === 1 && s === 0) || (b === 2 && s === 0) || (b === 3 && s === 0) || (b === 2 && s === 1) || (b === 3 && s === 1);
-      if (countFilter === "leverage") return (b === 0 && s === 0) || (b === 1 && s === 1);
-      return true;
-    });
+    return rawPitches.filter(p => pitchMatchesCount(p, countFilter));
   }, [rawPitches, countFilter]);
 
   const metrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, hand || "all") : null, [countFilteredPitches, hand]);
@@ -3148,6 +3204,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpData, setCmpData] = useState(null);   // comparison raw pitches
   const [topLoading, setTopLoading] = useState(false);
   const [cmpLoading, setCmpLoading] = useState(false);
+  // Monotonic ticket for comparison loads — see loadComparison. Bumped on every load,
+  // mode switch, and pitcher change so stale async responses are discarded.
+  const cmpSeqRef = useRef(0);
   const [cmpMode, setCmpMode] = useState("2025"); // "2025" | "2026range"
   const [cmpStart, setCmpStart] = useState("2026-03-25");
   const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
@@ -3208,7 +3267,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     setSearchValue(p.name);
     setSearchOpen(false);
     setTopData(null);
+    cmpSeqRef.current++; // invalidate any in-flight comparison load for the old pitcher
     setCmpData(null);
+    setCmpLoading(false);
     setErrMsg("");
     setPlotCompare(null);
     setUsageCompare(null);
@@ -3280,10 +3341,15 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
 
   const loadComparison = async () => {
     if (!pitcher) return;
+    // Sequence guard: each load gets a ticket; mode switches / new pitchers / newer loads
+    // bump the counter so a slow in-flight response can't land on top of newer state
+    // (e.g. 2025 season pitches arriving after the user switched back to a 2026 range).
+    const seq = ++cmpSeqRef.current;
     setCmpLoading(true);
     setErrMsg("");
     // Hard timeout: if a fetch takes more than 60s, give up so the spinner doesn't hang forever.
     const timeoutId = setTimeout(() => {
+      if (seq !== cmpSeqRef.current) return;
       setCmpLoading(false);
       setErrMsg("Comparison fetch timed out after 60s. Try again or pick a smaller range.");
     }, 60000);
@@ -3293,6 +3359,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         // row of aggregated numbers, so 3000+ pitches don't overload anything —
         // and sampling distorts PA-derived stats like K%, BB%, IP, SIERA.
         const raw = await getStatcast(pitcher.id, "2025-03-27", "2025-09-28");
+        if (seq !== cmpSeqRef.current) return; // stale response — user changed mode/pitcher mid-flight
         if (raw && raw.length > 0) {
           setCmpData(normAndFilter(raw));
         } else {
@@ -3301,17 +3368,23 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         }
       } else {
         // 2026 custom range — filter the already-loaded top data
-        if (!topData) return;
+        if (!topData) {
+          setErrMsg("2026 season data is still loading — try again in a moment.");
+          return; // finally block clears the spinner + timer
+        }
         const filtered = topData.filter(p => p.game_date && p.game_date >= cmpStart && p.game_date <= cmpEnd);
         setCmpData(filtered);
       }
     } catch (e) {
       console.error("Comparison load failed", e);
-      setErrMsg("Comparison failed to load. Try again.");
-      setCmpData(null);
+      if (seq === cmpSeqRef.current) {
+        setErrMsg("Comparison failed to load. Try again.");
+        setCmpData(null);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (seq === cmpSeqRef.current) setCmpLoading(false);
     }
-    clearTimeout(timeoutId);
-    setCmpLoading(false);
   };
 
   const cmpLabel = cmpMode === "2025" ? "2025 Full Season" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
@@ -3447,7 +3520,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           <div style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "16px", flexWrap: "wrap" }}>
             <select
               value={cmpMode}
-              onChange={e => { setCmpMode(e.target.value); setCmpData(null); setErrMsg(""); }}
+              onChange={e => { cmpSeqRef.current++; setCmpMode(e.target.value); setCmpData(null); setErrMsg(""); setCmpLoading(false); }}
               style={{
                 padding: "8px 12px", fontSize: "12px",
                 background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
@@ -3665,6 +3738,9 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [pitcher, setPitcher] = useState(null);
   const [year, setYear] = useState("2026");
   const [hand, setHand] = useState("all");
+  // Count-situation filter — shared across single view AND both compare columns, so both
+  // time periods always reflect the same count context (mirrors the Compare tool).
+  const [countFilter, setCountFilter] = useState("all");
   const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
   const [hmStyle, setHmStyle] = useState("gaussian"); // "gaussian" | "gaussian_granular"
   const [pitchData, setPitchData] = useState(null);
@@ -3915,6 +3991,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     };
     const filtered = pitchData.filter(p => {
       if (hand !== "all" && p.batter_hand !== hand) return false;
+      if (!pitchMatchesCount(p, countFilter)) return false;
       if (year === "2026" && p.game_date) {
         if (p.game_date < startDate || p.game_date > endDate) return false;
       }
@@ -3941,7 +4018,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
         pitches,
       }))
       .sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
-  }, [pitchData, hand, year, startDate, endDate, hmMode, hmStyle]);
+  }, [pitchData, hand, countFilter, year, startDate, endDate, hmMode, hmStyle]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
 
@@ -3958,6 +4035,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     };
     const filtered = data.filter(p => {
       if (hand !== "all" && p.batter_hand !== hand) return false;
+      if (!pitchMatchesCount(p, countFilter)) return false;
       // Apply date filter only when column is in 2026range mode
       if (colMode === "2026range" && p.game_date) {
         if (p.game_date < colStart || p.game_date > colEnd) return false;
@@ -4007,7 +4085,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     });
     rows.sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
     return rows;
-  }, [compareMode, leftData, rightData, leftMode, rightMode, leftStart, leftEnd, rightStart, rightEnd, hand, hmMode]);
+  }, [compareMode, leftData, rightData, leftMode, rightMode, leftStart, leftEnd, rightStart, rightEnd, hand, countFilter, hmMode]);
 
   return (
     <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
@@ -4090,6 +4168,33 @@ const HeatmapsPage = ({ C, isMobile }) => {
               }}>{t.l}</button>
             ))}
           </div>
+
+          {/* Count-situation filter - shared, applies to BOTH compare columns (and single
+              view) so the two time periods always show the same count context. Same
+              options and definitions as the Compare tool's dropdown. */}
+          <select
+            value={countFilter}
+            onChange={(e) => setCountFilter(e.target.value)}
+            style={{
+              background: countFilter !== "all" ? C.accentGlow : "transparent",
+              border: `1px solid ${countFilter !== "all" ? C.accent : C.border}`,
+              borderRadius: "4px",
+              padding: "6px 10px",
+              color: countFilter !== "all" ? C.accent : C.textDim,
+              fontSize: "11px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              outline: "none",
+            }}
+          >
+            <option value="all">All Counts</option>
+            <option value="pre2k">Pre-Two-Strike</option>
+            <option value="two_strikes">Two Strikes</option>
+            <option value="ahead">Pitcher Ahead</option>
+            <option value="behind">Pitcher Behind</option>
+            <option value="leverage">Leverage (0-0, 1-1)</option>
+          </select>
 
           {/* Mode toggle - shared */}
           <div style={{ display: "flex", gap: "4px" }}>
@@ -5583,6 +5688,9 @@ export default function PitcherTracker() {
           </>
         )}
 
+        {/* Any render crash inside a page shows a recoverable "Reset view" card
+            instead of white-screening the whole app. Switching tabs auto-clears it. */}
+        <ViewErrorBoundary C={C} resetKey={page}>
         {page === "tracker" && !activePitcher && (
           <StartersGrid C={C} logos={teamLogos} onSelect={handleSelectFromGame} isMobile={isMobile} />
         )}
@@ -5598,6 +5706,7 @@ export default function PitcherTracker() {
         {page === "report" && (
           <ReportView C={C} isMobile={isMobile} logos={teamLogos} onBack={() => setPage("tracker")} />
         )}
+        </ViewErrorBoundary>
       </div>
 
       {/* Footer */}
