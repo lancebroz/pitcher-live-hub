@@ -1,11 +1,63 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo, Component } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
+import { PITCH_BASELINES } from "./pitchBaselines.js";
+import { USAGE_2025 } from "./usageData2025.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell, ReferenceArea
 } = recharts;
+
+// ─── Error boundary ───
+// Catches render/effect exceptions inside the wrapped view and shows a recoverable
+// card instead of unmounting the whole app (which looks like a white/broken page and
+// forces a full reload). "Reset view" remounts the children cleanly; switching tabs
+// (resetKey change) also auto-clears the error.
+class ViewErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, resetCount: 0 };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("View crashed:", error, info?.componentStack);
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    const C = this.props.C || {};
+    if (this.state.error) {
+      const msg = String((this.state.error && this.state.error.message) || this.state.error || "Unknown error");
+      return (
+        <div style={{ padding: "48px 24px", textAlign: "center" }}>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: C.text || "#e2e8f0", marginBottom: "8px" }}>
+            This view hit an unexpected error.
+          </div>
+          <div style={{ fontSize: "11px", color: C.textDim || "#94a3b8", marginBottom: "16px", fontFamily: "monospace", maxWidth: "640px", margin: "0 auto 16px", overflowWrap: "break-word" }}>
+            {msg}
+          </div>
+          <button
+            onClick={() => this.setState(s => ({ error: null, resetCount: s.resetCount + 1 }))}
+            style={{
+              background: C.accent || "#3b82f6", color: "#fff", border: "none", borderRadius: "6px",
+              padding: "10px 22px", fontSize: "12px", fontWeight: 700, cursor: "pointer",
+              fontFamily: "inherit", letterSpacing: "0.5px",
+            }}
+          >
+            ↻ Reset view
+          </button>
+        </div>
+      );
+    }
+    return <div key={this.state.resetCount}>{this.props.children}</div>;
+  }
+}
 
 // ─── Responsive hook ───
 const useIsMobile = (breakpoint = 768) => {
@@ -193,6 +245,28 @@ const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return 
 const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
 const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
 
+// ─── Location-adjusted VAA (aVAA) ───
+// Normalizes raw VAA for pitch height within a pitch type (Chamberlain / FanGraphs).
+// expected_VAA(z) = a + b*plate_z; aVAA = actual - expected.
+// Positive = flatter than expected for that height; negative = steeper than expected.
+// Baseline is a fixed league reference (must mirror VAA_BASELINE in the backend).
+const VAA_BASELINE = {
+  FF: [-8.5250, 1.4500], SI: [-9.4500, 1.5000], FC: [-9.9500, 1.5000],
+  CH: [-10.2750, 1.5500], FS: [-10.6750, 1.5500], FO: [-10.6750, 1.5500],
+  SL: [-10.8500, 1.6200], ST: [-10.6500, 1.6200], SV: [-11.3250, 1.6500],
+  CU: [-13.1500, 1.7000], KC: [-12.9500, 1.7000], CS: [-13.2500, 1.7000],
+  SC: [-9.8750, 1.5500], EP: [-13.2500, 1.7000], KN: [-9.7500, 1.5000],
+};
+const computeAVAA = (p) => {
+  if (p == null || p.vaa == null || p.plate_z == null) return null;
+  const code = (p.pitch_type || PITCH_ABBREV[p.pitch_name] || "").toUpperCase();
+  const c = VAA_BASELINE[code];
+  if (!c) return null;
+  return p.vaa - (c[0] + c[1] * p.plate_z);
+};
+// avg helper for aVAA values already extracted as an array of pitches
+const avgAVAA = (pts) => avg1(pts.map(p => computeAVAA(p)));
+
 const computeMetrics = (pitches, hf) => {
   if (!pitches?.length) return null;
   let f = hf === "all" ? pitches : pitches.filter(p => p.batter_hand === hf);
@@ -221,6 +295,7 @@ const computeMetrics = (pitches, hf) => {
       avgIVB: avg1(pts.map(p => p.pfx_z)), avgHB: avg1(pts.map(p => p.pfx_x)),
       avgRelH: avg1(pts.map(p => p.release_pos_z)), avgRelS: avg1(pts.map(p => p.release_pos_x)),
       avgExt: avg1(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
+      avgAVAA: avgAVAA(pts),
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
@@ -258,6 +333,7 @@ const computeMetrics = (pitches, hf) => {
     avgRelH: avg1(allPts.map(p => p.release_pos_z)), avgRelS: avg1(allPts.map(p => p.release_pos_x)),
     avgExt: avg1(allPts.map(p => p.release_extension)),
     avgVAA: avg1(allPts.map(p => p.vaa)),
+    avgAVAA: "—",
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
@@ -535,9 +611,28 @@ const SortIcon = ({ active, dir }) => (
 );
 
 // ─── Movement Plot ───
-const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
-  const [showAvg, setShowAvg] = useState(false);
-  const [mvHand, setMvHand] = useState("all");
+// Open MLB's pitch-level research/video page in a new tab.
+// Requires game_pk + the per-pitch play_id UUID from the MLB live feed.
+// 2025 Savant CSV data has no play IDs, so those pitches simply aren't clickable;
+// 2026 pitches gain IDs as the parquet backfill completes.
+const openPitchResearch = (p) => {
+  if (!p || !p.game_pk || !p.play_id) return;
+  const a = document.createElement("a");
+  a.href = `https://research.mlb.com/games/${p.game_pk}/plays/${p.play_id}`;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+const MovementPlot = ({ pitchTypeMetrics, C, view: currentView, defaultShowAvg = false, hand: handProp, onHandChange }) => {
+  const [showAvg, setShowAvg] = useState(defaultShowAvg);
+  // Hand filter can be CONTROLLED by a parent (Plot Compare syncs both plots to one
+  // shared hand state) or fall back to internal state (Tracker, standalone use).
+  const [mvHandLocal, setMvHandLocal] = useState("all");
+  const mvHand = handProp !== undefined ? handProp : mvHandLocal;
+  const setMvHand = onHandChange || setMvHandLocal;
   const grouped = {};
   let maxAbs = 0;
   pitchTypeMetrics.forEach(pt => {
@@ -549,6 +644,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
         velo: p.release_speed, inning: p.inning, count: p.count, batter: p.batter_name,
         description: p.description, events: p.events,
         game_date: p.game_date || "",
+        game_pk: p.game_pk, play_id: p.play_id || "",
       });
       if (Math.abs(p.pfx_x) > maxAbs) maxAbs = Math.abs(p.pfx_x);
       if (Math.abs(p.pfx_z) > maxAbs) maxAbs = Math.abs(p.pfx_z);
@@ -616,6 +712,7 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
                     {d.game_date && <div>{d.game_date}</div>}
                     <div>Inning {d.inning} · Count: {d.count}</div>
                     {d.description && <div>Result: {({ ball: "Ball", swinging_strike: "Swinging Strike", called_strike: "Called Strike", foul: "Foul", hit_into_play: d.events ? d.events.replace(/_/g, " ") : "In Play" }[d.description] || d.description)}</div>}
+                    {d.play_id && <div style={{ color: C.accent, marginTop: "2px" }}>Click dot → video</div>}
                   </div>
                 </div>
               );
@@ -623,8 +720,10 @@ const MovementPlot = ({ pitchTypeMetrics, C, view: currentView }) => {
             {Object.values(grouped).map(g => (
               <Scatter key={g.name} name={g.name} data={g.data} fill={g.color} r={3.3}
                 isAnimationActive={false}
+                onClick={(pt) => openPitchResearch(pt?.payload || pt)}
                 shape={(props) => (
-                  <circle cx={props.cx} cy={props.cy} r={3.3} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45} />
+                  <circle cx={props.cx} cy={props.cy} r={3.3} fill={g.color} fillOpacity={0.8} stroke="#000" strokeWidth={0.5} strokeOpacity={0.45}
+                    style={{ cursor: props.payload?.play_id ? "pointer" : "default" }} />
                 )}
               />
             ))}
@@ -1168,6 +1267,442 @@ const PitchLocationPlot = ({ pitchData, pitchTypeMetrics, C }) => {
     </div>
   );
 };
+
+// ─── Usage Compare section (Compare tool) ───
+// Replicates the standalone Usage Analyzer (usage.lancebroz.com) inline: two
+// side-by-side pitch-usage tables (older left, newer right) broken down by count
+// situation, with diff-coloring on the right table. 2026 usage is fetched live from
+// the aggregated GitHub JSON; 2025 usage comes from the bundled USAGE_2025 snapshot.
+
+// Count-situation buckets — match the Usage Analyzer's COUNT_CATEGORIES exactly.
+const USAGE_COUNT_CATEGORIES = {
+  "Early Count":     [["0", "0"], ["0", "1"], ["1", "0"]],
+  "Pitcher Ahead":   [["0", "1"], ["0", "2"], ["1", "2"], ["2", "2"]],
+  "Pitcher Behind":  [["1", "0"], ["2", "0"], ["3", "0"], ["2", "1"], ["3", "1"]],
+  "Pre Two Strikes": [["0", "0"], ["0", "1"], ["1", "0"], ["1", "1"], ["2", "1"], ["3", "1"]],
+};
+const USAGE_ALL_COUNTS = [
+  ["0", "0"], ["0", "1"], ["0", "2"], ["1", "0"], ["1", "1"], ["1", "2"],
+  ["2", "0"], ["2", "1"], ["2", "2"], ["3", "0"], ["3", "1"], ["3", "2"],
+];
+const USAGE_COLUMN_ORDER = ["All Counts", "Early Count", "Pitcher Ahead", "Pitcher Behind", "Pre Two Strikes"];
+// 2026 aggregated usage JSON — ordered fallback chain. Each source serves the same file
+// with CORS enabled:
+//  1. GitHub raw (primary; fastest, verified).
+//  2. GitHub API raw-content endpoint (verified CORS; 60 req/hr per client IP, which the
+//     session cache makes irrelevant — one request per visit).
+//  3. jsDelivr mirror (last resort; may 403 on repo size, harmless to try).
+const USAGE_AGG_2026_SOURCES = [
+  { url: "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/pitch_usage_by_count.json", headers: {} },
+  { url: "https://api.github.com/repos/lancebroz/mlb-pitcher-data/contents/data/aggregated/pitch_usage_by_count.json", headers: { Accept: "application/vnd.github.raw" } },
+  { url: "https://cdn.jsdelivr.net/gh/lancebroz/mlb-pitcher-data@main/data/aggregated/pitch_usage_by_count.json", headers: {} },
+];
+
+// Module-level cache + in-flight promise so the 5.5MB usage file is fetched at most once
+// per page session and shared across every open/re-mount of the Usage Compare view.
+let _usageAggCache = null;      // resolved JSON, kept for the session
+let _usageAggPromise = null;    // in-flight fetch promise (dedupes concurrent opens)
+
+// Fetch one source with a hard timeout so a stalled connection rejects cleanly instead of
+// hanging forever (a hung request is what surfaces as "Failed to fetch" on re-open).
+// 45s covers the 5.5MB download on slow connections; fast connections finish in 1-3s.
+const _fetchWithTimeout = (source, ms) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  // NOTE: no cache-busting query param — the file has a short max-age and updates at most
+  // daily, so letting the browser/CDN cache it is what makes re-opens fast and reliable.
+  return fetch(source.url, { signal: ctrl.signal, cache: "default", headers: source.headers || {} })
+    .then((r) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .finally(() => clearTimeout(timer));
+};
+
+// Load the 2026 usage JSON with caching, per-source fallback, and one retry each.
+// Returns a promise resolving to the parsed JSON (or rejecting after all attempts fail).
+const loadUsageAgg2026 = () => {
+  if (_usageAggCache) return Promise.resolve(_usageAggCache);
+  if (_usageAggPromise) return _usageAggPromise;
+
+  const attempt = async () => {
+    let lastErr = null;
+    // Try each source; give each two tries with a short backoff before moving on.
+    for (const source of USAGE_AGG_2026_SOURCES) {
+      for (let tryNum = 0; tryNum < 2; tryNum++) {
+        try {
+          const json = await _fetchWithTimeout(source, 45000);
+          // Guard against a non-usage payload (e.g. an API error JSON slipping through).
+          if (!json || typeof json !== "object" || !json.data) throw new Error("Unexpected payload");
+          _usageAggCache = json;
+          return json;
+        } catch (e) {
+          lastErr = e;
+          if (tryNum === 0) await new Promise((res) => setTimeout(res, 600));
+        }
+      }
+    }
+    throw lastErr || new Error("Failed to load usage data");
+  };
+
+  _usageAggPromise = attempt().finally(() => { _usageAggPromise = null; });
+  return _usageAggPromise;
+};
+
+// Normalize "Last, First" <-> "First Last" for cross-dataset name matching.
+const _usageNormalizeName = (name) => {
+  if (!name) return "";
+  if (name.includes(", ")) {
+    const parts = name.split(", ");
+    return (parts[1] + " " + parts[0]).toLowerCase().trim();
+  }
+  return name.toLowerCase().trim();
+};
+// Find a pitcher key inside a usage dataset, tolerant of name-format differences.
+const _usageFindPitcher = (data, pitcherName) => {
+  if (!data || !pitcherName) return null;
+  if (data[pitcherName]) return pitcherName;
+  const target = _usageNormalizeName(pitcherName);
+  for (const k of Object.keys(data)) {
+    if (_usageNormalizeName(k) === target) return k;
+  }
+  return null;
+};
+// Build a date-filtered usage dataset for one pitcher by summing the per-game usage
+// matrices from the aggregated JSON's `games` log over [start, end] (inclusive, ISO
+// dates compare lexicographically). Returns { [matchedName]: {stand: {pitch: {count: n}}} }
+// so it plugs into the same lookup path as the season datasets, or null when the pitcher
+// has no games in the window (renders as "No usage data for this period").
+const _usageRangeData = (agg, pitcherName, start, end) => {
+  if (!agg || !agg.games || !pitcherName) return null;
+  const matched = _usageFindPitcher(agg.games, pitcherName);
+  if (!matched) return null;
+  const list = agg.games[matched] && agg.games[matched].games;
+  if (!Array.isArray(list)) return null;
+  const total = {};
+  let found = false;
+  for (const gm of list) {
+    if (!gm || !gm.date || !gm.usage) continue;
+    if (gm.date < start || gm.date > end) continue;
+    found = true;
+    for (const st of Object.keys(gm.usage)) {
+      const byPitch = gm.usage[st] || {};
+      const tStand = total[st] || (total[st] = {});
+      for (const pt of Object.keys(byPitch)) {
+        const byCount = byPitch[pt] || {};
+        const tPitch = tStand[pt] || (tStand[pt] = {});
+        for (const cnt of Object.keys(byCount)) {
+          tPitch[cnt] = (tPitch[cnt] || 0) + (byCount[cnt] || 0);
+        }
+      }
+    }
+  }
+  if (!found) return null;
+  return { [matched]: total };
+};
+// Compute usage % per pitch type per count-category for one pitcher/stand.
+// Mirrors the Usage Analyzer's calculateUsageForData. fullPitchList (optional) forces
+// both tables to show the same set of pitch rows (union of repertoires).
+const _usageCalculate = (data, pitcherName, stand, fullPitchList) => {
+  if (!data || !pitcherName) return null;
+  const matched = _usageFindPitcher(data, pitcherName);
+  if (!matched) return null;
+  const pd = data[matched] && data[matched][stand];
+  if (!pd) return null;
+  const pitchTypes = (fullPitchList && fullPitchList.length > 0) ? fullPitchList : Object.keys(pd);
+  const result = {};
+
+  // All Counts
+  let allTotal = 0; const allByPitch = {};
+  pitchTypes.forEach((pt) => {
+    let sum = 0; const c = pd[pt] || {};
+    USAGE_ALL_COUNTS.forEach(([b, s]) => { sum += c[b + "-" + s] || 0; });
+    allByPitch[pt] = sum; allTotal += sum;
+  });
+  pitchTypes.forEach((pt) => {
+    result[pt] = { "All Counts": allTotal > 0 ? Math.round((allByPitch[pt] / allTotal) * 100) : 0 };
+  });
+  // Each count category
+  Object.entries(USAGE_COUNT_CATEGORIES).forEach(([cat, counts]) => {
+    let catTotal = 0; const byPitch = {};
+    pitchTypes.forEach((pt) => {
+      let sum = 0; const c = pd[pt] || {};
+      counts.forEach(([b, s]) => { sum += c[b + "-" + s] || 0; });
+      byPitch[pt] = sum; catTotal += sum;
+    });
+    pitchTypes.forEach((pt) => {
+      result[pt][cat] = catTotal > 0 ? Math.round((byPitch[pt] / catTotal) * 100) : 0;
+    });
+  });
+  return result;
+};
+// Union of pitch types across both datasets (so both tables share row order),
+// sorted by the newer period's overall usage.
+const _usageRepertoire = (laterData, earlierData, pitcherName, stand) => {
+  const rep = {};
+  [laterData, earlierData].forEach((data) => {
+    if (!data) return;
+    const m = _usageFindPitcher(data, pitcherName);
+    if (m && data[m] && data[m][stand]) Object.keys(data[m][stand]).forEach((pt) => { rep[pt] = true; });
+  });
+  const codes = Object.keys(rep);
+  // Sort by later period's All-Counts usage desc
+  const laterUsage = _usageCalculate(laterData, pitcherName, stand, codes);
+  return codes.sort((a, b) => ((laterUsage?.[b]?.["All Counts"] || 0) - (laterUsage?.[a]?.["All Counts"] || 0)));
+};
+
+// One usage table (themed). showDiff colors each cell vs the baseline (earlier) table.
+const _UsageTable = ({ usage, baseline, title, pitchOrder, showDiff, isLater, C }) => {
+  if (!usage) {
+    return (
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ background: C.surface, borderRadius: "12px", border: `1px solid ${C.border}`, overflow: "hidden" }}>
+          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: isLater ? "rgba(34,197,94,0.06)" : C.surfaceAlt || "rgba(59,130,246,0.04)" }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: isLater ? "#22c55e" : C.text }}>{title}</div>
+          </div>
+          <div style={{ padding: "32px 16px", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+            No usage data for this period
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const rows = pitchOrder.map((code) => [code, usage[code] || {}]);
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ background: C.surface, borderRadius: "12px", border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: isLater ? "rgba(34,197,94,0.06)" : "rgba(59,130,246,0.04)" }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: isLater ? "#22c55e" : C.text }}>{title}</div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: C.bg }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em" }}>Pitch</th>
+                {USAGE_COLUMN_ORDER.map((cat) => (
+                  <th key={cat} style={{ padding: "10px 6px", textAlign: "center", fontSize: "9px", fontWeight: 700, color: cat === "All Counts" ? C.text : C.textDim, textTransform: "uppercase", letterSpacing: "0.03em", background: cat === "All Counts" ? "rgba(59,130,246,0.08)" : "transparent" }}>
+                    {cat.replace("Pitcher ", "P. ")}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([code, cats], idx) => (
+                <tr key={code} style={{ borderBottom: `1px solid ${C.border}`, background: idx % 2 === 0 ? "transparent" : "rgba(127,127,127,0.04)" }}>
+                  <td style={{ padding: "9px 12px" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}>
+                      <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: getPitchColor(code), boxShadow: `0 0 6px ${getPitchColor(code)}60` }} />
+                      <span style={{ fontWeight: 600, fontSize: "12px", color: C.text }}>{code}</span>
+                    </span>
+                  </td>
+                  {USAGE_COLUMN_ORDER.map((cat) => {
+                    const pct = cats[cat] || 0;
+                    const isAll = cat === "All Counts";
+                    let bg = isAll ? "rgba(148,163,184,0.08)" : "transparent";
+                    let fg = C.text;
+                    if (showDiff && baseline) {
+                      const baseVal = (baseline[code] && baseline[code][cat]) || 0;
+                      const diff = pct - baseVal;
+                      if (diff >= 5) { bg = "rgba(34,197,94,0.22)"; fg = "#22c55e"; }
+                      else if (diff <= -5) { bg = "rgba(239,68,68,0.22)"; fg = "#ef4444"; }
+                    }
+                    return (
+                      <td key={cat} style={{ padding: "9px 5px", textAlign: "center", background: isAll ? "rgba(59,130,246,0.04)" : "transparent" }}>
+                        <span style={{ display: "inline-block", padding: "4px 9px", borderRadius: "6px", fontSize: "12px", fontWeight: 600, background: bg, color: fg, minWidth: "40px" }}>{pct}%</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Inline usage comparison. `config` holds the frozen selection:
+//   { pitcherName, leftLabel, rightLabel, leftYear, rightYear, left2026Window, right2026Window }
+// where *Year is "2025" | "2026". For 2026 windows we filter the live aggregated JSON's
+// monthly/games breakdown when a date range is given; otherwise full-season 2026.
+const UsageCompareSection = memo(({ config, C, isMobile, onClear }) => {
+  const [stand, setStand] = useState("R");          // batter handedness (usage splits by stand)
+  // Seed from the session cache so re-opening the view is instant and never re-fetches.
+  const [agg2026, setAgg2026] = useState(_usageAggCache);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!config) return;
+    // Only need the live 2026 file if either side is 2026.
+    const needs2026 = config.leftYear === "2026" || config.rightYear === "2026";
+    if (!needs2026) return;
+    // Already have it cached — nothing to do.
+    if (_usageAggCache) { setAgg2026(_usageAggCache); setErr(""); return; }
+
+    let alive = true;
+    setLoading(true); setErr("");
+    loadUsageAgg2026()
+      .then((j) => { if (alive) { setAgg2026(j); setErr(""); } })
+      .catch((e) => {
+        if (alive) setErr(e && e.message === "The user aborted a request."
+          ? "The 2026 usage data timed out. Check your connection and try reopening."
+          : "Couldn't reach the 2026 usage data. It may be a temporary network issue — try reopening.");
+      })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [config]);
+
+  // Manual retry: clear the cached failure path and re-request.
+  const retry = () => {
+    _usageAggPromise = null;
+    setErr(""); setLoading(true);
+    loadUsageAgg2026()
+      .then((j) => { setAgg2026(j); setErr(""); })
+      .catch(() => setErr("Still couldn't load the 2026 usage data. Please try again in a moment."))
+      .finally(() => setLoading(false));
+  };
+
+  // Resolve each side's usage dataset (keyed pitcher -> stand -> pitchCode -> count -> n).
+  // 2025 → bundled full-season snapshot. 2026 full season → aggregated `data`. 2026 with a
+  // custom date range → sum the per-game matrices from the `games` log over that window,
+  // so each side reflects the exact period selected above (fixes both sides showing
+  // identical full-season data when comparing two 2026 windows).
+  // Memoized; hooks must run before the early return below.
+  const leftData = useMemo(() => {
+    if (!config) return null;
+    if (config.leftYear === "2025") return USAGE_2025;
+    if (!agg2026) return null;
+    return (config.leftStart && config.leftEnd)
+      ? _usageRangeData(agg2026, config.pitcherName, config.leftStart, config.leftEnd)
+      : agg2026.data;
+  }, [config, agg2026]);
+  const rightData = useMemo(() => {
+    if (!config) return null;
+    if (config.rightYear === "2025") return USAGE_2025;
+    if (!agg2026) return null;
+    return (config.rightStart && config.rightEnd)
+      ? _usageRangeData(agg2026, config.pitcherName, config.rightStart, config.rightEnd)
+      : agg2026.data;
+  }, [config, agg2026]);
+
+  if (!config) return null;
+
+  const repertoire = (leftData || rightData)
+    ? _usageRepertoire(rightData, leftData, config.pitcherName, stand)
+    : [];
+  const leftUsage = _usageCalculate(leftData, config.pitcherName, stand, repertoire);
+  const rightUsage = _usageCalculate(rightData, config.pitcherName, stand, repertoire);
+
+  const waiting = loading && (!leftData || !rightData);
+
+  return (
+    <div style={{ marginTop: "24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
+          Usage Compare
+        </div>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          {/* Batter-hand (stand) toggle — usage is split by who's batting */}
+          <div style={{ display: "flex", gap: "2px", border: `1px solid ${C.border}`, borderRadius: "6px", overflow: "hidden" }}>
+            {["R", "L"].map((s) => (
+              <button key={s} onClick={() => setStand(s)} style={{
+                background: stand === s ? C.accentGlow : "transparent",
+                border: "none", padding: "4px 12px", cursor: "pointer", fontFamily: "inherit",
+                color: stand === s ? C.accent : C.textDim, fontSize: "11px", fontWeight: 700,
+              }}>vs {s}HB</button>
+            ))}
+          </div>
+          <button onClick={() => onClear(null)} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+            padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>✕ Close</button>
+        </div>
+      </div>
+
+      <div style={{ fontSize: "11px", color: C.textDim, marginBottom: "12px" }}>
+        Each cell is the share of pitches of that type within the count situation. On the
+        right (newer) table, green = thrown ≥5% more than the left period, red = ≥5% less.
+      </div>
+
+      {err && (
+        <div style={{ padding: "12px 16px", borderRadius: "8px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444", fontSize: "12px", marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <span>{err}</span>
+          <button onClick={retry} disabled={loading} style={{
+            background: "transparent", border: "1px solid rgba(239,68,68,0.5)", borderRadius: "5px",
+            padding: "5px 12px", color: "#ef4444", fontSize: "11px", fontWeight: 700,
+            cursor: loading ? "default" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1,
+          }}>{loading ? "Retrying…" : "↻ Retry"}</button>
+        </div>
+      )}
+
+      {waiting ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>Loading usage data…</div>
+      ) : (!leftUsage && !rightUsage) ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>
+          No usage data found for {config.pitcherName} (vs {stand}HB). Usage data covers qualified pitchers only.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
+          <_UsageTable usage={leftUsage} baseline={null} title={config.leftLabel} pitchOrder={repertoire} showDiff={false} isLater={false} C={C} />
+          <_UsageTable usage={rightUsage} baseline={leftUsage} title={config.rightLabel} pitchOrder={repertoire} showDiff={true} isLater={true} C={C} />
+        </div>
+      )}
+    </div>
+  );
+});
+
+// ─── Plot Compare section (Compare tool) ───
+// Renders two MOVEMENT plots side by side from a frozen snapshot (older left, newer right).
+// Wrapped in memo so it renders exactly once per snapshot: without this, every hover on the
+// Compare tables (hoveredCode state) re-rendered both plots' thousands of SVG dots and froze the page.
+const PlotCompareSection = memo(({ snapshot, C, isMobile, onClear }) => {
+  // ONE hand filter shared by both plots: clicking All/LHH/RHH on either plot
+  // switches both, keeping the comparison apples-to-apples.
+  // (Hook must run unconditionally, before the early return.)
+  const [sharedHand, setSharedHand] = useState("all");
+  if (!snapshot) return null;
+  return (
+    <div style={{ marginTop: "24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>
+          Movement Plot Compare
+        </div>
+        <button onClick={() => onClear(null)} style={{
+          background: "transparent", border: `1px solid ${C.border}`, borderRadius: "4px",
+          padding: "4px 10px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit",
+        }}>✕ Close</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: "20px" }}>
+        {[snapshot.left, snapshot.right].map((side, idx) => (
+          <div key={idx}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "8px", textAlign: "center" }}>
+              {side.label}
+              <span style={{ color: C.textDim, fontWeight: 600, marginLeft: "8px" }}>
+                {side.count} pitches
+              </span>
+            </div>
+            {side.metrics && side.metrics.pitchTypeMetrics && side.metrics.pitchTypeMetrics.length > 0 ? (
+              <MovementPlot
+                pitchTypeMetrics={side.metrics.pitchTypeMetrics}
+                C={C}
+                defaultShowAvg={true}
+                hand={sharedHand}
+                onHandChange={setSharedHand}
+              />
+            ) : (
+              <div style={{ padding: "40px 0", textAlign: "center", color: C.textDim, fontSize: "12px" }}>No data</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 // ─── Sortable Table ───
 const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, setHandFilter, allRow }) => {
   const [sortKey, setSortKey] = useState(null);
@@ -1430,6 +1965,12 @@ const normalizeLivePitch = (p) => {
     batter_hand: p.batter_hand || p.stand || "R",
     bb_type: p.bb_type || "",
     count: p.count || `${p.balls || 0}-${p.strikes || 0}`,
+    // Keep raw balls/strikes too — the Compare count filter needs them numerically.
+    // Fall back to parsing the count string ("1-2") when only that is present.
+    balls: (p.balls != null && p.balls !== "") ? Number(p.balls)
+           : (typeof p.count === "string" && p.count.includes("-") ? Number(p.count.split("-")[0]) : null),
+    strikes: (p.strikes != null && p.strikes !== "") ? Number(p.strikes)
+           : (typeof p.count === "string" && p.count.includes("-") ? Number(p.count.split("-")[1]) : null),
     batter_name: p.batter_name || "",
     inning: p.inning || 0,
     launch_speed: p.launch_speed,
@@ -1441,6 +1982,7 @@ const normalizeLivePitch = (p) => {
     delta_run_exp: p.delta_run_exp != null ? p.delta_run_exp : computePitchRunValue(p),
     game_date: p.game_date || "",
     game_pk: p.game_pk || 0,
+    play_id: p.play_id || "",  // MLB per-pitch UUID → research.mlb.com deep link
     at_bat_number: p.at_bat_number || null,
     events: p.events || "",
   };
@@ -1728,7 +2270,7 @@ const STUFF_COLS = [
   { key: "avgSpin", label: "Spin" },
   { key: "avgIVB", label: "IVB" }, { key: "avgHB", label: "HB" },
   { key: "avgRelH", label: "RelH" }, { key: "avgRelS", label: "RelS" },
-  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" },
+  { key: "avgExt", label: "Ext" }, { key: "avgVAA", label: "VAA" }, { key: "avgAVAA", label: "aVAA" },
 ];
 const PERF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
@@ -1855,6 +2397,7 @@ const COMPARE_COLS = [
   { key: "avgRelS", label: "RelS", w: 55 },
   { key: "avgExt", label: "Ext", w: 55 },
   { key: "avgVAA", label: "VAA", w: 55 },
+  { key: "avgAVAA", label: "aVAA", w: 55 },
   { key: "strikeRate", label: "Strike%", w: 65 },
   { key: "zoneRate", label: "Zone%", w: 60 },
   { key: "cswRate", label: "CSW%", w: 60 },
@@ -1870,6 +2413,105 @@ const COMPARE_COLS = [
   { key: "expRunValue", label: "RV", w: 50 },
   { key: "rv100", label: "RV/100", w: 60 },
 ];
+
+// ─── Pitch List Modal ───
+// Popup listing individual pitches in a labeled grid: Date | Batter | Count | Velo | ▶.
+// Rows that carry a play_id deep-link to MLB's research/video page for that exact
+// pitch (https://research.mlb.com/games/{game_pk}/plays/{play_id}). 2025 Savant data
+// and pre-backfill 2026 games have no play IDs → those rows render without the button.
+const PitchListModal = ({ popup, C, onClose }) => {
+  const [hoverIdx, setHoverIdx] = useState(-1);
+  if (!popup) return null;
+  const sorted = [...popup.pitches].sort((a, b) => (b.game_date || "").localeCompare(a.game_date || ""));
+  const anyLinks = sorted.some(p => p.play_id && p.game_pk);
+  const GRID = "92px 1fr 64px 72px 44px";
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "20px",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px",
+        width: "min(560px, 100%)", maxHeight: "72vh", display: "flex", flexDirection: "column", overflow: "hidden",
+        boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
+      }}>
+        {/* Title bar */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.accent }}>
+            {popup.title} <span style={{ color: C.textDim, fontWeight: 600, letterSpacing: "0.5px" }}>({sorted.length})</span>
+          </div>
+          <button onClick={onClose} style={{
+            background: "transparent", border: `1px solid ${C.border}`, borderRadius: "5px",
+            padding: "5px 12px", color: C.textDim, fontSize: "10px", fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>✕ Close</button>
+        </div>
+        {/* Column headers */}
+        <div style={{
+          display: "grid", gridTemplateColumns: GRID, gap: "12px", alignItems: "center",
+          padding: "10px 20px", borderBottom: `1px solid ${C.border}`,
+          fontSize: "9px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim,
+        }}>
+          <span>Date</span>
+          <span>Batter</span>
+          <span style={{ textAlign: "center" }}>Count</span>
+          <span style={{ textAlign: "right" }}>Velo</span>
+          <span style={{ textAlign: "center" }}>{anyLinks ? "Video" : ""}</span>
+        </div>
+        {/* Rows */}
+        <div style={{ overflowY: "auto" }}>
+          {sorted.map((p, i) => {
+            const clickable = !!(p.play_id && p.game_pk);
+            return (
+              <div
+                key={i}
+                onClick={() => clickable && openPitchResearch(p)}
+                onMouseEnter={() => setHoverIdx(i)}
+                onMouseLeave={() => setHoverIdx(-1)}
+                title={clickable ? "Open this pitch on MLB research" : undefined}
+                style={{
+                  display: "grid", gridTemplateColumns: GRID, gap: "12px", alignItems: "center",
+                  padding: "13px 20px", borderBottom: `1px solid ${C.border}`,
+                  cursor: clickable ? "pointer" : "default", fontSize: "13px",
+                  background: clickable && hoverIdx === i ? C.accentGlow : "transparent",
+                  transition: "background 0.1s ease",
+                }}
+              >
+                <span style={{ color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                  {p.game_date || "—"}
+                </span>
+                <span style={{ color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p.batter_name ? `vs ${p.batter_name}` : "—"}
+                </span>
+                <span style={{ color: C.text, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+                  {p.count || "—"}
+                </span>
+                <span style={{ color: C.text, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                  {p.release_speed != null ? `${Number(p.release_speed).toFixed(1)} mph` : "—"}
+                </span>
+                <span style={{ display: "flex", justifyContent: "center" }}>
+                  {clickable && (
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: "26px", height: "26px", borderRadius: "50%",
+                      background: C.accent, color: "#fff", fontSize: "10px",
+                      paddingLeft: "2px", // optical centering for the ▶ glyph
+                    }}>▶</span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        {!anyLinks && (
+          <div style={{ padding: "12px 20px", fontSize: "10px", color: C.textDim, borderTop: `1px solid ${C.border}` }}>
+            Video links unavailable — play IDs missing (2025 data, or 2026 games awaiting the parquet backfill).
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // Compute high-level pitcher stats (GS, IP, ERA, SIERA, K%, BB%, K-BB%) from raw pitches.
 // Filtered by batter handedness if hand !== "all".
@@ -2160,9 +2802,119 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   );
 };
 
-const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true }) => {
-  // Count situation filter (default: all counts)
-  const [countFilter, setCountFilter] = useState("all");
+// ─── Compare-tool cell color coding ───
+// Colors stat cells green (good) → neutral → red (bad) based on how far the pitcher's
+// per-pitch-type value sits from the frozen 2025-2026 league baseline (mean/std) for
+// the SAME pitch type, batter hand, and count situation. Subtle translucent fills.
+//
+// "Good direction" per stat: +1 means higher is better (for the pitcher); -1 means lower
+// is better. Velocity/movement are neutral context (not colored as good/bad here unless
+// listed). aVAA is excluded (sign meaning depends on pitch type).
+const STAT_GOOD_DIR = {
+  // Stuff/movement: higher generally better for the pitcher. RelH is neutral (not colored).
+  avgVelo: 1, avgIVB: 1, avgHB: 1, avgExt: 1,
+  strikeRate: 1, zoneRate: 1, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
+  chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1,
+  xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
+};
+// Directions reflect conventional pitcher value: more zone/called-strikes/grounders = good
+// (green when above the matched league avg); more fly balls = worse (HR risk). All colored
+// against the pitcher-hand × batter-hand × count-specific baseline.
+// Count-filter key (UI value) → baseline key segment
+const COUNT_KEY_MAP = { all: "all", pre2k: "pre2k", two_strikes: "two_strikes", ahead: "ahead", behind: "behind", leverage: "leverage" };
+
+// Count-situation predicate shared by the Compare tool and the Heatmaps tool.
+// Definitions MUST stay in sync with the frozen baselines and the Compare tables:
+//   pre2k = strikes < 2 · two_strikes = strikes = 2 · ahead = 0-1, 0-2, 1-2
+//   behind = 1-0, 2-0, 3-0, 2-1, 3-1 · leverage = 0-0, 1-1
+const pitchMatchesCount = (p, countFilter) => {
+  if (!countFilter || countFilter === "all") return true;
+  const b = Number(p.balls);
+  const s = Number(p.strikes);
+  if (Number.isNaN(b) || Number.isNaN(s)) return false;
+  if (countFilter === "pre2k") return s < 2;
+  if (countFilter === "two_strikes") return s === 2;
+  if (countFilter === "ahead") return (b === 0 && s === 1) || (b === 0 && s === 2) || (b === 1 && s === 2);
+  if (countFilter === "behind") return (b === 1 && s === 0) || (b === 2 && s === 0) || (b === 3 && s === 0) || (b === 2 && s === 1) || (b === 3 && s === 1);
+  if (countFilter === "leverage") return (b === 0 && s === 0) || (b === 1 && s === 1);
+  return true;
+};
+
+// Look up the league baseline [mean, std, n] for a pitch / pitcher-hand / batter-hand /
+// count / stat. Key schema: "{pitch}|{pitcherHand}|{batterHand}|{count}".
+// pitcherHand is essential (HB and other stats differ by throwing hand), so the fallback
+// chain relaxes batter-hand then count, but keeps pitcher-hand fixed. If pitcher-hand is
+// unknown, no baseline is returned (better no color than a wrong-hand comparison).
+const getBaseline = (pitchName, pitcherHand, hand, countFilter, statKey) => {
+  const ph = (pitcherHand === "L" || pitcherHand === "R") ? pitcherHand : null;
+  if (!ph) return null;
+  const cnt = COUNT_KEY_MAP[countFilter] || "all";
+  const h = (hand === "L" || hand === "R") ? hand : "all";
+  // The "All" summary row uses the pitch-type-agnostic ALL baseline.
+  const pn = (pitchName === "All") ? "ALL" : pitchName;
+  const tries = [
+    `${pn}|${ph}|${h}|${cnt}`,
+    `${pn}|${ph}|all|${cnt}`,
+    `${pn}|${ph}|${h}|all`,
+    `${pn}|${ph}|all|all`,
+  ];
+  for (const k of tries) {
+    const b = PITCH_BASELINES[k];
+    if (b && b[statKey]) return b[statKey];
+  }
+  return null;
+};
+
+// Normal CDF for percentile from z-score (Abramowitz-Stegun approximation).
+const _normCdf = (z) => {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+};
+
+// Returns { bg, avg, pct, z } for a cell, or null if not colorable.
+const getCellColor = (statKey, rawValue, pitchName, pitcherHand, hand, countFilter) => {
+  const dir = STAT_GOOD_DIR[statKey];
+  if (!dir) return null; // not a colored stat
+  const base = getBaseline(pitchName, pitcherHand, hand, countFilter, statKey);
+  if (!base) return null;
+  const [mean, std] = base;
+  const v = typeof rawValue === "string" ? parseFloat(rawValue) : rawValue;
+  if (v == null || isNaN(v) || !std || std === 0) return null;
+  const z = (v - mean) / std;
+  const goodness = dir * z; // positive = better than average for the pitcher
+  // Translucent fill: clamp to ±2σ, alpha grows with |goodness|. Neutral within ~0.4σ.
+  const mag = Math.max(0, Math.min(1, (Math.abs(goodness) - 0.4) / 1.6));
+  const alpha = (0.05 + 0.30 * mag).toFixed(3);
+  const bg = goodness >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+  // Percentile from the pitcher's perspective (higher = better regardless of direction)
+  const pct = Math.round(_normCdf(goodness) * 100);
+  return { bg: Math.abs(goodness) < 0.4 ? "transparent" : bg, avg: mean, pct, z: goodness };
+};
+
+const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandChange, pitcherId, pitcherHand: pitcherHandProp, pitchOrder, onComputed, hoveredCode, onHoverCode, season, isFullSeason = true, countFilter: countFilterProp, onCountFilterChange }) => {
+  // Count situation filter (default: all counts).
+  // Controlled by ComparePage when props are supplied (keeps top + bottom tables in
+  // sync); otherwise falls back to internal state for standalone use.
+  const [countFilterLocal, setCountFilterLocal] = useState("all");
+  const countFilter = countFilterProp !== undefined ? countFilterProp : countFilterLocal;
+  const setCountFilter = onCountFilterChange || setCountFilterLocal;
+
+  // Resolve pitcher throwing hand for baseline lookup. Prefer the explicit prop; if it's
+  // missing/blank, derive it from release side: mean release_pos_x < 0 → RHP, > 0 → LHP
+  // (the ball is released on the throwing-arm side of the rubber).
+  const pitcherHand = useMemo(() => {
+    if (pitcherHandProp === "L" || pitcherHandProp === "R") return pitcherHandProp;
+    if (!rawPitches || rawPitches.length === 0) return null;
+    let sum = 0, k = 0;
+    for (const p of rawPitches) {
+      const x = p.release_pos_x;
+      if (x != null && !isNaN(x)) { sum += x; k++; }
+    }
+    if (k === 0) return null;
+    return (sum / k) < 0 ? "R" : "L";
+  }, [pitcherHandProp, rawPitches]);
 
   // Apply count filter BEFORE everything else - downstream metrics see the filtered set.
   // Definitions:
@@ -2174,24 +2926,15 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   const countFilteredPitches = useMemo(() => {
     if (!rawPitches) return null;
     if (countFilter === "all") return rawPitches;
-    return rawPitches.filter(p => {
-      // Coerce balls/strikes — they may come through as strings or numbers
-      const b = Number(p.balls);
-      const s = Number(p.strikes);
-      if (Number.isNaN(b) || Number.isNaN(s)) return false;
-      if (countFilter === "pre2k") return s < 2;
-      if (countFilter === "two_strikes") return s === 2;
-      if (countFilter === "ahead") return (b === 0 && s === 1) || (b === 0 && s === 2) || (b === 1 && s === 2);
-      if (countFilter === "behind") return (b === 1 && s === 0) || (b === 2 && s === 0) || (b === 3 && s === 0) || (b === 2 && s === 1) || (b === 3 && s === 1);
-      if (countFilter === "leverage") return (b === 0 && s === 0) || (b === 1 && s === 1);
-      return true;
-    });
+    return rawPitches.filter(p => pitchMatchesCount(p, countFilter));
   }, [rawPitches, countFilter]);
 
   const metrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, hand || "all") : null, [countFilteredPitches, hand]);
   const [era, setEra] = useState(null);
   const [ipFromBox, setIpFromBox] = useState(null);
   const [boxStats, setBoxStats] = useState(null);
+  // Pitch-list popup ({title, pitches}) — opened by clicking the Whiff% cell.
+  const [pitchListPopup, setPitchListPopup] = useState(null);
 
   // Apply pitchOrder if provided: sort matching pitch types into the top table's order,
   // then append any additional pitch types not in the order at the bottom.
@@ -2218,28 +2961,39 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
   // Always publish the canonical order based on the FULL pitch usage (hand="all"),
   // not the currently filtered view, so toggling hand on the top table doesn't reshuffle the bottom.
   // Publish abbreviation codes (FF, SL, etc.) so different display name spellings still match.
-  const orderMetrics = useMemo(() => countFilteredPitches ? computeMetrics(countFilteredPitches, "all") : null, [countFilteredPitches]);
+  // PERF: when hand is "all" (the default on every load), `metrics` above IS the
+  // all-hands computation, so reuse it instead of running computeMetrics twice over
+  // the full season. Deps intentionally exclude hand/metrics: the order is frozen
+  // from whatever the data looked like when it arrived, which is the desired behavior.
+  const orderMetrics = useMemo(
+    () => {
+      if (!countFilteredPitches) return null;
+      return (hand || "all") === "all" ? metrics : computeMetrics(countFilteredPitches, "all");
+    },
+    [countFilteredPitches] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   useEffect(() => {
     if (onComputed && orderMetrics?.pitchTypeMetrics) {
       onComputed(orderMetrics.pitchTypeMetrics.map(r => PITCH_ABBREV[r.name] || r.name));
     }
   }, [orderMetrics]);
 
-  // Fetch real ERA + IP from boxscores whenever the underlying pitch set changes
-  // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats
-  // Skip when custom date range is active — ERA endpoint returns season totals only,
-  // which would override the correctly computed filtered stats.
-  // Skip when count filter is active — ERA endpoint can't filter by count situation.
+  // Fetch real ERA + IP from official sources whenever the underlying pitch set changes.
+  // Full season → MLB season stats API (exact official totals).
+  // Custom range → boxscore aggregation over ONLY the range's game_pks (scope="games"),
+  //                so range views get a true range ERA instead of season numbers.
+  // Only for 2026 data — 2025 Savant CSV has complete events for pitch-level stats.
+  // Skip when count filter is active — boxscores can't filter by count situation.
   useEffect(() => {
     setEra(null);
     setIpFromBox(null);
     setBoxStats(null);
-    if (!rawPitches || !pitcherId || season === "2025" || !isFullSeason) return;
+    if (!rawPitches || !pitcherId || season === "2025") return;
     if (countFilter !== "all") return;
     const gamePks = Array.from(new Set(rawPitches.map(p => p.game_pk).filter(g => g))).slice(0, 200);
     if (gamePks.length === 0) return;
     let alive = true;
-    getPitcherEra(pitcherId, gamePks).then(r => {
+    getPitcherEra(pitcherId, gamePks, isFullSeason ? "season" : "games").then(r => {
       if (!alive) return;
       setEra(r?.era ?? null);
       setIpFromBox(r?.innings ?? null);
@@ -2327,20 +3081,33 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
         </thead>
         <tbody>
           <tr style={{ borderBottom: `2px solid ${C.accent}`, background: C.accentGlow }}>
-            {COMPARE_COLS.map(c => (
-              <td key={c.key} style={{
+            {COMPARE_COLS.map(c => {
+              // Color the All (summary) row cells too — compares each stat vs the
+              // pitch-type-agnostic ALL baseline (pitcher-hand × batter-hand × count).
+              // Only stats with a good-direction AND an ALL baseline color; the rest
+              // (name, pitchPct, movement, BIP-estimator stats) stay on the accent wash.
+              const cc = (c.key !== "name" && c.key !== "pitchPct")
+                ? getCellColor(c.key, allRow[c.key], "All", pitcherHand, hand, countFilter)
+                : null;
+              const tip = cc
+                ? `League avg ${typeof cc.avg === "number" ? cc.avg.toFixed(c.key.startsWith("avg") || c.key.includes("OBA") || c.key.includes("SLG") ? 3 : 1) : cc.avg} · ${cc.pct}th pctile`
+                : undefined;
+              return (
+              <td key={c.key} title={tip} style={{
                 padding: "12px 6px",
                 textAlign: c.align || "right",
                 color: c.key === "name" ? C.accent : C.text,
                 fontWeight: 700,
                 fontVariantNumeric: "tabular-nums",
                 whiteSpace: "nowrap",
+                background: cc ? cc.bg : "transparent",
               }}>
                 {c.key === "name" ? "All"
                   : c.key === "pitchPct" ? "100%"
                   : (allRow[c.key] != null ? allRow[c.key] : "—")}
               </td>
-            ))}
+              );
+            })}
           </tr>
           {orderedPitchTypes.map((row, i) => {
             const code = PITCH_ABBREV[row.name] || row.name;
@@ -2366,14 +3133,26 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                   cursor: "default",
                 }}
               >
-                {COMPARE_COLS.map(c => (
-                <td key={c.key} style={{
-                  padding: "8px 6px",
-                  textAlign: c.align || "right",
-                  color: C.text,
-                  fontVariantNumeric: "tabular-nums",
-                  whiteSpace: "nowrap",
-                }}>
+                {COMPARE_COLS.map(c => {
+                  // Color coding: applies to per-pitch-type rows AND the All summary row.
+                  // Per-pitch rows compare vs that pitch type's league baseline; the All
+                  // row compares vs the pitch-type-agnostic ALL baseline (handled inside
+                  // getBaseline). Only stats with a defined good-direction are colored.
+                  const cc = (c.key !== "name")
+                    ? getCellColor(c.key, row[c.key], row.name, pitcherHand, hand, countFilter)
+                    : null;
+                  const tip = cc
+                    ? `League avg ${typeof cc.avg === "number" ? cc.avg.toFixed(c.key.startsWith("avg") || c.key.includes("OBA") || c.key.includes("SLG") ? 3 : 1) : cc.avg} · ${cc.pct}th pctile`
+                    : undefined;
+                  return (
+                  <td key={c.key} title={tip} style={{
+                    padding: "8px 6px",
+                    textAlign: c.align || "right",
+                    color: C.text,
+                    fontVariantNumeric: "tabular-nums",
+                    whiteSpace: "nowrap",
+                    background: cc ? cc.bg : "transparent",
+                  }}>
                   {c.key === "name"
                     ? <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                         <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: row.color }} />
@@ -2381,15 +3160,37 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                       </span>
                     : c.key === "pitchPct"
                     ? (allRow.count > 0 ? `${Math.round((row.count / allRow.count) * 100)}%` : "—")
-                    : (row[c.key] != null ? row[c.key] : "—")}
+                    : (() => {
+                        // Clickable cells: whiff / barrel / zone each open a pitch list
+                        // (date/batter/count/velo) with MLB research deep links where
+                        // play IDs exist. Any other column renders plainly.
+                        const CLICK_CELLS = {
+                          whiffRate: { label: "Whiffs", filter: p => p.is_whiff },
+                          barrelRate: { label: "Barrels", filter: p => p.is_barrel },
+                          zoneRate: { label: "In-Zone Pitches", filter: p => p.is_in_zone },
+                        };
+                        const cfg = CLICK_CELLS[c.key];
+                        const v = row[c.key] != null ? row[c.key] : "—";
+                        if (!cfg) return v;
+                        const subset = (row.rawPitches || []).filter(cfg.filter);
+                        if (subset.length === 0) return v;
+                        return (
+                          <span
+                            onClick={() => setPitchListPopup({ title: `${row.name} — ${cfg.label}`, pitches: subset })}
+                            title={`Click to list ${cfg.label.toLowerCase()}`}
+                            style={{ color: C.accent, cursor: "pointer", fontWeight: 600 }}
+                          >{v}</span>
+                        );
+                      })()}
                 </td>
-              ))}
+              );})}
               </tr>
             );
           })}
         </tbody>
       </table>
       )}
+      <PitchListModal popup={pitchListPopup} C={C} onClose={() => setPitchListPopup(null)} />
     </div>
   );
 };
@@ -2403,6 +3204,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpData, setCmpData] = useState(null);   // comparison raw pitches
   const [topLoading, setTopLoading] = useState(false);
   const [cmpLoading, setCmpLoading] = useState(false);
+  // Monotonic ticket for comparison loads — see loadComparison. Bumped on every load,
+  // mode switch, and pitcher change so stale async responses are discarded.
+  const cmpSeqRef = useRef(0);
   const [cmpMode, setCmpMode] = useState("2025"); // "2025" | "2026range"
   const [cmpStart, setCmpStart] = useState("2026-03-25");
   const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
@@ -2411,6 +3215,15 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpHand, setCmpHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
+  // Shared count-situation filter so the top table and bottom comparison stay in sync.
+  const [countFilter, setCountFilter] = useState("all");
+  // Snapshot for the "Plot Compare" section. Holds {left, right} each with
+  // {pitches, label, metrics}. Set only when the button is clicked, so changing
+  // dates above does NOT live-update the plots — re-click the button to refresh.
+  const [plotCompare, setPlotCompare] = useState(null);
+  // Snapshot for the inline "Usage Compare" section. Holds a frozen {pitcherName,
+  // leftLabel, rightLabel, leftYear, rightYear} config. Set only on button click.
+  const [usageCompare, setUsageCompare] = useState(null);
   const [topStart, setTopStart] = useState("2026-03-25");
   const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
   const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
@@ -2444,37 +3257,76 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
+  // Sequence token so a late background merge from a previous pitcher can't
+  // clobber the data after the user has already switched to a new pitcher.
+  const loadSeqRef = useRef(0);
+
   const loadPitcher = async (p) => {
+    const seq = ++loadSeqRef.current;
     setPitcher(p);
     setSearchValue(p.name);
     setSearchOpen(false);
     setTopData(null);
+    cmpSeqRef.current++; // invalidate any in-flight comparison load for the old pitcher
     setCmpData(null);
+    setCmpLoading(false);
     setErrMsg("");
+    setPlotCompare(null);
+    setUsageCompare(null);
     setTopUseRange(false);
     setTopStart("2026-03-25");
     setTopEnd(new Date().toISOString().slice(0, 10));
 
     setTopLoading(true);
     try {
-      // Try instant local cache first, fall back to Savant CSV
-      const [cachedRaw, liveRaw] = await Promise.all([
-        getCachedSeason(p.id).catch(() => []),
-        getSeasonData(p.id).catch(() => []),
-      ]);
-      let savantRaw = cachedRaw && cachedRaw.length > 0 ? cachedRaw :
-        await getStatcast(p.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []);
-      let merged;
-      if (savantRaw && savantRaw.length > 0) {
+      // PROGRESSIVE LOAD: kick off both fetches in parallel, but render as soon
+      // as cached-season returns (fast, ~hundreds of ms) instead of also waiting
+      // for the live /season endpoint, which hits MLB live feeds server-side and
+      // can take several seconds. Today's live data merges in quietly when ready.
+      const cachedPromise = getCachedSeason(p.id).catch(() => []);
+      const livePromise = getSeasonData(p.id).catch(() => []);
+
+      const cachedRaw = await cachedPromise;
+      if (seq !== loadSeqRef.current) return; // user switched pitchers mid-flight
+
+      if (cachedRaw && cachedRaw.length > 0) {
+        // PHASE 1: render immediately from the cache
+        setTopData(normAndFilter(cachedRaw));
+        setTopLoading(false);
+
+        // PHASE 2: merge today's live supplement in the background when it lands.
         // Build dedup set ONLY from games that have REAL pitch data in the cache
         // (i.e. valid pitch_type, not just game_pk stubs). Otherwise cached-season's
         // empty placeholder rows for in-progress games would block today's live data.
+        livePromise.then(liveRaw => {
+          if (seq !== loadSeqRef.current) return;
+          if (!liveRaw || liveRaw.length === 0) return;
+          const cachedRealGamePks = new Set(
+            cachedRaw
+              .filter(q => q.game_pk && q.pitch_type && q.pitch_type.toLowerCase() !== "nan")
+              .map(q => String(q.game_pk))
+          );
+          const liveSupplement = liveRaw.filter(q => q.game_pk && !cachedRealGamePks.has(String(q.game_pk)));
+          if (liveSupplement.length === 0) return; // nothing new today - skip the re-render
+          setTopData(normAndFilter([...cachedRaw, ...liveSupplement]));
+        });
+        return;
+      }
+
+      // FALLBACK (cache empty): Savant CSV + live merge, same as before
+      const [savantRaw, liveRaw] = await Promise.all([
+        getStatcast(p.id, "2026-03-25", new Date().toISOString().slice(0, 10)).catch(() => []),
+        livePromise,
+      ]);
+      if (seq !== loadSeqRef.current) return;
+      let merged;
+      if (savantRaw && savantRaw.length > 0) {
         const cachedRealGamePks = new Set(
           savantRaw
-            .filter(p => p.game_pk && p.pitch_type && p.pitch_type.toLowerCase() !== "nan")
-            .map(p => String(p.game_pk))
+            .filter(q => q.game_pk && q.pitch_type && q.pitch_type.toLowerCase() !== "nan")
+            .map(q => String(q.game_pk))
         );
-        const liveSupplement = (liveRaw || []).filter(p => p.game_pk && !cachedRealGamePks.has(String(p.game_pk)));
+        const liveSupplement = (liveRaw || []).filter(q => q.game_pk && !cachedRealGamePks.has(String(q.game_pk)));
         merged = [...savantRaw, ...liveSupplement];
       } else {
         merged = liveRaw || [];
@@ -2482,17 +3334,22 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
       setTopData(normAndFilter(merged));
     } catch (e) {
       console.error("Top load failed", e);
-      setErrMsg("Failed to load 2026 season data.");
+      if (seq === loadSeqRef.current) setErrMsg("Failed to load 2026 season data.");
     }
-    setTopLoading(false);
+    if (seq === loadSeqRef.current) setTopLoading(false);
   };
 
   const loadComparison = async () => {
     if (!pitcher) return;
+    // Sequence guard: each load gets a ticket; mode switches / new pitchers / newer loads
+    // bump the counter so a slow in-flight response can't land on top of newer state
+    // (e.g. 2025 season pitches arriving after the user switched back to a 2026 range).
+    const seq = ++cmpSeqRef.current;
     setCmpLoading(true);
     setErrMsg("");
     // Hard timeout: if a fetch takes more than 60s, give up so the spinner doesn't hang forever.
     const timeoutId = setTimeout(() => {
+      if (seq !== cmpSeqRef.current) return;
       setCmpLoading(false);
       setErrMsg("Comparison fetch timed out after 60s. Try again or pick a smaller range.");
     }, 60000);
@@ -2502,6 +3359,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         // row of aggregated numbers, so 3000+ pitches don't overload anything —
         // and sampling distorts PA-derived stats like K%, BB%, IP, SIERA.
         const raw = await getStatcast(pitcher.id, "2025-03-27", "2025-09-28");
+        if (seq !== cmpSeqRef.current) return; // stale response — user changed mode/pitcher mid-flight
         if (raw && raw.length > 0) {
           setCmpData(normAndFilter(raw));
         } else {
@@ -2510,21 +3368,24 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
         }
       } else {
         // 2026 custom range — filter the already-loaded top data
-        if (!topData) return;
+        if (!topData) {
+          setErrMsg("2026 season data is still loading — try again in a moment.");
+          return; // finally block clears the spinner + timer
+        }
         const filtered = topData.filter(p => p.game_date && p.game_date >= cmpStart && p.game_date <= cmpEnd);
         setCmpData(filtered);
       }
     } catch (e) {
       console.error("Comparison load failed", e);
-      setErrMsg("Comparison failed to load. Try again.");
-      setCmpData(null);
+      if (seq === cmpSeqRef.current) {
+        setErrMsg("Comparison failed to load. Try again.");
+        setCmpData(null);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (seq === cmpSeqRef.current) setCmpLoading(false);
     }
-    clearTimeout(timeoutId);
-    setCmpLoading(false);
   };
-
-  const topMetrics = useMemo(() => topData ? computeMetrics(topData, "all") : null, [topData]);
-  const cmpMetrics = useMemo(() => cmpData ? computeMetrics(cmpData, "all") : null, [cmpData]);
 
   const cmpLabel = cmpMode === "2025" ? "2025 Full Season" : `2026 Custom Range: ${cmpStart} → ${cmpEnd}`;
 
@@ -2637,11 +3498,14 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hand={topHand}
               onHandChange={setTopHand}
               pitcherId={pitcher.id}
+              pitcherHand={pitcher.throws}
               onComputed={setTopPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
               season="2026"
               isFullSeason={isFullSeason}
+              countFilter={countFilter}
+              onCountFilterChange={setCountFilter}
             />
           </>
         );
@@ -2656,7 +3520,7 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           <div style={{ display: "flex", gap: "12px", alignItems: "center", marginBottom: "16px", flexWrap: "wrap" }}>
             <select
               value={cmpMode}
-              onChange={e => { setCmpMode(e.target.value); setCmpData(null); setErrMsg(""); }}
+              onChange={e => { cmpSeqRef.current++; setCmpMode(e.target.value); setCmpData(null); setErrMsg(""); setCmpLoading(false); }}
               style={{
                 padding: "8px 12px", fontSize: "12px",
                 background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
@@ -2697,11 +3561,14 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               hand={cmpHand}
               onHandChange={setCmpHand}
               pitcherId={pitcher.id}
+              pitcherHand={pitcher.throws}
               pitchOrder={topPitchOrder}
               hoveredCode={hoveredCode}
               onHoverCode={setHoveredCode}
               season={cmpMode === "2025" ? "2025" : "2026"}
               isFullSeason={false}
+              countFilter={countFilter}
+              onCountFilterChange={setCountFilter}
             />
           )}
 
@@ -2712,37 +3579,44 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
             <div style={{ marginTop: "20px", textAlign: "center" }}>
               <button
                 onClick={() => {
-                  // Build URL params. Top section becomes left column, bottom becomes right column.
+                  // Build URL params. Columns are ordered CHRONOLOGICALLY:
+                  // older period on the LEFT, newer period on the RIGHT.
                   const params = new URLSearchParams();
                   params.set("pitcher_id", String(pitcher.id));
                   if (pitcher.name) params.set("pitcher_name", pitcher.name);
                   if (pitcher.throws) params.set("pitcher_hand", pitcher.throws);
 
-                  // Left column = top section in Compare
-                  // topUseRange=false means Full Season 2026, true means custom range
-                  if (topUseRange) {
-                    params.set("left_mode", "2026range");
-                    params.set("left_start", topStart);
-                    params.set("left_end", topEnd);
-                  } else {
-                    params.set("left_mode", "2026");
-                  }
+                  // Describe each section as a {mode, start, end} config
+                  const topCfg = topUseRange
+                    ? { mode: "2026range", start: topStart, end: topEnd, sortKey: topStart }
+                    : { mode: "2026", sortKey: "2026-03-25" };
+                  const bottomCfg = cmpMode === "2025"
+                    ? { mode: "2025", sortKey: "2025-03-27" }
+                    : { mode: "2026range", start: cmpStart, end: cmpEnd, sortKey: cmpStart };
 
-                  // Right column = bottom section in Compare
-                  // cmpMode="2025" means 2025 Full Season, "2026range" means custom 2026 range
-                  if (cmpMode === "2025") {
-                    params.set("right_mode", "2025");
-                  } else {
-                    params.set("right_mode", "2026range");
-                    params.set("right_start", cmpStart);
-                    params.set("right_end", cmpEnd);
-                  }
+                  // Older period (earlier start date) goes left; ISO date strings compare correctly
+                  const leftCfg = bottomCfg.sortKey <= topCfg.sortKey ? bottomCfg : topCfg;
+                  const rightCfg = leftCfg === bottomCfg ? topCfg : bottomCfg;
+
+                  params.set("left_mode", leftCfg.mode);
+                  if (leftCfg.start) { params.set("left_start", leftCfg.start); params.set("left_end", leftCfg.end); }
+                  params.set("right_mode", rightCfg.mode);
+                  if (rightCfg.start) { params.set("right_start", rightCfg.start); params.set("right_end", rightCfg.end); }
 
                   params.set("style", "gaussian_granular");
 
-                  // Open new tab to the same site with the params attached
+                  // Open new tab to the same site with the params attached.
+                  // Use an anchor-click rather than window.open() — browsers treat this
+                  // as a genuine user-initiated navigation, so it's far less likely to be
+                  // blocked by popup blockers and reliably opens a new tab (not a window).
                   const url = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-                  window.open(url, "_blank");
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.target = "_blank";
+                  a.rel = "noopener noreferrer";
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
                 }}
                 style={{
                   background: C.accent,
@@ -2759,8 +3633,97 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               >
                 🔥 View as Heatmap Compare
               </button>
+              <button
+                onClick={() => {
+                  // Snapshot the CURRENT selections. Plots won't change until this
+                  // button is clicked again with new windows selected.
+                  const topPitches = topUseRange
+                    ? (topData || []).filter(p => {
+                        if (!p.game_date) return false;
+                        const gd = String(p.game_date).slice(0, 10);
+                        return gd >= topStart && gd <= topEnd;
+                      })
+                    : (topData || []);
+                  const topSnap = {
+                    count: topPitches.length,
+                    label: topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Full Season",
+                    metrics: computeMetrics(topPitches, "all"),
+                  };
+                  const botSnap = {
+                    count: (cmpData || []).length,
+                    label: cmpMode === "2025" ? "2025 Full Season" : `2026: ${cmpStart} → ${cmpEnd}`,
+                    metrics: computeMetrics(cmpData, "all"),
+                  };
+                  // Chronological order: older period left, newer right
+                  const topKey = topUseRange ? topStart : "2026-03-25";
+                  const botKey = cmpMode === "2025" ? "2025-03-27" : cmpStart;
+                  const [left, right] = botKey <= topKey ? [botSnap, topSnap] : [topSnap, botSnap];
+                  setPlotCompare({ left, right });
+                }}
+                style={{
+                  background: "transparent",
+                  color: C.accent,
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: "6px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.5px",
+                  marginLeft: "10px",
+                }}
+              >
+                📍 Plot Compare
+              </button>
+              <button
+                onClick={() => {
+                  // Freeze the current selection into a usage-compare config, including
+                  // each side's date window. Full-season sides (2025, or 2026 without a
+                  // custom range) carry null dates and use the season dataset; 2026 sides
+                  // with a range are filtered from the per-game usage log at view time.
+                  // Chronological order = older left.
+                  const topLabel = topUseRange ? `2026: ${topStart} → ${topEnd}` : "2026 Season";
+                  const botLabel = cmpMode === "2025" ? "2025 Season" : `2026: ${cmpStart} → ${cmpEnd}`;
+                  const topCfg = { year: "2026", label: topLabel, sortKey: topUseRange ? topStart : "2026-03-25",
+                                   start: topUseRange ? topStart : null, end: topUseRange ? topEnd : null };
+                  const botCfg = { year: cmpMode === "2025" ? "2025" : "2026", label: botLabel,
+                                   sortKey: cmpMode === "2025" ? "2025-03-27" : cmpStart,
+                                   start: cmpMode === "2025" ? null : cmpStart, end: cmpMode === "2025" ? null : cmpEnd };
+                  const [L, R] = botCfg.sortKey <= topCfg.sortKey ? [botCfg, topCfg] : [topCfg, botCfg];
+                  setUsageCompare({
+                    pitcherName: pitcher.name,
+                    leftYear: L.year, leftLabel: L.label, leftStart: L.start, leftEnd: L.end,
+                    rightYear: R.year, rightLabel: R.label, rightStart: R.start, rightEnd: R.end,
+                  });
+                }}
+                style={{
+                  background: "transparent",
+                  color: C.accent,
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: "6px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.5px",
+                  marginLeft: "10px",
+                }}
+              >
+                📊 Usage Compare
+              </button>
             </div>
           )}
+
+          {/* Plot Compare section - frozen snapshot, older left / newer right.
+              Memoized so table hovers and other state churn don't re-render it. */}
+          <PlotCompareSection snapshot={plotCompare} C={C} isMobile={isMobile} onClear={setPlotCompare} />
+
+          {/* Usage Compare section - inline pitch-usage breakdown by count situation,
+              replicating the standalone Usage Analyzer. 2026 usage fetched live; 2025
+              from bundled snapshot. */}
+          <UsageCompareSection config={usageCompare} C={C} isMobile={isMobile} onClear={setUsageCompare} />
         </>
       )}
     </div>
@@ -2775,6 +3738,9 @@ const HeatmapsPage = ({ C, isMobile }) => {
   const [pitcher, setPitcher] = useState(null);
   const [year, setYear] = useState("2026");
   const [hand, setHand] = useState("all");
+  // Count-situation filter — shared across single view AND both compare columns, so both
+  // time periods always reflect the same count context (mirrors the Compare tool).
+  const [countFilter, setCountFilter] = useState("all");
   const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
   const [hmStyle, setHmStyle] = useState("gaussian"); // "gaussian" | "gaussian_granular"
   const [pitchData, setPitchData] = useState(null);
@@ -3025,6 +3991,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     };
     const filtered = pitchData.filter(p => {
       if (hand !== "all" && p.batter_hand !== hand) return false;
+      if (!pitchMatchesCount(p, countFilter)) return false;
       if (year === "2026" && p.game_date) {
         if (p.game_date < startDate || p.game_date > endDate) return false;
       }
@@ -3051,7 +4018,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
         pitches,
       }))
       .sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
-  }, [pitchData, hand, year, startDate, endDate, hmMode, hmStyle]);
+  }, [pitchData, hand, countFilter, year, startDate, endDate, hmMode, hmStyle]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
 
@@ -3068,6 +4035,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     };
     const filtered = data.filter(p => {
       if (hand !== "all" && p.batter_hand !== hand) return false;
+      if (!pitchMatchesCount(p, countFilter)) return false;
       // Apply date filter only when column is in 2026range mode
       if (colMode === "2026range" && p.game_date) {
         if (p.game_date < colStart || p.game_date > colEnd) return false;
@@ -3117,7 +4085,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
     });
     rows.sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
     return rows;
-  }, [compareMode, leftData, rightData, leftMode, rightMode, leftStart, leftEnd, rightStart, rightEnd, hand, hmMode]);
+  }, [compareMode, leftData, rightData, leftMode, rightMode, leftStart, leftEnd, rightStart, rightEnd, hand, countFilter, hmMode]);
 
   return (
     <div style={{ padding: isMobile ? "16px" : "32px", maxWidth: "1600px", margin: "0 auto" }}>
@@ -3200,6 +4168,33 @@ const HeatmapsPage = ({ C, isMobile }) => {
               }}>{t.l}</button>
             ))}
           </div>
+
+          {/* Count-situation filter - shared, applies to BOTH compare columns (and single
+              view) so the two time periods always show the same count context. Same
+              options and definitions as the Compare tool's dropdown. */}
+          <select
+            value={countFilter}
+            onChange={(e) => setCountFilter(e.target.value)}
+            style={{
+              background: countFilter !== "all" ? C.accentGlow : "transparent",
+              border: `1px solid ${countFilter !== "all" ? C.accent : C.border}`,
+              borderRadius: "4px",
+              padding: "6px 10px",
+              color: countFilter !== "all" ? C.accent : C.textDim,
+              fontSize: "11px",
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              outline: "none",
+            }}
+          >
+            <option value="all">All Counts</option>
+            <option value="pre2k">Pre-Two-Strike</option>
+            <option value="two_strikes">Two Strikes</option>
+            <option value="ahead">Pitcher Ahead</option>
+            <option value="behind">Pitcher Behind</option>
+            <option value="leverage">Leverage (0-0, 1-1)</option>
+          </select>
 
           {/* Mode toggle - shared */}
           <div style={{ display: "flex", gap: "4px" }}>
@@ -3506,6 +4501,8 @@ const LB_COLS = [
   { key: "avg_spin", label: "Spin", w: 55 },
   { key: "avg_ivb", label: "IVB", w: 45 },
   { key: "avg_hb", label: "HB", w: 45 },
+  { key: "avg_vaa", label: "VAA", w: 48 },
+  { key: "avg_avaa", label: "aVAA", w: 50 },
   { key: "strike_rate", label: "Str%", w: 50 },
   { key: "zone_rate", label: "Zone%", w: 55 },
   { key: "csw_rate", label: "CSW%", w: 55 },
@@ -3582,7 +4579,8 @@ const LeaderboardPage = ({ C, isMobile }) => {
     const numCols = LB_COLS.filter(c => c.key !== "pitcher_name" && c.key !== "pitcher_hand");
     const rateKeys = new Set(["strike_rate", "zone_rate", "csw_rate", "cstr_rate", "swstr_rate",
       "whiff_rate", "chase_rate", "zone_whiff_rate", "gb_rate", "fb_rate", "barrel_rate", "rv_100",
-      "avg_velo", "avg_spin", "avg_ivb", "avg_hb"]);
+      "avg_velo", "avg_spin", "avg_ivb", "avg_hb", "avg_vaa", "avg_avaa"]);
+    const twoDecKeys = new Set(["avg_vaa", "avg_avaa"]);
     const avgs = {};
     for (const col of numCols) {
       const vals = displayData.map(p => p[col.key]).filter(v => v != null && v !== "—");
@@ -3594,7 +4592,7 @@ const LeaderboardPage = ({ C, isMobile }) => {
           const v = p[col.key], w = p.total_pitches || 0;
           if (v != null && v !== "—" && w > 0) { wSum += Number(v) * w; wTotal += w; }
         }
-        avgs[col.key] = wTotal > 0 ? (col.key === "avg_spin" ? Math.round(wSum / wTotal) : Number((wSum / wTotal).toFixed(1))) : "—";
+        avgs[col.key] = wTotal > 0 ? (col.key === "avg_spin" ? Math.round(wSum / wTotal) : Number((wSum / wTotal).toFixed(twoDecKeys.has(col.key) ? 2 : 1))) : "—";
       } else {
         const sum = vals.reduce((a, b) => a + Number(b), 0);
         const mean = sum / vals.length;
@@ -4006,8 +5004,20 @@ const ReportView = ({ C, onBack, logos, isMobile }) => {
       {!loading && !error && allReports.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {allReports.map(p => {
-            const visibleNotes = showMore[p.pitcher_id] ? p.notes : p.notes.slice(0, 5);
-            const hasMore = p.notes.length > 5;
+            // Bucket the notes into the three adjustment columns + a results row.
+            //   Shape/Velocity: velocity, movement (IVB/HB), release (height + extension)
+            //   vs RHH / vs LHH: usage changes split by the hitter hand tagged in the text
+            //   Everything else (results stats, unmatched): full-width section below.
+            const byMag = (a, b) => (b.magnitude || 0) - (a.magnitude || 0);
+            const shapeNotes = p.notes.filter(n => n.category === "velocity" || n.category === "movement" || n.category === "release").sort(byMag);
+            const rhhNotes = p.notes.filter(n => n.category === "usage" && (n.text || "").includes("vs RHH")).sort(byMag);
+            const lhhNotes = p.notes.filter(n => n.category === "usage" && (n.text || "").includes("vs LHH")).sort(byMag);
+            const placed = new Set([...shapeNotes, ...rhhNotes, ...lhhNotes]);
+            const otherNotes = p.notes.filter(n => !placed.has(n)).sort(byMag);
+            const expanded = !!showMore[p.pitcher_id];
+            const COL_CAP = 4, OTHER_CAP = 3; // collapsed limits per column / results row
+            const hasMore = shapeNotes.length > COL_CAP || rhhNotes.length > COL_CAP ||
+              lhhNotes.length > COL_CAP || otherNotes.length > OTHER_CAP;
             return (
               <div key={p.pitcher_id} style={{
                 background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: "8px",
@@ -4031,31 +5041,73 @@ const ReportView = ({ C, onBack, logos, isMobile }) => {
                     </div>
                   )}
                 </div>
-                {visibleNotes.length === 0 ? (
+                {p.notes.length === 0 ? (
                   <div style={{ fontSize: "11px", color: C.textDim, fontStyle: "italic" }}>
                     No material changes detected for this sample.
                   </div>
                 ) : (
-                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
-                    {visibleNotes.map((note, idx) => (
-                      <li key={idx} style={{
-                        fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
-                      }}>
-                        <span style={{
-                          position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
-                          borderRadius: "50%", background: noteColor(note.category),
-                        }}></span>
-                        {note.text}
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    {/* Three adjustment columns: Shape/Velocity · vs RHH usage · vs LHH usage.
+                        Stacks to one column on mobile. */}
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: isMobile ? "12px" : "16px", alignItems: "start" }}>
+                      {[
+                        { title: "Shape / Velocity", list: shapeNotes },
+                        { title: "vs RHH", list: rhhNotes },
+                        { title: "vs LHH", list: lhhNotes },
+                      ].map(col => (
+                        <div key={col.title}>
+                          <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+                            {col.title}
+                          </div>
+                          {col.list.length === 0 ? (
+                            <div style={{ fontSize: "11px", color: C.textDim, fontStyle: "italic" }}>No changes</div>
+                          ) : (
+                            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
+                              {(expanded ? col.list : col.list.slice(0, COL_CAP)).map((note, idx) => (
+                                <li key={idx} style={{
+                                  fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
+                                }}>
+                                  <span style={{
+                                    position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
+                                    borderRadius: "50%", background: noteColor(note.category),
+                                  }}></span>
+                                  {note.text}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {/* Results & other notes — full width beneath the adjustment columns */}
+                    {otherNotes.length > 0 && (
+                      <div style={{ marginTop: "12px" }}>
+                        <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+                          Results
+                        </div>
+                        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
+                          {(expanded ? otherNotes : otherNotes.slice(0, OTHER_CAP)).map((note, idx) => (
+                            <li key={idx} style={{
+                              fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
+                            }}>
+                              <span style={{
+                                position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
+                                borderRadius: "50%", background: noteColor(note.category),
+                              }}></span>
+                              {note.text}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
                 )}
                 {hasMore && (
                   <button onClick={() => setShowMore(s => ({ ...s, [p.pitcher_id]: !s[p.pitcher_id] }))} style={{
                     background: "transparent", border: "none", color: C.accent, fontSize: "11px",
                     fontWeight: 600, cursor: "pointer", padding: "6px 0 0 12px", fontFamily: "inherit",
                   }}>
-                    {showMore[p.pitcher_id] ? "Show less" : `Show all ${p.notes.length} notes`}
+                    {expanded ? "Show less" : `Show all ${p.notes.length} notes`}
                   </button>
                 )}
               </div>
@@ -4107,6 +5159,10 @@ export default function PitcherTracker() {
   const [activeGame, setActiveGame] = useState(null);
   const [gamePk, setGamePk] = useState(null);
   const [pitcherGameStats, setPitcherGameStats] = useState(null);
+  // Chronological list of the pitcher's games this season: [{game_pk, game_date}, ...].
+  // Built in the background when a pitcher is opened from a live game; powers the
+  // ◀ ▶ start-to-start navigation arrows in the live view header.
+  const [gameLog, setGameLog] = useState(null);
   const [teamLogos, setTeamLogos] = useState({});
   const pollRef = useRef(null);
   const endPickerRef = useRef(null);
@@ -4135,10 +5191,12 @@ export default function PitcherTracker() {
     setPitchData(filtered);
   }, [seasonStart, seasonEnd, historicalPitchData, view]);
 
-  // Live polling: re-fetch pitch data every 15 seconds during live games
+  // Live polling: re-fetch pitch data every 15 seconds during live games.
+  // Paused when the user has navigated ◀ ▶ to a different (finished) start.
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
-    if (view === "live" && gamePk && pitcherId) {
+    const viewingCurrentGame = !activeGame || Number(activeGame.game_pk) === Number(gamePk);
+    if (view === "live" && gamePk && pitcherId && viewingCurrentGame) {
       pollRef.current = setInterval(async () => {
         try {
           const raw = await getGamePitches(gamePk, pitcherId);
@@ -4155,7 +5213,7 @@ export default function PitcherTracker() {
       }, 15000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [view, gamePk, pitcherId]);
+  }, [view, gamePk, pitcherId, activeGame]);
 
   // When switching views, swap the displayed data
   const handleViewSwitch = async (newView) => {
@@ -4238,6 +5296,7 @@ export default function PitcherTracker() {
     setSeason2025PitchData(null);
     setActiveGame(null);
     setGamePk(null);
+    setGameLog(null);
   };
 
   // Load pitcher from live game selector
@@ -4252,6 +5311,27 @@ export default function PitcherTracker() {
     // Reset historical on pitcher change
     setHistoricalPitchData(null);
     setSeason2025PitchData(null);
+
+    // Build the season game log in the BACKGROUND (doesn't block the live load).
+    // Distinct (game_pk, game_date) pairs from cached-season, sorted chronologically.
+    // Today's game is appended if the parquet doesn't have it yet (in-progress).
+    setGameLog(null);
+    getCachedSeason(pitcher.id).then(raw => {
+      const seen = new Map();
+      for (const q of raw || []) {
+        const d = q.game_date ? String(q.game_date).slice(0, 10) : "";
+        if (q.game_pk && d && d !== "nan" && !seen.has(Number(q.game_pk))) {
+          seen.set(Number(q.game_pk), d);
+        }
+      }
+      const log = Array.from(seen, ([pk, date]) => ({ game_pk: pk, game_date: date }))
+        .sort((a, b) => a.game_date.localeCompare(b.game_date));
+      if (!log.some(g => g.game_pk === Number(game.game_pk))) {
+        log.push({ game_pk: Number(game.game_pk), game_date: new Date().toISOString().slice(0, 10) });
+      }
+      setGameLog(log);
+    }).catch(() => setGameLog([]));
+
     setIsLoading(true);
     try {
       const raw = await getGamePitches(game.game_pk, pitcher.id);
@@ -4261,6 +5341,34 @@ export default function PitcherTracker() {
       setActivePitcher(pitcher.name);
     } catch (e) {
       console.error("Failed to load pitches:", e);
+    }
+    setIsLoading(false);
+  };
+
+  // Navigate to the pitcher's previous (-1) or next (+1) start, loading that
+  // game's pitch data + per-game stat line. Used by the ◀ ▶ arrows in the header.
+  const navigateGame = async (delta) => {
+    if (!gameLog || !pitcherId || !gamePk) return;
+    const idx = gameLog.findIndex(g => g.game_pk === Number(gamePk));
+    if (idx === -1) return;
+    const target = gameLog[idx + delta];
+    if (!target) return;
+    setGamePk(target.game_pk);
+    setView("live");
+    setIsLoading(true);
+    try {
+      const raw = await getGamePitches(target.game_pk, pitcherId);
+      const normalized = normAndFilter(raw);
+      setLivePitchData(normalized);
+      setPitchData(normalized);
+      // Per-game stat line for the navigated game
+      try {
+        const pitchers = await getGamePitchers(target.game_pk);
+        const me = (pitchers || []).find(p => p.id === pitcherId);
+        setPitcherGameStats(me?.game_stats || null);
+      } catch { setPitcherGameStats(null); }
+    } catch (e) {
+      console.error("Game navigation failed:", e);
     }
     setIsLoading(false);
   };
@@ -4346,7 +5454,34 @@ export default function PitcherTracker() {
               {activePitcher}{pitcherHand && <span style={{ fontSize: "12px", fontWeight: 600, color: C.textDim, marginLeft: "8px" }}>{pitcherHand === "L" ? "LHP" : pitcherHand === "R" ? "RHP" : ""}</span>}
             </div>
             <div style={{ fontSize: "11px", color: C.textDim, display: "flex", alignItems: "center", justifyContent: isMobile ? "flex-start" : "flex-end", gap: "6px", flexWrap: "wrap" }}>
-              {view === "live" && currentGame && (
+              {/* ◀ ▶ start-to-start navigation (live view, once the game log loads) */}
+              {view === "live" && gameLog && gamePk && (() => {
+                const idx = gameLog.findIndex(g => g.game_pk === Number(gamePk));
+                if (idx === -1) return null;
+                const viewedDate = gameLog[idx].game_date;
+                const isCurrentGame = activeGame && Number(activeGame.game_pk) === Number(gamePk);
+                const arrowStyle = (enabled) => ({
+                  background: "transparent", border: `1px solid ${enabled ? C.border : "transparent"}`,
+                  borderRadius: "4px", padding: "2px 8px", fontSize: "11px", fontWeight: 700,
+                  color: enabled ? C.text : C.borderLight, cursor: enabled ? "pointer" : "default",
+                  fontFamily: "inherit", lineHeight: 1.4,
+                });
+                return (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", marginRight: "4px" }}>
+                    <button onClick={() => idx > 0 && navigateGame(-1)} disabled={idx === 0}
+                      title={idx > 0 ? `Previous start (${gameLog[idx - 1].game_date})` : "First start of season"}
+                      style={arrowStyle(idx > 0)}>◀</button>
+                    <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, fontVariantNumeric: "tabular-nums" }}>
+                      {viewedDate}{!isCurrentGame && <span style={{ marginLeft: "4px", color: C.accent }}>(start {idx + 1}/{gameLog.length})</span>}
+                    </span>
+                    <button onClick={() => idx < gameLog.length - 1 && navigateGame(1)} disabled={idx >= gameLog.length - 1}
+                      title={idx < gameLog.length - 1 ? `Next start (${gameLog[idx + 1].game_date})` : "Most recent start"}
+                      style={arrowStyle(idx < gameLog.length - 1)}>▶</button>
+                  </span>
+                );
+              })()}
+              {/* Matchup/status banner only applies to the game the pitcher was opened from */}
+              {view === "live" && currentGame && (!gameLog || Number(currentGame.game_pk) === Number(gamePk)) && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
                   <TeamLogo abbr={currentGame.away_team} logos={teamLogos} size={16} />
                   {currentGame.away_team} @ {currentGame.home_team}
@@ -4607,6 +5742,9 @@ export default function PitcherTracker() {
           </>
         )}
 
+        {/* Any render crash inside a page shows a recoverable "Reset view" card
+            instead of white-screening the whole app. Switching tabs auto-clears it. */}
+        <ViewErrorBoundary C={C} resetKey={page}>
         {page === "tracker" && !activePitcher && (
           <StartersGrid C={C} logos={teamLogos} onSelect={handleSelectFromGame} isMobile={isMobile} />
         )}
@@ -4622,6 +5760,7 @@ export default function PitcherTracker() {
         {page === "report" && (
           <ReportView C={C} isMobile={isMobile} logos={teamLogos} onBack={() => setPage("tracker")} />
         )}
+        </ViewErrorBoundary>
       </div>
 
       {/* Footer */}
