@@ -2388,7 +2388,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
         try:
             if pd.isna(ev) or pd.isna(la) or ev < 98:
                 return False
-            w = BARREL_TABLE.get(min(int(ev), 116))
+            # Round EV to nearest mph (validated vs Savant 2025 league totals;
+            # int() truncation undercounts barrels on fractional EVs).
+            w = BARREL_TABLE.get(min(int(round(ev)), 116))
             return w[0] <= la <= w[1] if w else False
         except Exception:
             return False
@@ -2396,6 +2398,8 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
 
     traj = df["trajectory"].fillna("")
     df["_is_gb"] = traj == "ground_ball"
+    # Bunts are excluded from Savant's BBE denominator for Barrel%.
+    df["_is_bunt"] = traj.str.startswith("bunt")
     df["_is_fb"] = traj == "fly_ball"
 
     # ── Run Value computation (context-neutral, count-based) ──
@@ -2460,6 +2464,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
             gb = int(g["_is_gb"].sum())
             fb = int(g["_is_fb"].sum())
             barrels = int(g["_is_barrel"].sum())
+            bbe = int((g["_is_ip"] & ~g["_is_bunt"]).sum())  # non-bunt BBE
 
             inning_col = pd.to_numeric(g["inning"], errors="coerce")
             started_games = int(g.loc[inning_col == 1.0, "game_pk"].nunique()) if "game_pk" in g.columns else 0
@@ -2497,7 +2502,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 "bip": bip,
                 "gb_rate": round(gb / bip * 100, 1) if bip > 0 else None,
                 "fb_rate": round(fb / bip * 100, 1) if bip > 0 else None,
-                "barrel_rate": round(barrels / bip * 100, 1) if bip > 0 else None,
+                "barrel_rate": round(barrels / bbe * 100, 1) if bbe > 0 else None,
                 "run_value": round(float(g["_rv"].sum()), 1),
                 "rv_100": round(float(g["_rv"].mean()) * 100, 1) if n > 0 else None,
             })
