@@ -282,6 +282,7 @@ const computeMetrics = (pitches, hf) => {
       st = pts.filter(p => p.is_swing || p.is_called_strike).length,
       ip = pts.filter(p => p.is_in_play).length, gb = pts.filter(p => p.is_ground_ball).length,
       fb = pts.filter(p => p.is_fly_ball).length, ba = pts.filter(p => p.is_barrel).length,
+      bbe = pts.filter(p => p.is_in_play && !p.is_bunt).length, // Savant BBE excludes bunts
       ozs = pts.filter(p => !p.is_in_zone && p.is_swing).length,
       ozt = pts.filter(p => !p.is_in_zone).length,
       izw = pts.filter(p => p.is_in_zone && p.is_whiff).length,
@@ -299,7 +300,7 @@ const computeMetrics = (pitches, hf) => {
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
-      gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, ip),
+      gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, bbe),
       bipCount: ip,
       xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
@@ -320,6 +321,7 @@ const computeMetrics = (pitches, hf) => {
     ast = allPts.filter(p => p.is_swing || p.is_called_strike).length,
     aip = allPts.filter(p => p.is_in_play).length, agb = allPts.filter(p => p.is_ground_ball).length,
     afb = allPts.filter(p => p.is_fly_ball).length, aba = allPts.filter(p => p.is_barrel).length,
+    abbe = allPts.filter(p => p.is_in_play && !p.is_bunt).length,
     aozs = allPts.filter(p => !p.is_in_zone && p.is_swing).length,
     aozt = allPts.filter(p => !p.is_in_zone).length,
     aizw = allPts.filter(p => p.is_in_zone && p.is_whiff).length,
@@ -337,7 +339,7 @@ const computeMetrics = (pitches, hf) => {
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
-    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, aip),
+    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, abbe),
     bipCount: aip,
     xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
@@ -1942,6 +1944,9 @@ const normalizeLivePitch = (p) => {
     is_fly_ball: p.bb_type === "fly_ball" || (!p.bb_type && p.launch_angle != null && p.launch_angle >= 25 && isInPlay),
     is_line_drive: p.bb_type === "line_drive",
     is_popup: p.bb_type === "popup",
+    // Bunts are excluded from Savant's BBE denominator for Barrel% (a bunt can never
+    // barrel). Only detectable on feed/parquet data where bb_type carries bunt_* labels.
+    is_bunt: (p.bb_type || "").startsWith("bunt"),
     // Exact Statcast barrel definition (per MLB.com glossary).
     // Each integer mph of EV from 98 to 116+ has its own LA window.
     // Source: https://www.mlb.com/glossary/statcast/barrel
@@ -1957,7 +1962,11 @@ const normalizeLivePitch = (p) => {
         110: [14, 43], 111: [13, 44], 112: [12, 45], 113: [11, 46],
         114: [10, 47], 115: [9, 48],  116: [8, 50],
       };
-      const evInt = Math.min(Math.floor(ev), 116);
+      // Round EV to the nearest integer mph to pick the LA window. Verified against
+      // Savant's official 2025 league totals: rounding matches their barrel counts far
+      // better than flooring (flooring undercounts ~7% of barrels by shoving fractional
+      // EVs like 98.9 into the narrower lower-mph window).
+      const evInt = Math.min(Math.round(ev), 116);
       const window = table[evInt];
       if (!window) return false;
       return la >= window[0] && la <= window[1];
@@ -5004,8 +5013,20 @@ const ReportView = ({ C, onBack, logos, isMobile }) => {
       {!loading && !error && allReports.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {allReports.map(p => {
-            const visibleNotes = showMore[p.pitcher_id] ? p.notes : p.notes.slice(0, 5);
-            const hasMore = p.notes.length > 5;
+            // Bucket the notes into the three adjustment columns + a results row.
+            //   Shape/Velocity: velocity, movement (IVB/HB), release (height + extension)
+            //   vs RHH / vs LHH: usage changes split by the hitter hand tagged in the text
+            //   Everything else (results stats, unmatched): full-width section below.
+            const byMag = (a, b) => (b.magnitude || 0) - (a.magnitude || 0);
+            const shapeNotes = p.notes.filter(n => n.category === "velocity" || n.category === "movement" || n.category === "release").sort(byMag);
+            const rhhNotes = p.notes.filter(n => n.category === "usage" && (n.text || "").includes("vs RHH")).sort(byMag);
+            const lhhNotes = p.notes.filter(n => n.category === "usage" && (n.text || "").includes("vs LHH")).sort(byMag);
+            const placed = new Set([...shapeNotes, ...rhhNotes, ...lhhNotes]);
+            const otherNotes = p.notes.filter(n => !placed.has(n)).sort(byMag);
+            const expanded = !!showMore[p.pitcher_id];
+            const COL_CAP = 4, OTHER_CAP = 3; // collapsed limits per column / results row
+            const hasMore = shapeNotes.length > COL_CAP || rhhNotes.length > COL_CAP ||
+              lhhNotes.length > COL_CAP || otherNotes.length > OTHER_CAP;
             return (
               <div key={p.pitcher_id} style={{
                 background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: "8px",
@@ -5029,31 +5050,73 @@ const ReportView = ({ C, onBack, logos, isMobile }) => {
                     </div>
                   )}
                 </div>
-                {visibleNotes.length === 0 ? (
+                {p.notes.length === 0 ? (
                   <div style={{ fontSize: "11px", color: C.textDim, fontStyle: "italic" }}>
                     No material changes detected for this sample.
                   </div>
                 ) : (
-                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
-                    {visibleNotes.map((note, idx) => (
-                      <li key={idx} style={{
-                        fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
-                      }}>
-                        <span style={{
-                          position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
-                          borderRadius: "50%", background: noteColor(note.category),
-                        }}></span>
-                        {note.text}
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    {/* Three adjustment columns: Shape/Velocity · vs RHH usage · vs LHH usage.
+                        Stacks to one column on mobile. */}
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: isMobile ? "12px" : "16px", alignItems: "start" }}>
+                      {[
+                        { title: "Shape / Velocity", list: shapeNotes },
+                        { title: "vs RHH", list: rhhNotes },
+                        { title: "vs LHH", list: lhhNotes },
+                      ].map(col => (
+                        <div key={col.title}>
+                          <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+                            {col.title}
+                          </div>
+                          {col.list.length === 0 ? (
+                            <div style={{ fontSize: "11px", color: C.textDim, fontStyle: "italic" }}>No changes</div>
+                          ) : (
+                            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
+                              {(expanded ? col.list : col.list.slice(0, COL_CAP)).map((note, idx) => (
+                                <li key={idx} style={{
+                                  fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
+                                }}>
+                                  <span style={{
+                                    position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
+                                    borderRadius: "50%", background: noteColor(note.category),
+                                  }}></span>
+                                  {note.text}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {/* Results & other notes — full width beneath the adjustment columns */}
+                    {otherNotes.length > 0 && (
+                      <div style={{ marginTop: "12px" }}>
+                        <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase", color: C.textDim, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+                          Results
+                        </div>
+                        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "5px" }}>
+                          {(expanded ? otherNotes : otherNotes.slice(0, OTHER_CAP)).map((note, idx) => (
+                            <li key={idx} style={{
+                              fontSize: "12px", color: C.text, paddingLeft: "12px", position: "relative",
+                            }}>
+                              <span style={{
+                                position: "absolute", left: 0, top: "6px", width: "5px", height: "5px",
+                                borderRadius: "50%", background: noteColor(note.category),
+                              }}></span>
+                              {note.text}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
                 )}
                 {hasMore && (
                   <button onClick={() => setShowMore(s => ({ ...s, [p.pitcher_id]: !s[p.pitcher_id] }))} style={{
                     background: "transparent", border: "none", color: C.accent, fontSize: "11px",
                     fontWeight: 600, cursor: "pointer", padding: "6px 0 0 12px", fontFamily: "inherit",
                   }}>
-                    {showMore[p.pitcher_id] ? "Show less" : `Show all ${p.notes.length} notes`}
+                    {expanded ? "Show less" : `Show all ${p.notes.length} notes`}
                   </button>
                 )}
               </div>
