@@ -245,6 +245,47 @@ const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return 
 const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
 const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
 
+// ─── SLG / xSLG (Savant-verified definitions) ───
+// Actual SLG against = total bases / at-bats, attributed to the pitch that ENDED the PA
+// (Savant pitch-arsenal convention: the result belongs to the final pitch). At-bats
+// exclude walks, HBP, sacrifices, and catcher's interference; strikeouts are 0-TB ABs.
+const SLG_TB = { single: 1, double: 2, triple: 3, home_run: 4 };
+const SLG_AB_CONTACT_OUTS = new Set(["field_out", "force_out", "grounded_into_double_play",
+  "double_play", "triple_play", "field_error", "fielders_choice", "fielders_choice_out",
+  "other_out", "batter_out"]);
+// IMPORTANT: feed/parquet data stamps the PA result (events) on EVERY pitch of the
+// at-bat, while Savant CSV stamps only the final pitch. To count each PA exactly once
+// AND attribute it to the pitch type that actually ended it (Savant convention), gate
+// on the ending pitch itself: the ball in play for contact results, the 2-strike
+// whiff/called strike for strikeouts. Works identically on both data paths.
+// (Edge not covered: 2-strike foul-bunt strikeouts — a handful per season league-wide.)
+const _endsPaAsK = (p) => (p.is_whiff || p.is_called_strike) && Number(p.strikes) === 2;
+const computeSlg = (pts) => {
+  let tb = 0, ab = 0;
+  for (const p of pts) {
+    const ev = p.events;
+    if (!ev) continue;
+    if (ev === "strikeout" || ev === "strikeout_double_play") {
+      if (_endsPaAsK(p)) ab++;               // K = 0-TB at-bat, on the K pitch only
+    } else if ((SLG_TB[ev] != null || SLG_AB_CONTACT_OUTS.has(ev)) && p.is_in_play) {
+      ab++; tb += SLG_TB[ev] || 0;           // contact result, on the in-play pitch only
+    }
+    // walk / HBP / sacrifices / catcher_interf / baserunning events: not at-bats.
+  }
+  return ab > 0 ? (tb / ab).toFixed(3) : "—";
+};
+// xSLG per Savant: expected outcomes of batted balls accumulated WITH actual strikeouts
+// (each K is a 0-value AB in the denominator). Averaging estimated_slg over batted balls
+// alone — the previous behavior — yields an inflated "xSLG on contact" number.
+const computeXslg = (pts) => {
+  const bb = pts.filter(p => p.estimated_slg_using_speedangle != null);
+  // Count each strikeout once, on the pitch that ended it (see computeSlg note).
+  const k = pts.filter(p => (p.events === "strikeout" || p.events === "strikeout_double_play") && _endsPaAsK(p)).length;
+  const denom = bb.length + k;
+  if (denom === 0) return "—";
+  return (bb.reduce((s, p) => s + p.estimated_slg_using_speedangle, 0) / denom).toFixed(3);
+};
+
 // ─── Location-adjusted VAA (aVAA) ───
 // Normalizes raw VAA for pitch height within a pitch type (Chamberlain / FanGraphs).
 // expected_VAA(z) = a + b*plate_z; aVAA = actual - expected.
@@ -282,6 +323,7 @@ const computeMetrics = (pitches, hf) => {
       st = pts.filter(p => p.is_swing || p.is_called_strike).length,
       ip = pts.filter(p => p.is_in_play).length, gb = pts.filter(p => p.is_ground_ball).length,
       fb = pts.filter(p => p.is_fly_ball).length, ba = pts.filter(p => p.is_barrel).length,
+      bbe = pts.filter(p => p.is_in_play && !p.is_bunt).length, // Savant BBE excludes bunts
       ozs = pts.filter(p => !p.is_in_zone && p.is_swing).length,
       ozt = pts.filter(p => !p.is_in_zone).length,
       izw = pts.filter(p => p.is_in_zone && p.is_whiff).length,
@@ -299,9 +341,10 @@ const computeMetrics = (pitches, hf) => {
       strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
-      gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, ip),
+      gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, bbe),
       bipCount: ip,
-      xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
+      slg: computeSlg(pts),
+      xSLG: computeXslg(pts),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
       expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
@@ -320,6 +363,7 @@ const computeMetrics = (pitches, hf) => {
     ast = allPts.filter(p => p.is_swing || p.is_called_strike).length,
     aip = allPts.filter(p => p.is_in_play).length, agb = allPts.filter(p => p.is_ground_ball).length,
     afb = allPts.filter(p => p.is_fly_ball).length, aba = allPts.filter(p => p.is_barrel).length,
+    abbe = allPts.filter(p => p.is_in_play && !p.is_bunt).length,
     aozs = allPts.filter(p => !p.is_in_zone && p.is_swing).length,
     aozt = allPts.filter(p => !p.is_in_zone).length,
     aizw = allPts.filter(p => p.is_in_zone && p.is_whiff).length,
@@ -337,9 +381,10 @@ const computeMetrics = (pitches, hf) => {
     strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
-    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, aip),
+    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, abbe),
     bipCount: aip,
-    xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
+    slg: computeSlg(allPts),
+    xSLG: computeXslg(allPts),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
     xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
     expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
@@ -1942,6 +1987,9 @@ const normalizeLivePitch = (p) => {
     is_fly_ball: p.bb_type === "fly_ball" || (!p.bb_type && p.launch_angle != null && p.launch_angle >= 25 && isInPlay),
     is_line_drive: p.bb_type === "line_drive",
     is_popup: p.bb_type === "popup",
+    // Bunts are excluded from Savant's BBE denominator for Barrel% (a bunt can never
+    // barrel). Only detectable on feed/parquet data where bb_type carries bunt_* labels.
+    is_bunt: (p.bb_type || "").startsWith("bunt"),
     // Exact Statcast barrel definition (per MLB.com glossary).
     // Each integer mph of EV from 98 to 116+ has its own LA window.
     // Source: https://www.mlb.com/glossary/statcast/barrel
@@ -1957,7 +2005,11 @@ const normalizeLivePitch = (p) => {
         110: [14, 43], 111: [13, 44], 112: [12, 45], 113: [11, 46],
         114: [10, 47], 115: [9, 48],  116: [8, 50],
       };
-      const evInt = Math.min(Math.floor(ev), 116);
+      // Round EV to the nearest integer mph to pick the LA window. Verified against
+      // Savant's official 2025 league totals: rounding matches their barrel counts far
+      // better than flooring (flooring undercounts ~7% of barrels by shoving fractional
+      // EVs like 98.9 into the narrower lower-mph window).
+      const evInt = Math.min(Math.round(ev), 116);
       const window = table[evInt];
       if (!window) return false;
       return la >= window[0] && la <= window[1];
@@ -2410,6 +2462,7 @@ const COMPARE_COLS = [
   { key: "gbRate", label: "GB%", w: 55 },
   { key: "fbRate", label: "FB%", w: 55 },
   { key: "barrelRate", label: "Barrel%", w: 65 },
+  { key: "slg", label: "SLG", w: 60 },
   { key: "expRunValue", label: "RV", w: 50 },
   { key: "rv100", label: "RV/100", w: 60 },
 ];
