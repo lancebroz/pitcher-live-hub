@@ -9,6 +9,29 @@ const {
   ResponsiveContainer, ReferenceLine, Cell, ReferenceArea
 } = recharts;
 
+// ─── Global mobile fixes ───
+// Injected once at module load. Two structural mobile issues:
+// 1) iOS Safari auto-zooms the page when focusing any <select>/<input> whose font-size
+//    is under 16px — and often doesn't zoom back out, leaving the UI half-off-screen.
+//    Every control in this app uses 10-12px fonts, so each dropdown tap (e.g. the live
+//    game picker) triggered the zoom. Forcing 16px on focusable controls at mobile
+//    widths prevents it (buttons don't trigger zoom and keep their sizes).
+// 2) Long option labels give selects a large intrinsic width that can push the layout
+//    wider than the viewport; max-width + border-box keeps everything inside, and
+//    overflow-x on body stops stray wide elements from breaking the page frame.
+if (typeof document !== "undefined" && !document.getElementById("pch-mobile-fixes")) {
+  const _st = document.createElement("style");
+  _st.id = "pch-mobile-fixes";
+  _st.textContent = `
+    @media (max-width: 768px) {
+      select, input, textarea, button { max-width: 100%; box-sizing: border-box; }
+      select, input, textarea { font-size: 16px !important; }
+      body { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+    }
+  `;
+  document.head.appendChild(_st);
+}
+
 // ─── Error boundary ───
 // Catches render/effect exceptions inside the wrapped view and shows a recoverable
 // card instead of unmounting the whole app (which looks like a white/broken page and
@@ -245,6 +268,47 @@ const avgInt = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return 
 const avg3 = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? (f.reduce((s, v) => s + v, 0) / f.length).toFixed(3) : "—"; };
 const avgNum = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length > 0 ? f.reduce((s, v) => s + v, 0) / f.length : 0; };
 
+// ─── SLG / xSLG (Savant-verified definitions) ───
+// Actual SLG against = total bases / at-bats, attributed to the pitch that ENDED the PA
+// (Savant pitch-arsenal convention: the result belongs to the final pitch). At-bats
+// exclude walks, HBP, sacrifices, and catcher's interference; strikeouts are 0-TB ABs.
+const SLG_TB = { single: 1, double: 2, triple: 3, home_run: 4 };
+const SLG_AB_CONTACT_OUTS = new Set(["field_out", "force_out", "grounded_into_double_play",
+  "double_play", "triple_play", "field_error", "fielders_choice", "fielders_choice_out",
+  "other_out", "batter_out"]);
+// IMPORTANT: feed/parquet data stamps the PA result (events) on EVERY pitch of the
+// at-bat, while Savant CSV stamps only the final pitch. To count each PA exactly once
+// AND attribute it to the pitch type that actually ended it (Savant convention), gate
+// on the ending pitch itself: the ball in play for contact results, the 2-strike
+// whiff/called strike for strikeouts. Works identically on both data paths.
+// (Edge not covered: 2-strike foul-bunt strikeouts — a handful per season league-wide.)
+const _endsPaAsK = (p) => (p.is_whiff || p.is_called_strike) && Number(p.strikes) === 2;
+const computeSlg = (pts) => {
+  let tb = 0, ab = 0;
+  for (const p of pts) {
+    const ev = p.events;
+    if (!ev) continue;
+    if (ev === "strikeout" || ev === "strikeout_double_play") {
+      if (_endsPaAsK(p)) ab++;               // K = 0-TB at-bat, on the K pitch only
+    } else if ((SLG_TB[ev] != null || SLG_AB_CONTACT_OUTS.has(ev)) && p.is_in_play) {
+      ab++; tb += SLG_TB[ev] || 0;           // contact result, on the in-play pitch only
+    }
+    // walk / HBP / sacrifices / catcher_interf / baserunning events: not at-bats.
+  }
+  return ab > 0 ? (tb / ab).toFixed(3) : "—";
+};
+// xSLG per Savant: expected outcomes of batted balls accumulated WITH actual strikeouts
+// (each K is a 0-value AB in the denominator). Averaging estimated_slg over batted balls
+// alone — the previous behavior — yields an inflated "xSLG on contact" number.
+const computeXslg = (pts) => {
+  const bb = pts.filter(p => p.estimated_slg_using_speedangle != null);
+  // Count each strikeout once, on the pitch that ended it (see computeSlg note).
+  const k = pts.filter(p => (p.events === "strikeout" || p.events === "strikeout_double_play") && _endsPaAsK(p)).length;
+  const denom = bb.length + k;
+  if (denom === 0) return "—";
+  return (bb.reduce((s, p) => s + p.estimated_slg_using_speedangle, 0) / denom).toFixed(3);
+};
+
 // ─── Location-adjusted VAA (aVAA) ───
 // Normalizes raw VAA for pitch height within a pitch type (Chamberlain / FanGraphs).
 // expected_VAA(z) = a + b*plate_z; aVAA = actual - expected.
@@ -301,8 +365,10 @@ const computeMetrics = (pitches, hf) => {
       calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
       gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, bbe),
+      ncRate: pct(pts.filter(isNonCompetitive).length, pts.length),
       bipCount: ip,
-      xSLG: avg3(pts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
+      slg: computeSlg(pts),
+      xSLG: computeXslg(pts),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
       expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
@@ -340,8 +406,10 @@ const computeMetrics = (pitches, hf) => {
     calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
     gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, abbe),
+    ncRate: pct(allPts.filter(isNonCompetitive).length, allPts.length),
     bipCount: aip,
-    xSLG: avg3(allPts.filter(p => p.estimated_slg_using_speedangle != null).map(p => p.estimated_slg_using_speedangle)),
+    slg: computeSlg(allPts),
+    xSLG: computeXslg(allPts),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
     xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
     expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
@@ -1947,6 +2015,10 @@ const normalizeLivePitch = (p) => {
     // Bunts are excluded from Savant's BBE denominator for Barrel% (a bunt can never
     // barrel). Only detectable on feed/parquet data where bb_type carries bunt_* labels.
     is_bunt: (p.bb_type || "").startsWith("bunt"),
+    // Per-pitch strike zone bounds (batter-specific) for the NC% edge-distance calc.
+    // Feed/parquet name it sz_bottom; Savant CSV calls it sz_bot.
+    sz_top: p.sz_top != null ? Number(p.sz_top) : null,
+    sz_bottom: p.sz_bottom != null ? Number(p.sz_bottom) : (p.sz_bot != null ? Number(p.sz_bot) : null),
     // Exact Statcast barrel definition (per MLB.com glossary).
     // Each integer mph of EV from 98 to 116+ has its own LA window.
     // Source: https://www.mlb.com/glossary/statcast/barrel
@@ -2284,6 +2356,8 @@ const STUFF_COLS = [
 const PERF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
   { key: "strikeRate", label: "Strike%" }, { key: "zoneRate", label: "Zone%" },
+  { key: "ncRate", label: "NC%",
+    desc: "Non-competitive pitch rate: share of pitches so far from the zone hitters almost never swing (>12\" from the nearest zone edge laterally or above; >18\" below, since hitters chase deeper down). Lower is better. Colored vs the league average for the selected pitcher hand, batter side, and count situation." },
   { key: "cswRate", label: "CSW%" }, { key: "calledStrikeRate", label: "CStr%" },
   { key: "swStrRate", label: "SwStr%" }, { key: "whiffRate", label: "Whiff%" },
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
@@ -2419,6 +2493,7 @@ const COMPARE_COLS = [
   { key: "gbRate", label: "GB%", w: 55 },
   { key: "fbRate", label: "FB%", w: 55 },
   { key: "barrelRate", label: "Barrel%", w: 65 },
+  { key: "slg", label: "SLG", w: 60 },
   { key: "expRunValue", label: "RV", w: 50 },
   { key: "rv100", label: "RV/100", w: 60 },
 ];
@@ -2823,7 +2898,7 @@ const STAT_GOOD_DIR = {
   // Stuff/movement: higher generally better for the pitcher. RelH is neutral (not colored).
   avgVelo: 1, avgIVB: 1, avgHB: 1, avgExt: 1,
   strikeRate: 1, zoneRate: 1, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
-  chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1,
+  chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1, ncRate: -1,
   xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
 };
 // Directions reflect conventional pitcher value: more zone/called-strikes/grounders = good
@@ -2836,6 +2911,27 @@ const COUNT_KEY_MAP = { all: "all", pre2k: "pre2k", two_strikes: "two_strikes", 
 // Definitions MUST stay in sync with the frozen baselines and the Compare tables:
 //   pre2k = strikes < 2 · two_strikes = strikes = 2 · ahead = 0-1, 0-2, 1-2
 //   behind = 1-0, 2-0, 3-0, 2-1, 3-1 · leverage = 0-0, 1-1
+// ─── Non-competitive pitch (NC%) ───
+// A pitch far enough from the zone that hitters effectively never swing. Distance is
+// measured to the NEAREST EDGE of the rulebook rectangle (17" plate width; per-pitch
+// batter-specific sz_top/sz_bottom, with league-typical fallbacks). Swing-calibrated
+// asymmetry: hitters keep chasing below the zone far deeper than lateral/high misses,
+// so the below-zone component is scaled by 2/3 — thresholds of ~12" lateral/above and
+// ~18" below give roughly equal (~5%) swing probability in every direction
+// (calibrated on 2025-26 league data).
+const NC_HALF_W = 17 / 2 / 12; // plate half-width, feet
+const isNonCompetitive = (p) => {
+  const px = p.plate_x, pz = p.plate_z;
+  if (px == null || pz == null || isNaN(px) || isNaN(pz)) return false;
+  const top = (p.sz_top != null && p.sz_top > 1) ? p.sz_top : 3.4;
+  const bot = (p.sz_bottom != null && p.sz_bottom > 0.5) ? p.sz_bottom : 1.6;
+  const dx = Math.max(0, Math.abs(px) - NC_HALF_W);
+  const dAbove = Math.max(0, pz - top);
+  const dBelow = Math.max(0, bot - pz);
+  const effIn = Math.hypot(dx, Math.max(dAbove, (2 / 3) * dBelow)) * 12;
+  return effIn > 12;
+};
+
 const pitchMatchesCount = (p, countFilter) => {
   if (!countFilter || countFilter === "all") return true;
   const b = Number(p.balls);
@@ -3073,7 +3169,7 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
         <thead>
           <tr style={{ background: C.accentGlow }}>
             {COMPARE_COLS.map(c => (
-              <th key={c.key} style={{
+              <th key={c.key} title={c.desc || undefined} style={{
                 padding: "8px 6px",
                 textAlign: c.align || "right",
                 fontSize: "9.5px",
@@ -3084,6 +3180,9 @@ const CompareTable = ({ rawPitches, label, sublabel, C, isMobile, hand, onHandCh
                 borderBottom: `1px solid ${C.border}`,
                 whiteSpace: "nowrap",
                 width: c.w,
+                cursor: c.desc ? "help" : undefined,
+                textDecoration: c.desc ? "underline dotted" : undefined,
+                textUnderlineOffset: c.desc ? "3px" : undefined,
               }}>{c.label}</th>
             ))}
           </tr>
@@ -3220,8 +3319,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   const [cmpStart, setCmpStart] = useState("2026-03-25");
   const [cmpEnd, setCmpEnd] = useState(new Date().toISOString().slice(0, 10));
   const [errMsg, setErrMsg] = useState("");
-  const [topHand, setTopHand] = useState("all");
-  const [cmpHand, setCmpHand] = useState("all");
+  // ONE hand filter shared by both tables: clicking All/LHH/RHH on either table
+  // applies to both populations, exactly like the shared count-situation dropdown.
+  const [sharedHand, setSharedHand] = useState("all");
   const [topPitchOrder, setTopPitchOrder] = useState([]);
   const [hoveredCode, setHoveredCode] = useState(null);
   // Shared count-situation filter so the top table and bottom comparison stay in sync.
@@ -3504,8 +3604,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               sublabel={`${topFiltered.length} pitches`}
               C={C}
               isMobile={isMobile}
-              hand={topHand}
-              onHandChange={setTopHand}
+              hand={sharedHand}
+              onHandChange={setSharedHand}
               pitcherId={pitcher.id}
               pitcherHand={pitcher.throws}
               onComputed={setTopPitchOrder}
@@ -3567,8 +3667,8 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               sublabel={`${cmpData.length} pitches`}
               C={C}
               isMobile={isMobile}
-              hand={cmpHand}
-              onHandChange={setCmpHand}
+              hand={sharedHand}
+              onHandChange={setSharedHand}
               pitcherId={pitcher.id}
               pitcherHand={pitcher.throws}
               pitchOrder={topPitchOrder}
