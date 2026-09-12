@@ -108,6 +108,46 @@ def _compute_avaa(vaa, plate_z, pitch_type):
 # ─── Simple cache so we don't spam MLB servers ───
 _cache = {}
 
+# ─── OpenCommand miss-distance lookup ───
+# Per-pitch command data built by mlb-pitcher-data's build_command.py from
+# github.com/tomdoyo/open-command (CC BY-NC-SA 4.0). 24h in-memory cache,
+# same lifecycle as the parquet cache.
+COMMAND_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/command"
+
+def get_command_lookup(season):
+    key = f"command_lookup_{season}"
+    cached = get_cached(key, 86400)
+    if cached is not None:
+        return cached
+    lookup = {}
+    try:
+        import httpx as _httpx
+        with _httpx.Client() as client:
+            resp = client.get(f"{COMMAND_BASE}/{season}.parquet", timeout=45)
+            if resp.status_code == 200:
+                _df = pd.read_parquet(io.BytesIO(resp.content))
+                lookup = {(int(g), str(p)): float(m) for g, p, m in
+                          zip(_df["game_pk"], _df["play_id"], _df["miss_in"])}
+                print(f"[Command] loaded {len(lookup)} miss entries for {season}")
+    except Exception as e:
+        print(f"[Command] load failed for {season}: {e}")
+    set_cache(key, lookup)
+    return lookup
+
+def _attach_command_miss(pitches):
+    seasons = {str(p.get("game_date") or "")[:4] for p in pitches}
+    seasons = {s for s in seasons if s.isdigit()}
+    lookups = {s: get_command_lookup(int(s)) for s in seasons}
+    for p in pitches:
+        p.setdefault("cmd_miss_in", None)
+        s = str(p.get("game_date") or "")[:4]
+        lk = lookups.get(s)
+        if lk and p.get("play_id"):
+            try:
+                p["cmd_miss_in"] = lk.get((int(p["game_pk"]), str(p["play_id"])))
+            except Exception:
+                pass
+
 def get_cached(key, max_age_seconds):
     """Return cached data if it's fresh enough, otherwise None."""
     if key in _cache:
@@ -207,6 +247,84 @@ async def search_pitcher(q: str):
 
 
 # ─── Route 2: Get today's live/scheduled games ───
+@app.get("/api/search/batter")
+async def search_batter(q: str):
+    """Type a name, get matching MLB position players (includes TWP, e.g. Ohtani)."""
+    cache_key = f"search_batter:{q.lower()}"
+    cached = get_cached(cache_key, 86400)
+    if cached:
+        return cached
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{MLB_BASE}/api/v1/people/search",
+            params={"names": q, "sportId": 1, "hydrate": "currentTeam"},
+            timeout=10,
+        )
+        data = resp.json()
+    results = []
+    for person in data.get("people", []):
+        pos = person.get("primaryPosition", {}).get("abbreviation", "")
+        if pos and pos != "P":  # every position player; TWP included
+            results.append({
+                "id": person.get("id"),
+                "name": person.get("fullName", ""),
+                "team": person.get("currentTeam", {}).get("abbreviation", ""),
+                "position": pos,
+                "bats": person.get("batSide", {}).get("code", ""),
+            })
+    set_cache(cache_key, results)
+    return results
+
+
+@app.get("/api/batter/{batter_id}/cached-season")
+async def get_batter_cached_season(batter_id: int):
+    """
+    All pitches a batter has FACED this season, from the GitHub monthly parquets.
+    Same data spine as the pitcher cached-season endpoint, filtered on batter_id.
+    Emits raw parquet-shaped rows (the frontend normalizer handles both spellings)
+    plus p_throws/bb_type conveniences and OpenCommand miss where available.
+    """
+    import pandas as pd
+    cache_key = f"batter_cached_season:{batter_id}"
+    cached_resp = get_cached(cache_key, 300)
+    if cached_resp is not None:
+        return cached_resp
+
+    df = await _load_local_savant_async()
+    if df is None:
+        return []
+    try:
+        sub = df[pd.to_numeric(df["batter_id"], errors="coerce").fillna(-1).astype("int64") == batter_id]
+    except Exception:
+        return []
+    if len(sub) == 0:
+        set_cache(cache_key, [])
+        return []
+
+    keep = ["game_pk", "game_date", "play_id", "inning", "at_bat_number", "pitch_number",
+            "pitch_type", "pitch_name", "start_speed", "spin_rate", "pfx_x", "pfx_z",
+            "plate_x", "plate_z", "zone", "sz_top", "sz_bottom",
+            "call_description", "is_in_play", "is_strike", "events",
+            "launch_speed", "launch_angle", "trajectory", "hit_x", "hit_y",
+            "balls", "strikes", "batter_hand", "stand", "pitcher_hand", "pitcher_name"]
+    cols = [c for c in keep if c in sub.columns]
+    out = sub[cols].copy()
+    # Conveniences the frontend normalizer expects
+    if "pitcher_hand" in out.columns:
+        out["p_throws"] = out["pitcher_hand"]
+    if "trajectory" in out.columns:
+        out["bb_type"] = out["trajectory"]
+    out = out.where(pd.notna(out), None)
+    pitches = out.to_dict("records")
+    for p in pitches:
+        for k, v in list(p.items()):
+            if isinstance(v, float) and v != v:  # residual NaN
+                p[k] = None
+    _attach_command_miss(pitches)
+    set_cache(cache_key, pitches)
+    return pitches
+
+
 @app.get("/api/games/live")
 async def get_live_games(game_date: str = None):
     """
@@ -1057,6 +1175,10 @@ async def get_cached_season(pitcher_id: int):
             "at_bat_number": at_bats[i],
             "delta_run_exp": None,
         })
+
+    # Attach OpenCommand miss distance (inches from inferred catcher target),
+    # joined by (game_pk, play_id). Pitches without coverage stay None.
+    _attach_command_miss(pitches)
 
     set_cache(cache_key, pitches)
     return pitches
