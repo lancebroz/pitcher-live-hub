@@ -44,6 +44,18 @@ export async function getLiveGames(gameDate) {
   return res.json();
 }
 
+export async function searchBatters(q) {
+  const res = await fetch(`${API_BASE}/api/search/batter?q=${encodeURIComponent(q)}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getBatterCachedSeason(batterId) {
+  const res = await fetch(`${API_BASE}/api/batter/${batterId}/cached-season`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export async function getGamePitchers(gamePk) {
   const res = await fetch(`${API_BASE}/api/game/${gamePk}/pitchers`);
   if (!res.ok) return [];
