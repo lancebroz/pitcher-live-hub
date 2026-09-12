@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, Component } from "react";
 import * as recharts from "recharts";
-import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport } from "./api.js";
+import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport, searchBatters, getBatterCachedSeason } from "./api.js";
 import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
 
@@ -366,6 +366,12 @@ const computeMetrics = (pitches, hf) => {
       chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
       gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, bbe),
       ncRate: pct(pts.filter(isNonCompetitive).length, pts.length),
+      ...(() => {
+        const cm = pts.map(p => p.cmd_miss_in).filter(v => v != null).sort((a, b) => a - b);
+        if (cm.length === 0) return { cmdMiss: "—", cmdRate: "—" };
+        const med = cm.length % 2 ? cm[(cm.length - 1) / 2] : (cm[cm.length / 2 - 1] + cm[cm.length / 2]) / 2;
+        return { cmdMiss: med.toFixed(1), cmdRate: Math.round(cm.filter(v => v <= 6).length / cm.length * 100) + "%" };
+      })(),
       bipCount: ip,
       slg: computeSlg(pts),
       xSLG: computeXslg(pts),
@@ -407,6 +413,12 @@ const computeMetrics = (pitches, hf) => {
     chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
     gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, abbe),
     ncRate: pct(allPts.filter(isNonCompetitive).length, allPts.length),
+    ...(() => {
+      const cm = allPts.map(p => p.cmd_miss_in).filter(v => v != null).sort((a, b) => a - b);
+      if (cm.length === 0) return { cmdMiss: "—", cmdRate: "—" };
+      const med = cm.length % 2 ? cm[(cm.length - 1) / 2] : (cm[cm.length / 2 - 1] + cm[cm.length / 2]) / 2;
+      return { cmdMiss: med.toFixed(1), cmdRate: Math.round(cm.filter(v => v <= 6).length / cm.length * 100) + "%" };
+    })(),
     bipCount: aip,
     slg: computeSlg(allPts),
     xSLG: computeXslg(allPts),
@@ -2019,6 +2031,9 @@ const normalizeLivePitch = (p) => {
     // Feed/parquet name it sz_bottom; Savant CSV calls it sz_bot.
     sz_top: p.sz_top != null ? Number(p.sz_top) : null,
     sz_bottom: p.sz_bottom != null ? Number(p.sz_bottom) : (p.sz_bot != null ? Number(p.sz_bot) : null),
+    // OpenCommand miss distance (inches from inferred catcher target), attached by the
+    // backend from the mlb-pitcher-data command files. Null = no coverage for this pitch.
+    cmd_miss_in: p.cmd_miss_in != null && !isNaN(p.cmd_miss_in) ? Number(p.cmd_miss_in) : null,
     // Exact Statcast barrel definition (per MLB.com glossary).
     // Each integer mph of EV from 98 to 116+ has its own LA window.
     // Source: https://www.mlb.com/glossary/statcast/barrel
@@ -2358,6 +2373,10 @@ const PERF_COLS = [
   { key: "strikeRate", label: "Strike%" }, { key: "zoneRate", label: "Zone%" },
   { key: "ncRate", label: "NC%",
     desc: "Non-competitive pitch rate: share of pitches so far from the zone hitters almost never swing (>12\" from the nearest zone edge laterally or above; >18\" below, since hitters chase deeper down). Lower is better. Colored vs the league average for the selected pitcher hand, batter side, and count situation." },
+  { key: "cmdMiss", label: "Miss\u2033",
+    desc: "Median miss distance (inches) from the inferred catcher target, per OpenCommand (github.com/tomdoyo/open-command, CC BY-NC-SA). Lower = better command. Covers ~90% of pitches; \u2014 when no coverage. Colored vs league avg for the selected pitcher hand, batter side, and count." },
+  { key: "cmdRate", label: "Cmd%",
+    desc: "Share of covered pitches landing within 6\u2033 of the inferred catcher target (OpenCommand data). Higher is better." },
   { key: "cswRate", label: "CSW%" }, { key: "calledStrikeRate", label: "CStr%" },
   { key: "swStrRate", label: "SwStr%" }, { key: "whiffRate", label: "Whiff%" },
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
@@ -2899,6 +2918,7 @@ const STAT_GOOD_DIR = {
   avgVelo: 1, avgIVB: 1, avgHB: 1, avgExt: 1,
   strikeRate: 1, zoneRate: 1, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
   chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1, ncRate: -1,
+  cmdMiss: -1, cmdRate: 1,
   xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
 };
 // Directions reflect conventional pitcher value: more zone/called-strikes/grounders = good
@@ -2930,6 +2950,27 @@ const isNonCompetitive = (p) => {
   const dBelow = Math.max(0, bot - pz);
   const effIn = Math.hypot(dx, Math.max(dAbove, (2 / 3) * dBelow)) * 12;
   return effIn > 12;
+};
+
+// Command baselines are produced by mlb-pitcher-data's build_command.py (they need the
+// OpenCommand join, which happens in the ETL). Fetched once per session and merged into
+// PITCH_BASELINES; until the file exists / loads, cmdMiss/cmdRate simply don't color.
+const COMMAND_BASELINES_URL = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/data/aggregated/command_baselines.json";
+let _cmdBaselinesPromise = null;
+const loadCommandBaselines = () => {
+  if (_cmdBaselinesPromise) return _cmdBaselinesPromise;
+  _cmdBaselinesPromise = fetch(COMMAND_BASELINES_URL)
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      if (!j) return false;
+      for (const [k, v] of Object.entries(j)) {
+        if (PITCH_BASELINES[k]) Object.assign(PITCH_BASELINES[k], v);
+        else PITCH_BASELINES[k] = v;
+      }
+      return true;
+    })
+    .catch(() => false);
+  return _cmdBaselinesPromise;
 };
 
 const pitchMatchesCount = (p, countFilter) => {
@@ -3333,6 +3374,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
   // Snapshot for the inline "Usage Compare" section. Holds a frozen {pitcherName,
   // leftLabel, rightLabel, leftYear, rightYear} config. Set only on button click.
   const [usageCompare, setUsageCompare] = useState(null);
+  // Load command baselines once; bump state so already-rendered tables recolor.
+  const [, setCmdBaselinesTick] = useState(0);
+  useEffect(() => { loadCommandBaselines().then(ok => { if (ok) setCmdBaselinesTick(t => t + 1); }); }, []);
   const [topStart, setTopStart] = useState("2026-03-25");
   const [topEnd, setTopEnd] = useState(new Date().toISOString().slice(0, 10));
   const [topUseRange, setTopUseRange] = useState(false); // false = full season, true = custom range
@@ -5241,6 +5285,278 @@ function noteColor(category) {
 }
 
 // ─── Main App ───
+
+// ═══ HITTERS PAGE ═══
+// Batter-perspective view built on the same parquet feed: search a hitter, see their
+// PA-derived stat line (timeframe-filterable), and 2x2 zone heatmaps split by pitcher
+// hand and pre/post two-strike, with SLG + Contact% numbers per split.
+
+// Self-contained KDE zone heat for hitters (catcher view). mode: "damage" weights
+// PA-ending in-play pitches by total bases (an SLG surface); "whiffs" shows whiff
+// density among swings.
+const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250 }) => {
+  const ref = useRef(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const X0 = -1.7, X1 = 1.7, Z0 = 0.6, Z1 = 4.4;
+    const px = (x) => ((x - X0) / (X1 - X0)) * w;
+    const pz = (z) => h - ((z - Z0) / (Z1 - Z0)) * h;
+    const pts = [];
+    for (const p of pitches) {
+      if (p.plate_x == null || p.plate_z == null) continue;
+      if (mode === "damage") {
+        if (!p.is_in_play || !p.events) continue;
+        const tb = SLG_TB[p.events];
+        const isOut = SLG_AB_CONTACT_OUTS.has(p.events);
+        if (tb == null && !isOut) continue;
+        pts.push({ x: p.plate_x, z: p.plate_z, wgt: tb || 0 });
+      } else {
+        if (!p.is_swing) continue;
+        pts.push({ x: p.plate_x, z: p.plate_z, wgt: p.is_whiff ? 1 : 0 });
+      }
+    }
+    const GN = 44, GM = 52, sig = 0.32;
+    const num = new Float32Array(GN * GM), den = new Float32Array(GN * GM);
+    for (const pt of pts) {
+      for (let i = 0; i < GN; i++) for (let j = 0; j < GM; j++) {
+        const gx = X0 + (i + 0.5) * (X1 - X0) / GN, gz = Z0 + (j + 0.5) * (Z1 - Z0) / GM;
+        const k = Math.exp(-((gx - pt.x) ** 2 + (gz - pt.z) ** 2) / (2 * sig * sig));
+        num[i * GM + j] += k * pt.wgt; den[i * GM + j] += k;
+      }
+    }
+    const MINK = 0.6; // suppress cells with almost no data
+    let vmax = 0.001;
+    const val = new Float32Array(GN * GM);
+    for (let c = 0; c < GN * GM; c++) {
+      val[c] = den[c] > MINK ? num[c] / den[c] : 0;
+      if (val[c] > vmax) vmax = val[c];
+    }
+    const cap = mode === "damage" ? Math.max(0.9, vmax) : Math.max(0.5, vmax);
+    for (let i = 0; i < GN; i++) for (let j = 0; j < GM; j++) {
+      const v = Math.min(1, val[i * GM + j] / cap);
+      const a = den[i * GM + j] > MINK ? 0.85 : 0;
+      if (!a) continue;
+      const r = Math.round(255 * Math.min(1, v * 2));
+      const b = Math.round(255 * Math.min(1, (1 - v) * 2));
+      const g = Math.round(230 * (1 - Math.abs(v - 0.5) * 2) + 25);
+      ctx.fillStyle = `rgba(${r},${g},${b},${(0.15 + 0.55 * v) * a})`;
+      ctx.fillRect(px(X0 + i * (X1 - X0) / GN), pz(Z0 + (j + 1) * (Z1 - Z0) / GM),
+                   w / GN + 1, h / GM + 1);
+    }
+    // strike zone
+    ctx.strokeStyle = C.text; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeRect(px(-17 / 24), pz(3.4), px(17 / 24) - px(-17 / 24), pz(1.6) - pz(3.4));
+  }, [pitches, mode, C, w, h]);
+  return <canvas ref={ref} width={w} height={h} style={{ display: "block" }} />;
+};
+
+const HittersPage = ({ C, isMobile }) => {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [batter, setBatter] = useState(null);
+  const [raw, setRaw] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [dStart, setDStart] = useState("");
+  const [dEnd, setDEnd] = useState("");
+  const [heatMode, setHeatMode] = useState("damage");
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (q.length < 3) { setResults([]); return; }
+    const t = setTimeout(() => {
+      searchBatters(q).then(r => { setResults(r || []); setOpen(true); });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const loadBatter = (b) => {
+    const seq = ++seqRef.current;
+    setBatter(b); setQ(b.name); setOpen(false); setRaw(null); setLoading(true);
+    setDStart(""); setDEnd("");
+    getBatterCachedSeason(b.id).then(rows => {
+      if (seq !== seqRef.current) return;
+      setRaw((rows || []).map(normalizeLivePitch));
+    }).finally(() => { if (seq === seqRef.current) setLoading(false); });
+  };
+
+  const pitches = useMemo(() => {
+    if (!raw) return null;
+    let p = raw;
+    if (dStart) p = p.filter(x => x.game_date && x.game_date >= dStart);
+    if (dEnd) p = p.filter(x => x.game_date && x.game_date <= dEnd);
+    return p;
+  }, [raw, dStart, dEnd]);
+
+  // PA-outcome extraction with the same final-pitch gating as pitcher SLG:
+  // contact results on the in-play pitch, Ks on the 2-strike K pitch, walks on
+  // the 4th ball, HBP on the HBP pitch (feed stamps events on every pitch of a PA).
+  const stats = useMemo(() => {
+    if (!pitches || pitches.length === 0) return null;
+    let s1 = 0, s2 = 0, s3 = 0, hr = 0, outs = 0, k = 0, bb = 0, ibb = 0, hbp = 0, sf = 0, sh = 0;
+    for (const p of pitches) {
+      const ev = p.events; if (!ev) continue;
+      if (ev === "strikeout" || ev === "strikeout_double_play") { if (_endsPaAsK(p)) k++; continue; }
+      if (ev === "walk" || ev === "intent_walk") {
+        if (p.is_ball && Number(p.balls) === 3) { bb++; if (ev === "intent_walk") ibb++; } continue;
+      }
+      if (ev === "hit_by_pitch") { if ((p.call_description || p.description || "").toLowerCase().includes("hit_by_pitch")) hbp++; continue; }
+      if (!p.is_in_play) continue;
+      if (ev === "single") s1++; else if (ev === "double") s2++;
+      else if (ev === "triple") s3++; else if (ev === "home_run") hr++;
+      else if (ev === "sac_fly" || ev === "sac_fly_double_play") sf++;
+      else if (ev === "sac_bunt") sh++;
+      else if (SLG_AB_CONTACT_OUTS.has(ev)) outs++;
+    }
+    const hits = s1 + s2 + s3 + hr, tb = s1 + 2 * s2 + 3 * s3 + 4 * hr;
+    const ab = hits + outs + k, pa = ab + bb + hbp + sf + sh;
+    if (pa === 0) return null;
+    const f3 = (x) => x.toFixed(3).replace(/^0/, "");
+    const avg = ab ? hits / ab : 0, obp = (ab + bb + hbp + sf) ? (hits + bb + hbp) / (ab + bb + hbp + sf) : 0;
+    const slg = ab ? tb / ab : 0;
+    const babipD = ab - k - hr + sf;
+    // wOBA / wRC+ — 2025-26 linear weights, PARK-UNADJUSTED (no park factors applied)
+    const woba = (ab + bb - ibb + sf + hbp) > 0
+      ? (0.689 * (bb - ibb) + 0.720 * hbp + 0.882 * s1 + 1.254 * s2 + 1.590 * s3 + 2.050 * hr) / (ab + bb - ibb + sf + hbp) : 0;
+    const LG = { woba: 0.315, scale: 1.24, rpa: 0.121 };
+    const wrc = Math.round(((woba - LG.woba) / LG.scale + LG.rpa) / LG.rpa * 100);
+    const bbe = pitches.filter(p => p.is_in_play && !p.is_bunt);
+    const evs = bbe.map(p => p.launch_speed).filter(v => v != null).sort((a, b) => a - b);
+    const evAvg = evs.length ? evs.reduce((s, v) => s + v, 0) / evs.length : null;
+    const ev90 = evs.length ? evs[Math.min(evs.length - 1, Math.floor(evs.length * 0.9))] : null;
+    const las = bbe.map(p => p.launch_angle).filter(v => v != null);
+    const barrels = bbe.filter(p => p.is_barrel).length;
+    const hard = evs.filter(v => v >= 95).length;
+    const gb = bbe.filter(p => p.is_ground_ball).length, fb = bbe.filter(p => p.is_fly_ball).length;
+    const ld = bbe.filter(p => (p.bb_type || "") === "line_drive").length;
+    const swings = pitches.filter(p => p.is_swing), whiffs = swings.filter(p => p.is_whiff).length;
+    const oz = pitches.filter(p => p.is_out_zone), ozSw = oz.filter(p => p.is_swing);
+    const iz = pitches.filter(p => p.is_in_zone), izSw = iz.filter(p => p.is_swing);
+    const r1 = (x) => (x * 100).toFixed(1) + "%";
+    return {
+      PA: pa, AVG: f3(avg), OBP: f3(obp), SLG: f3(slg), ISO: f3(slg - avg),
+      BABIP: babipD > 0 ? f3((hits - hr) / babipD) : "—",
+      "BB%": r1(bb / pa), "K%": r1(k / pa), HR: hr,
+      wOBA: f3(woba), "wRC+*": wrc,
+      EV: evAvg != null ? evAvg.toFixed(1) : "—", EV90: ev90 != null ? ev90.toFixed(1) : "—",
+      maxEV: evs.length ? evs[evs.length - 1].toFixed(1) : "—",
+      LA: las.length ? (las.reduce((s, v) => s + v, 0) / las.length).toFixed(1) + "°" : "—",
+      "Barrel%": bbe.length ? r1(barrels / bbe.length) : "—",
+      "HardHit%": evs.length ? r1(hard / evs.length) : "—",
+      "GB%": bbe.length ? r1(gb / bbe.length) : "—", "FB%": bbe.length ? r1(fb / bbe.length) : "—",
+      "LD%": bbe.length ? r1(ld / bbe.length) : "—",
+      "Swing%": r1(swings.length / pitches.length),
+      "Contact%": swings.length ? r1(1 - whiffs / swings.length) : "—",
+      "O-Swing%": oz.length ? r1(ozSw.length / oz.length) : "—",
+      "O-Contact%": ozSw.length ? r1(1 - ozSw.filter(p => p.is_whiff).length / ozSw.length) : "—",
+      "Z-Swing%": iz.length ? r1(izSw.length / iz.length) : "—",
+      "Z-Contact%": izSw.length ? r1(1 - izSw.filter(p => p.is_whiff).length / izSw.length) : "—",
+    };
+  }, [pitches]);
+
+  // 2x2 splits: pitcher hand x pre-two-strike / two-strike
+  const splits = useMemo(() => {
+    if (!pitches) return [];
+    const out = [];
+    for (const ph of ["R", "L"]) {
+      for (const [ck, cl] of [["pre", "Pre 2-Strike"], ["two", "Two Strikes"]]) {
+        const sub = pitches.filter(p => (p.p_throws || "") === ph &&
+          (ck === "pre" ? Number(p.strikes) < 2 : Number(p.strikes) === 2));
+        const sw = sub.filter(p => p.is_swing);
+        out.push({
+          key: `${ph}-${ck}`, label: `vs ${ph}HP · ${cl}`,
+          n: sub.length, slg: computeSlg(sub),
+          contact: sw.length ? Math.round((1 - sw.filter(p => p.is_whiff).length / sw.length) * 100) + "%" : "—",
+          pitches: sub,
+        });
+      }
+    }
+    return out;
+  }, [pitches]);
+
+  const cell = (label, value) => (
+    <div key={label} style={{ padding: "8px 10px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px" }}>
+      <div style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.8px" }}>{label}</div>
+      <div style={{ fontSize: "16px", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: "1100px", margin: "0 auto", padding: isMobile ? "12px" : "24px" }}>
+      {/* search */}
+      <div style={{ position: "relative", maxWidth: "420px", marginBottom: "18px" }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search for a hitter…"
+          style={{ width: "100%", padding: "10px 14px", background: C.surface, color: C.text,
+            border: `1px solid ${C.border}`, borderRadius: "8px", fontSize: "13px", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+        {open && results.length > 0 && (
+          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: C.surface,
+            border: `1px solid ${C.border}`, borderRadius: "8px", marginTop: "4px", overflow: "hidden" }}>
+            {results.slice(0, 8).map(b => (
+              <div key={b.id} onClick={() => loadBatter(b)} style={{ padding: "9px 14px", cursor: "pointer", fontSize: "13px", color: C.text, borderBottom: `1px solid ${C.border}` }}>
+                {b.name} <span style={{ color: C.textDim, fontSize: "11px" }}>{b.team} · {b.position} · bats {b.bats}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {loading && <div style={{ color: C.textDim, fontSize: "12px", padding: "24px 0" }}>Loading season pitches…</div>}
+
+      {batter && pitches && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
+            <div>
+              <span style={{ fontSize: "20px", fontWeight: 800, color: C.text }}>{batter.name}</span>
+              <span style={{ fontSize: "12px", color: C.textDim, marginLeft: "10px" }}>{batter.team} · bats {batter.bats} · {pitches.length} pitches seen</span>
+            </div>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <span style={{ fontSize: "10px", color: C.textDim, textTransform: "uppercase", letterSpacing: "1px" }}>Range</span>
+              <input type="date" value={dStart} onChange={e => setDStart(e.target.value)} style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "5px 8px", fontFamily: "inherit", fontSize: "11px" }} />
+              <input type="date" value={dEnd} onChange={e => setDEnd(e.target.value)} style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "5px 8px", fontFamily: "inherit", fontSize: "11px" }} />
+            </div>
+          </div>
+
+          {stats ? (
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(8, 1fr)", gap: "8px", marginBottom: "6px" }}>
+              {Object.entries(stats).map(([k, v]) => cell(k, v))}
+            </div>
+          ) : <div style={{ color: C.textDim, fontSize: "12px" }}>No plate appearances in this range.</div>}
+          <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "20px" }}>
+            *wRC+ is park-unadjusted (league constants only). GB/FB/LD% and HardHit% use Statcast definitions, which differ slightly from FanGraphs' SIS-based figures.
+          </div>
+
+          {/* splits + heatmaps */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>Zone Maps · Pitcher Hand × Count</div>
+            <div style={{ display: "flex", gap: "4px" }}>
+              {[{ k: "damage", l: "Damage (SLG)" }, { k: "whiffs", l: "Whiffs" }].map(t => (
+                <button key={t.k} onClick={() => setHeatMode(t.k)} style={{
+                  background: heatMode === t.k ? C.accentGlow : "transparent",
+                  border: `1px solid ${heatMode === t.k ? C.accent : C.border}`,
+                  borderRadius: "4px", padding: "5px 12px", color: heatMode === t.k ? C.accent : C.textDim,
+                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{t.l}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: "14px" }}>
+            {splits.map(s => (
+              <div key={s.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "10px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "2px" }}>{s.label}</div>
+                <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "8px" }}>
+                  {s.n} pitches · SLG {s.slg} · Contact {s.contact}
+                </div>
+                <BatterZoneHeat pitches={s.pitches} mode={heatMode} C={C} w={isMobile ? 150 : 200} h={isMobile ? 180 : 240} />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
   const C = themes[theme];
@@ -5522,7 +5838,7 @@ export default function PitcherTracker() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
-              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
+              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "hitters", l: "Hitters" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
                 <button key={p.k} onClick={() => setPage(p.k)} style={{
                   padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
                   background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
@@ -5865,6 +6181,9 @@ export default function PitcherTracker() {
         )}
         {page === "leaderboard" && (
           <LeaderboardPage C={C} isMobile={isMobile} />
+        )}
+        {page === "hitters" && (
+          <HittersPage C={C} isMobile={isMobile} />
         )}
         {page === "report" && (
           <ReportView C={C} isMobile={isMobile} logos={teamLogos} onBack={() => setPage("tracker")} />
