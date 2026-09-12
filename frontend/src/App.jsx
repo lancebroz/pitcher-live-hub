@@ -5352,6 +5352,75 @@ const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250 }) => {
   return <canvas ref={ref} width={w} height={h} style={{ display: "block" }} />;
 };
 
+// ─── Hitter stat tile color coding ───
+// League baselines (mean/std across 2025-26 player-seasons, regulars) for the Hitters
+// tab stat tiles. Same visual convention as the Compare tool: translucent green when
+// better than average, red when worse, neutral (surface) within ~0.4σ of the mean.
+// dir: +1 higher is better for the hitter, -1 lower is better, 0 = direction-neutral
+// (tile shows the league avg on hover but never colors). PA and HR are counting stats
+// over an arbitrary date range, so they're left uncolored entirely.
+// fmt: how the league avg renders in the hover tooltip — 3 = .xxx rate, "pct" = x.x%,
+// 1 = one decimal, 0 = integer.
+const HITTER_BASELINES = {
+  AVG:          { mean: 0.248, std: 0.028, dir: 1,  fmt: 3 },
+  OBP:          { mean: 0.317, std: 0.033, dir: 1,  fmt: 3 },
+  SLG:          { mean: 0.408, std: 0.055, dir: 1,  fmt: 3 },
+  BABIP:        { mean: 0.295, std: 0.030, dir: 1,  fmt: 3 },
+  "K%":         { mean: 22.0,  std: 5.5,  dir: -1, fmt: "pct" },
+  "BB%":        { mean: 8.5,   std: 3.0,  dir: 1,  fmt: "pct" },
+  wOBA:         { mean: 0.315, std: 0.035, dir: 1,  fmt: 3 },
+  "wRC+*":      { mean: 100,   std: 25,   dir: 1,  fmt: 0 },
+  EV:           { mean: 89.0,  std: 2.5,  dir: 1,  fmt: 1 },
+  EV90:         { mean: 103.5, std: 2.6,  dir: 1,  fmt: 1 },
+  LA:           { mean: 12.8,  std: 5.0,  dir: 0,  fmt: 1 },
+  "Barrel%":    { mean: 8.5,   std: 4.0,  dir: 1,  fmt: "pct" },
+  "HardHit%":   { mean: 41.0,  std: 7.5,  dir: 1,  fmt: "pct" },
+  "GB%":        { mean: 43.5,  std: 6.0,  dir: -1, fmt: "pct" },
+  "FB%":        { mean: 36.5,  std: 6.0,  dir: 1,  fmt: "pct" },
+  "LD%":        { mean: 20.0,  std: 3.0,  dir: 1,  fmt: "pct" },
+  "Swing%":     { mean: 47.0,  std: 4.5,  dir: 0,  fmt: "pct" },
+  "Z-Swing%":   { mean: 67.0,  std: 5.0,  dir: 1,  fmt: "pct" },
+  "O-Swing%":   { mean: 28.5,  std: 5.5,  dir: -1, fmt: "pct" },
+  "Z-O Swing%": { mean: 38.5,  std: 6.5,  dir: 1,  fmt: "pct" },
+  "Contact%":   { mean: 77.0,  std: 5.5,  dir: 1,  fmt: "pct" },
+  "O-Contact%": { mean: 62.0,  std: 8.0,  dir: 1,  fmt: "pct" },
+  "Z-Contact%": { mean: 85.0,  std: 4.5,  dir: 1,  fmt: "pct" },
+};
+
+// Tile layout: the four rows of the Hitters stat block, in display order.
+const HITTER_STAT_ROWS = [
+  ["PA", "AVG", "OBP", "SLG", "BABIP"],
+  ["HR", "K%", "BB%", "wOBA", "wRC+*"],
+  ["EV", "EV90", "LA", "Barrel%", "HardHit%", "GB%", "FB%", "LD%"],
+  ["Swing%", "Z-Swing%", "O-Swing%", "Z-O Swing%", "Contact%", "O-Contact%", "Z-Contact%"],
+];
+
+const _fmtHitterAvg = (mean, fmt) => {
+  if (fmt === "pct") return mean.toFixed(1) + "%";
+  if (fmt === 3) return mean.toFixed(3).replace(/^0/, "");
+  if (fmt === 1) return mean.toFixed(1);
+  return String(Math.round(mean));
+};
+
+// Returns { bg, tip } for a hitter stat tile, or null if not colorable.
+// Same math as the Compare tool's getCellColor: z-score vs the league baseline,
+// neutral within 0.4σ, alpha scaling to ±2σ, percentile from the hitter's
+// perspective (higher = better regardless of stat direction).
+const hitterCellColor = (statKey, rawValue) => {
+  const b = HITTER_BASELINES[statKey];
+  if (!b || rawValue == null || isNaN(rawValue)) return null;
+  const avgStr = _fmtHitterAvg(b.mean, b.fmt);
+  if (!b.dir) return { bg: "transparent", tip: `League avg ${avgStr}` };
+  if (!b.std) return null;
+  const goodness = b.dir * ((rawValue - b.mean) / b.std);
+  const mag = Math.max(0, Math.min(1, (Math.abs(goodness) - 0.4) / 1.6));
+  const alpha = (0.05 + 0.30 * mag).toFixed(3);
+  const bg = Math.abs(goodness) < 0.4 ? "transparent"
+    : goodness >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+  const pct = Math.round(_normCdf(goodness) * 100);
+  return { bg, tip: `League avg ${avgStr} · ${pct}th pctile` };
+};
+
 const HittersPage = ({ C, isMobile }) => {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
@@ -5434,26 +5503,47 @@ const HittersPage = ({ C, isMobile }) => {
     const swings = pitches.filter(p => p.is_swing), whiffs = swings.filter(p => p.is_whiff).length;
     const oz = pitches.filter(p => p.is_out_zone), ozSw = oz.filter(p => p.is_swing);
     const iz = pitches.filter(p => p.is_in_zone), izSw = iz.filter(p => p.is_swing);
-    const r1 = (x) => (x * 100).toFixed(1) + "%";
-    return {
-      PA: pa, AVG: f3(avg), OBP: f3(obp), SLG: f3(slg), ISO: f3(slg - avg),
-      BABIP: babipD > 0 ? f3((hits - hr) / babipD) : "—",
-      "BB%": r1(bb / pa), "K%": r1(k / pa), HR: hr,
-      wOBA: f3(woba), "wRC+*": wrc,
-      EV: evAvg != null ? evAvg.toFixed(1) : "—", EV90: ev90 != null ? ev90.toFixed(1) : "—",
-      maxEV: evs.length ? evs[evs.length - 1].toFixed(1) : "—",
-      LA: las.length ? (las.reduce((s, v) => s + v, 0) / las.length).toFixed(1) + "°" : "—",
-      "Barrel%": bbe.length ? r1(barrels / bbe.length) : "—",
-      "HardHit%": evs.length ? r1(hard / evs.length) : "—",
-      "GB%": bbe.length ? r1(gb / bbe.length) : "—", "FB%": bbe.length ? r1(fb / bbe.length) : "—",
-      "LD%": bbe.length ? r1(ld / bbe.length) : "—",
-      "Swing%": r1(swings.length / pitches.length),
-      "Contact%": swings.length ? r1(1 - whiffs / swings.length) : "—",
-      "O-Swing%": oz.length ? r1(ozSw.length / oz.length) : "—",
-      "O-Contact%": ozSw.length ? r1(1 - ozSw.filter(p => p.is_whiff).length / ozSw.length) : "—",
-      "Z-Swing%": iz.length ? r1(izSw.length / iz.length) : "—",
-      "Z-Contact%": izSw.length ? r1(1 - izSw.filter(p => p.is_whiff).length / izSw.length) : "—",
+    // Raw numeric values (percent stats on a 0-100 scale, matching HITTER_BASELINES)
+    // used for tile color coding; disp holds the formatted display strings.
+    const laAvg = las.length ? las.reduce((s, v) => s + v, 0) / las.length : null;
+    const raw = {
+      PA: pa, AVG: avg, OBP: obp, SLG: slg,
+      BABIP: babipD > 0 ? (hits - hr) / babipD : null,
+      HR: hr, "K%": (k / pa) * 100, "BB%": (bb / pa) * 100,
+      wOBA: woba, "wRC+*": wrc,
+      EV: evAvg, EV90: ev90, LA: laAvg,
+      "Barrel%": bbe.length ? (barrels / bbe.length) * 100 : null,
+      "HardHit%": evs.length ? (hard / evs.length) * 100 : null,
+      "GB%": bbe.length ? (gb / bbe.length) * 100 : null,
+      "FB%": bbe.length ? (fb / bbe.length) * 100 : null,
+      "LD%": bbe.length ? (ld / bbe.length) * 100 : null,
+      "Swing%": (swings.length / pitches.length) * 100,
+      "Z-Swing%": iz.length ? (izSw.length / iz.length) * 100 : null,
+      "O-Swing%": oz.length ? (ozSw.length / oz.length) * 100 : null,
+      "Z-O Swing%": (iz.length && oz.length)
+        ? (izSw.length / iz.length - ozSw.length / oz.length) * 100 : null,
+      "Contact%": swings.length ? (1 - whiffs / swings.length) * 100 : null,
+      "O-Contact%": ozSw.length ? (1 - ozSw.filter(p => p.is_whiff).length / ozSw.length) * 100 : null,
+      "Z-Contact%": izSw.length ? (1 - izSw.filter(p => p.is_whiff).length / izSw.length) * 100 : null,
     };
+    const p1 = (v) => (v != null ? v.toFixed(1) + "%" : "—");
+    const disp = {
+      PA: pa, HR: hr, "wRC+*": wrc,
+      AVG: f3(avg), OBP: f3(obp), SLG: f3(slg),
+      BABIP: raw.BABIP != null ? f3(raw.BABIP) : "—",
+      wOBA: f3(woba),
+      EV: evAvg != null ? evAvg.toFixed(1) : "—",
+      EV90: ev90 != null ? ev90.toFixed(1) : "—",
+      LA: laAvg != null ? laAvg.toFixed(1) + "°" : "—",
+      "K%": p1(raw["K%"]), "BB%": p1(raw["BB%"]),
+      "Barrel%": p1(raw["Barrel%"]), "HardHit%": p1(raw["HardHit%"]),
+      "GB%": p1(raw["GB%"]), "FB%": p1(raw["FB%"]), "LD%": p1(raw["LD%"]),
+      "Swing%": p1(raw["Swing%"]), "Z-Swing%": p1(raw["Z-Swing%"]),
+      "O-Swing%": p1(raw["O-Swing%"]), "Z-O Swing%": p1(raw["Z-O Swing%"]),
+      "Contact%": p1(raw["Contact%"]), "O-Contact%": p1(raw["O-Contact%"]),
+      "Z-Contact%": p1(raw["Z-Contact%"]),
+    };
+    return { raw, disp };
   }, [pitches]);
 
   // 2x2 splits: pitcher hand x pre-two-strike / two-strike
@@ -5476,12 +5566,22 @@ const HittersPage = ({ C, isMobile }) => {
     return out;
   }, [pitches]);
 
-  const cell = (label, value) => (
-    <div key={label} style={{ padding: "8px 10px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px" }}>
-      <div style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.8px" }}>{label}</div>
-      <div style={{ fontSize: "16px", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-    </div>
-  );
+  // Stat tile: translucent green/red tint layered over the surface color when the
+  // hitter deviates from the league baseline; hover shows the league avg + percentile.
+  const cell = (label) => {
+    const cc = hitterCellColor(label, stats.raw[label]);
+    const tinted = cc && cc.bg !== "transparent";
+    return (
+      <div key={label} title={cc ? cc.tip : undefined} style={{ padding: "8px 10px",
+        backgroundColor: C.surface,
+        backgroundImage: tinted ? `linear-gradient(${cc.bg}, ${cc.bg})` : "none",
+        border: `1px solid ${C.border}`, borderRadius: "6px",
+        cursor: cc ? "help" : "default" }}>
+        <div style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.8px" }}>{label}</div>
+        <div style={{ fontSize: "16px", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{stats.disp[label]}</div>
+      </div>
+    );
+  };
 
   return (
     <div style={{ maxWidth: "1100px", margin: "0 auto", padding: isMobile ? "12px" : "24px" }}>
@@ -5519,12 +5619,18 @@ const HittersPage = ({ C, isMobile }) => {
           </div>
 
           {stats ? (
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(8, 1fr)", gap: "8px", marginBottom: "6px" }}>
-              {Object.entries(stats).map(([k, v]) => cell(k, v))}
+            <div style={{ marginBottom: "6px" }}>
+              {HITTER_STAT_ROWS.map((row, i) => (
+                <div key={i} style={{ display: "grid",
+                  gridTemplateColumns: isMobile ? "repeat(4, 1fr)" : `repeat(${row.length}, 1fr)`,
+                  gap: "8px", marginBottom: i < HITTER_STAT_ROWS.length - 1 ? "8px" : 0 }}>
+                  {row.map(k => cell(k))}
+                </div>
+              ))}
             </div>
           ) : <div style={{ color: C.textDim, fontSize: "12px" }}>No plate appearances in this range.</div>}
           <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "20px" }}>
-            *wRC+ is park-unadjusted (league constants only). GB/FB/LD% and HardHit% use Statcast definitions, which differ slightly from FanGraphs' SIS-based figures.
+            *wRC+ is park-unadjusted (league constants only). GB/FB/LD% and HardHit% use Statcast definitions, which differ slightly from FanGraphs' SIS-based figures. Tile colors show deviation from the 2025-26 league average (green = better, red = worse); hover any tile for the league avg and percentile.
           </div>
 
           {/* splits + heatmaps */}
