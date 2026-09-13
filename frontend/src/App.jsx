@@ -1118,7 +1118,7 @@ const approxXwoba = (ev, la) => {
   return 0.1;
 };
 
-const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = false }) => {
+const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = false, weightFn = null }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1147,7 +1147,9 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
     for (const p of pitches) {
       if (p.plate_x == null || p.plate_z == null) continue;
       let weight = 1.0;
-      if (mode === "damage") {
+      if (weightFn) {
+        weight = weightFn(p);
+      } else if (mode === "damage") {
         weight = p.estimated_woba_using_speedangle || approxXwoba(p.launch_speed, p.launch_angle);
       }
       const px = -p.plate_x; // Flip for pitcher POV
@@ -1236,7 +1238,7 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
     ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
     ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fill();
     ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1.5; ctx.stroke();
-  }, [pitches, width, height, mode, hand, granular]);
+  }, [pitches, width, height, mode, hand, granular, weightFn]);
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
 
@@ -5307,62 +5309,58 @@ function noteColor(category) {
 // Self-contained KDE zone heat for hitters (catcher view). mode: "damage" weights
 // PA-ending in-play pitches by total bases (an SLG surface); "whiffs" shows whiff
 // density among swings.
-const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250 }) => {
-  const ref = useRef(null);
-  useEffect(() => {
-    const cv = ref.current; if (!cv) return;
-    const ctx = cv.getContext("2d");
-    ctx.clearRect(0, 0, w, h);
-    const X0 = -1.7, X1 = 1.7, Z0 = 0.6, Z1 = 4.4;
-    const px = (x) => ((x - X0) / (X1 - X0)) * w;
-    const pz = (z) => h - ((z - Z0) / (Z1 - Z0)) * h;
-    const pts = [];
+// ─── Hitter zone heatmap ───
+// Identical rendering to the Heatmaps tool's Gaussian view (same GaussianHeatmapCanvas:
+// sigma, color ramp, dark stage, batter silhouette, strike zone + plate), with the
+// batter's own silhouette drawn on his side of the box. Damage mode weights each BBE
+// by xSLG (expected total bases from the XSLGCON EV×LA grid); whiffs mode is whiff
+// density, matching the pitcher tool. Low-opacity dots overlay each underlying pitch;
+// clicking one opens that play on research.mlb.com.
+const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R" }) => {
+  const [hoverDot, setHoverDot] = useState(null);
+  const shown = useMemo(() => {
+    const out = [];
     for (const p of pitches) {
       if (p.plate_x == null || p.plate_z == null) continue;
       if (mode === "damage") {
-        if (!p.is_in_play || !p.events) continue;
-        const tb = SLG_TB[p.events];
-        const isOut = SLG_AB_CONTACT_OUTS.has(p.events);
-        if (tb == null && !isOut) continue;
-        pts.push({ x: p.plate_x, z: p.plate_z, wgt: tb || 0 });
+        if (!p.is_in_play || !p.events || p.is_bunt) continue;
       } else {
-        if (!p.is_swing) continue;
-        pts.push({ x: p.plate_x, z: p.plate_z, wgt: p.is_whiff ? 1 : 0 });
+        if (!p.is_whiff) continue;
       }
+      out.push(p);
     }
-    const GN = 44, GM = 52, sig = 0.32;
-    const num = new Float32Array(GN * GM), den = new Float32Array(GN * GM);
-    for (const pt of pts) {
-      for (let i = 0; i < GN; i++) for (let j = 0; j < GM; j++) {
-        const gx = X0 + (i + 0.5) * (X1 - X0) / GN, gz = Z0 + (j + 0.5) * (Z1 - Z0) / GM;
-        const k = Math.exp(-((gx - pt.x) ** 2 + (gz - pt.z) ** 2) / (2 * sig * sig));
-        num[i * GM + j] += k * pt.wgt; den[i * GM + j] += k;
-      }
-    }
-    const MINK = 0.6; // suppress cells with almost no data
-    let vmax = 0.001;
-    const val = new Float32Array(GN * GM);
-    for (let c = 0; c < GN * GM; c++) {
-      val[c] = den[c] > MINK ? num[c] / den[c] : 0;
-      if (val[c] > vmax) vmax = val[c];
-    }
-    const cap = mode === "damage" ? Math.max(0.9, vmax) : Math.max(0.5, vmax);
-    for (let i = 0; i < GN; i++) for (let j = 0; j < GM; j++) {
-      const v = Math.min(1, val[i * GM + j] / cap);
-      const a = den[i * GM + j] > MINK ? 0.85 : 0;
-      if (!a) continue;
-      const r = Math.round(255 * Math.min(1, v * 2));
-      const b = Math.round(255 * Math.min(1, (1 - v) * 2));
-      const g = Math.round(230 * (1 - Math.abs(v - 0.5) * 2) + 25);
-      ctx.fillStyle = `rgba(${r},${g},${b},${(0.15 + 0.55 * v) * a})`;
-      ctx.fillRect(px(X0 + i * (X1 - X0) / GN), pz(Z0 + (j + 1) * (Z1 - Z0) / GM),
-                   w / GN + 1, h / GM + 1);
-    }
-    // strike zone
-    ctx.strokeStyle = C.text; ctx.lineWidth = 1.5; ctx.setLineDash([]);
-    ctx.strokeRect(px(-17 / 24), pz(3.4), px(17 / 24) - px(-17 / 24), pz(1.6) - pz(3.4));
-  }, [pitches, mode, C, w, h]);
-  return <canvas ref={ref} width={w} height={h} style={{ display: "block" }} />;
+    return out;
+  }, [pitches, mode]);
+  const weightFn = useMemo(() => (
+    mode === "damage"
+      ? (p) => { const x = _xslgconLookup(p.launch_speed, p.launch_angle); return x != null ? x : (SLG_TB[p.events] || 0); }
+      : null
+  ), [mode]);
+  const hand = bats === "L" || bats === "R" ? bats : "all"; // switch hitters show both silhouettes
+  return (
+    <div style={{ position: "relative", width: "100%", aspectRatio: `${w} / ${h}` }}>
+      <GaussianHeatmapCanvas pitches={shown} width={w * 2} height={h * 2} mode={mode} hand={hand} weightFn={weightFn} />
+      {shown.map((p, i) => {
+        if (!p.game_pk || !p.play_id) return null;
+        const left = ((-p.plate_x + 2.5) / 5) * 100; // pitcher POV, matches the canvas transform
+        const top = (1 - p.plate_z / 5) * 100;
+        if (left < 2 || left > 98 || top < 2 || top > 98) return null;
+        const hov = hoverDot === i;
+        return (
+          <div key={i}
+            onMouseEnter={() => setHoverDot(i)}
+            onMouseLeave={() => setHoverDot(d => (d === i ? null : d))}
+            onClick={() => window.open(`https://research.mlb.com/games/${p.game_pk}/plays/${p.play_id}`, "_blank")}
+            title={`${p.game_date}${p.events ? " · " + String(p.events).replace(/_/g, " ") : ""} — view on MLB Research`}
+            style={{ position: "absolute", left: `${left}%`, top: `${top}%`, transform: "translate(-50%, -50%)",
+              width: hov ? "10px" : "7px", height: hov ? "10px" : "7px", borderRadius: "50%",
+              background: hov ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.14)",
+              border: `1px solid rgba(255,255,255,${hov ? 0.9 : 0.25})`,
+              cursor: "pointer", zIndex: 5, transition: "all 80ms" }} />
+        );
+      })}
+    </div>
+  );
 };
 
 // ─── xwOBA (expected wOBA) ───
@@ -5408,6 +5406,38 @@ const xwobaParts = (ps) => {
     den++;
   }
   return { num, den };
+};
+
+// XSLGCON: empirical league expected TOTAL BASES per BBE by the same EV×LA
+// buckets as XWOBACON (same source data, bins, and sparse-cell smoothing).
+// Player-level xSLGcon↔SLGcon correlation: 0.85 (386 players, ≥100 BBE).
+const XSLGCON = {"40|-60":0.144,"40|-50":0.359,"40|-40":0.238,"40|-30":0.279,"40|-20":0.156,"40|-10":0.185,"40|0":0.238,"40|10":0.2,"40|20":0.273,"40|30":0.275,"40|40":0.405,"40|50":0.206,"40|60":0.045,"40|70":0.008,"40|80":0.004,"45|-60":0.213,"45|-50":0.27,"45|-40":0.171,"45|-30":0.138,"45|-20":0.293,"45|-10":0.13,"45|0":0.087,"45|10":0.157,"45|20":0.121,"45|30":0.103,"45|40":0.222,"45|50":0.101,"45|60":0.017,"45|70":0.083,"45|80":0.043,"50|-60":0.199,"50|-50":0.258,"50|-40":0.163,"50|-30":0.132,"50|-20":0.164,"50|-10":0.151,"50|0":0.167,"50|10":0.146,"50|20":0.092,"50|30":0.113,"50|40":0.096,"50|50":0.0,"50|60":0.0,"50|70":0.0,"50|80":0.015,"55|-60":0.192,"55|-50":0.164,"55|-40":0.117,"55|-30":0.138,"55|-20":0.084,"55|-10":0.062,"55|0":0.133,"55|10":0.241,"55|20":0.15,"55|30":0.313,"55|40":0.11,"55|50":0.014,"55|60":0.0,"55|70":0.0,"55|80":0.0,"60|-60":0.225,"60|-50":0.226,"60|-40":0.158,"60|-30":0.086,"60|-20":0.086,"60|-10":0.061,"60|0":0.103,"60|10":0.11,"60|20":0.315,"60|30":0.533,"60|40":0.331,"60|50":0.076,"60|60":0.0,"60|70":0.012,"60|80":0.0,"65|-60":0.262,"65|-50":0.215,"65|-40":0.14,"65|-30":0.041,"65|-20":0.052,"65|-10":0.059,"65|0":0.134,"65|10":0.21,"65|20":0.601,"65|30":0.9,"65|40":0.454,"65|50":0.172,"65|60":0.005,"65|70":0.0,"65|80":0.0,"70|-60":0.3,"70|-50":0.266,"70|-40":0.106,"70|-30":0.053,"70|-20":0.051,"70|-10":0.055,"70|0":0.104,"70|10":0.285,"70|20":0.855,"70|30":0.92,"70|40":0.533,"70|50":0.216,"70|60":0.019,"70|70":0.008,"70|80":0.004,"75|-60":0.341,"75|-50":0.236,"75|-40":0.083,"75|-30":0.055,"75|-20":0.058,"75|-10":0.066,"75|0":0.128,"75|10":0.348,"75|20":0.956,"75|30":0.458,"75|40":0.165,"75|50":0.13,"75|60":0.042,"75|70":0.003,"75|80":0.003,"80|-60":0.406,"80|-50":0.171,"80|-40":0.074,"80|-30":0.067,"80|-20":0.056,"80|-10":0.094,"80|0":0.197,"80|10":0.491,"80|20":0.921,"80|30":0.181,"80|40":0.048,"80|50":0.043,"80|60":0.049,"80|70":0.004,"80|80":0.005,"85|-60":0.314,"85|-50":0.176,"85|-40":0.049,"85|-30":0.077,"85|-20":0.084,"85|-10":0.135,"85|0":0.288,"85|10":0.638,"85|20":0.717,"85|30":0.111,"85|40":0.012,"85|50":0.017,"85|60":0.045,"85|70":0.003,"85|80":0.0,"90|-60":0.323,"90|-50":0.1,"90|-40":0.044,"90|-30":0.082,"90|-20":0.095,"90|-10":0.173,"90|0":0.35,"90|10":0.766,"90|20":0.59,"90|30":0.139,"90|40":0.034,"90|50":0.009,"90|60":0.021,"90|70":0.009,"90|80":0.012,"95|-50":0.137,"95|-40":0.091,"95|-30":0.083,"95|-20":0.131,"95|-10":0.238,"95|0":0.426,"95|10":0.873,"95|20":0.582,"95|30":0.556,"95|40":0.211,"95|50":0.025,"95|60":0.022,"95|70":0.014,"95|80":0.0,"100|-50":0.182,"100|-40":0.205,"100|-30":0.118,"100|-20":0.16,"100|-10":0.259,"100|0":0.488,"100|10":0.91,"100|20":0.931,"100|30":1.731,"100|40":0.784,"100|50":0.022,"100|60":0.017,"100|70":0.078,"100|80":0.0,"105|-50":0.224,"105|-40":0.163,"105|-30":0.132,"105|-20":0.181,"105|-10":0.304,"105|0":0.561,"105|10":1.003,"105|20":1.706,"105|30":3.284,"105|40":1.902,"105|50":0.226,"105|60":0.051,"105|70":0.073,"110|-40":0.101,"110|-30":0.103,"110|-20":0.215,"110|-10":0.375,"110|0":0.625,"110|10":1.061,"110|20":2.295,"110|30":3.837,"110|40":3.414,"110|50":0.244,"110|60":0.049,"115|-50":0.224,"115|-20":0.212,"115|-10":0.372,"115|0":0.614,"115|10":1.223,"115|20":2.871,"115|30":4.0,"115|40":3.443};
+const XSLGCON_LEAGUE = 0.528;
+
+const _xslgconLookup = (ev, la) => {
+  if (ev == null || la == null || isNaN(ev) || isNaN(la)) return null;
+  const evb = Math.round(Math.min(115, Math.max(40, ev)) / 5) * 5;
+  const lab = Math.round(Math.min(80, Math.max(-60, la)) / 10) * 10;
+  const v = XSLGCON[`${evb}|${lab}`];
+  return v != null ? v : XSLGCON_LEAGUE;
+};
+
+// Expected SLG for a set of pitches: xTB on tracked BBE (actual TB fallback when
+// untracked) over at-bats, with the same final-pitch gating as computeSlg — Ks
+// count as 0-TB at-bats on the K pitch; sac flies/bunts stay out of the AB count.
+const computeXSlg = (ps) => {
+  let xtb = 0, ab = 0;
+  for (const p of ps) {
+    const ev = p.events; if (!ev) continue;
+    if (ev === "strikeout" || ev === "strikeout_double_play") { if (_endsPaAsK(p)) ab++; continue; }
+    if (!p.is_in_play || p.is_bunt) continue;
+    const tb = SLG_TB[ev], isOut = SLG_AB_CONTACT_OUTS.has(ev);
+    if (tb == null && !isOut) continue;
+    const x = _xslgconLookup(p.launch_speed, p.launch_angle);
+    xtb += x != null ? x : (tb || 0);
+    ab++;
+  }
+  return ab > 0 ? (xtb / ab).toFixed(3).replace(/^0/, "") : "—";
 };
 
 // Season date bounds for the Hitters range picker defaults
@@ -5619,7 +5649,7 @@ const HittersPage = ({ C, isMobile }) => {
         const sw = sub.filter(p => p.is_swing);
         out.push({
           key: `${ph}-${ck}`, label: `vs ${ph}HP · ${cl}`,
-          n: sub.length, slg: computeSlg(sub),
+          n: sub.length, xslg: computeXSlg(sub),
           contact: sw.length ? Math.round((1 - sw.filter(p => p.is_whiff).length / sw.length) * 100) + "%" : "—",
           pitches: sub,
         });
@@ -5630,8 +5660,8 @@ const HittersPage = ({ C, isMobile }) => {
 
   // Stat tile: translucent green/red tint layered over the surface color when the
   // hitter deviates from the league baseline; hover shows the league avg + percentile.
-  // 10-game rolling xwOBA series. One point per game from the 10th game of the
-  // selected range onward; each point covers that game plus the prior nine.
+  // 20-game rolling xwOBA series. One point per game from the 20th game of the
+  // selected range onward; each point covers that game plus the prior nineteen.
   const rolling = useMemo(() => {
     if (!pitches || pitches.length === 0) return [];
     const byGame = new Map();
@@ -5643,10 +5673,10 @@ const HittersPage = ({ C, isMobile }) => {
     const games = [...byGame.values()].sort((a, b) => a.date.localeCompare(b.date));
     const parts = games.map(g => xwobaParts(g.ps));
     const pts = [];
-    for (let i = 9; i < games.length; i++) {
+    for (let i = 19; i < games.length; i++) {
       let num = 0, den = 0;
-      for (let j = i - 9; j <= i; j++) { num += parts[j].num; den += parts[j].den; }
-      if (den >= 10) pts.push({ date: games[i].date, from: games[i - 9].date, xwoba: +(num / den).toFixed(3), pa: den });
+      for (let j = i - 19; j <= i; j++) { num += parts[j].num; den += parts[j].den; }
+      if (den >= 20) pts.push({ date: games[i].date, from: games[i - 19].date, xwoba: +(num / den).toFixed(3), pa: den });
     }
     return pts;
   }, [pitches]);
@@ -5716,14 +5746,15 @@ const HittersPage = ({ C, isMobile }) => {
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px",
               padding: "14px 16px 4px", marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim, marginBottom: "4px" }}>
-                10-Game Rolling xwOBA
+                20-Game Rolling xwOBA
               </div>
               <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
                 <LineChart data={rolling} margin={{ top: 6, right: 12, left: -14, bottom: 2 }}>
                   <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.textDim }} tickFormatter={d => d.slice(5)}
                     minTickGap={32} axisLine={{ stroke: C.border }} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: C.textDim }} domain={["auto", "auto"]}
+                  <YAxis tick={{ fontSize: 10, fill: C.textDim }} domain={[0.1, 0.6]}
+                    ticks={[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]} allowDataOverflow
                     tickFormatter={v => v.toFixed(3).replace(/^0/, "")} axisLine={false} tickLine={false} width={52} />
                   <ReferenceLine y={0.315} stroke={C.textDim} strokeDasharray="4 4"
                     label={{ value: "lg avg", fontSize: 9, fill: C.textDim, position: "insideTopRight" }} />
@@ -5735,7 +5766,7 @@ const HittersPage = ({ C, isMobile }) => {
                         padding: "8px 12px", fontSize: "11px" }}>
                         <div style={{ fontWeight: 700, color: C.text }}>xwOBA {d.xwoba.toFixed(3).replace(/^0/, "")}</div>
                         <div style={{ color: C.textMuted, marginTop: "2px" }}>{d.from} → {d.date}</div>
-                        <div style={{ color: C.textDim }}>{d.pa} PA over last 10 games</div>
+                        <div style={{ color: C.textDim }}>{d.pa} PA over last 20 games</div>
                       </div>
                     );
                   }} />
@@ -5765,7 +5796,7 @@ const HittersPage = ({ C, isMobile }) => {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
             <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>Zone Maps · Pitcher Hand × Count</div>
             <div style={{ display: "flex", gap: "4px" }}>
-              {[{ k: "damage", l: "Damage (SLG)" }, { k: "whiffs", l: "Whiffs" }].map(t => (
+              {[{ k: "damage", l: "Damage (xSLG)" }, { k: "whiffs", l: "Whiffs" }].map(t => (
                 <button key={t.k} onClick={() => setHeatMode(t.k)} style={{
                   background: heatMode === t.k ? C.accentGlow : "transparent",
                   border: `1px solid ${heatMode === t.k ? C.accent : C.border}`,
@@ -5779,9 +5810,9 @@ const HittersPage = ({ C, isMobile }) => {
               <div key={s.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "10px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "2px" }}>{s.label}</div>
                 <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "8px" }}>
-                  {s.n} pitches · SLG {s.slg} · Contact {s.contact}
+                  {s.n} pitches · xSLG {s.xslg} · Contact {s.contact}
                 </div>
-                <BatterZoneHeat pitches={s.pitches} mode={heatMode} C={C} w={isMobile ? 150 : 200} h={isMobile ? 180 : 240} />
+                <BatterZoneHeat pitches={s.pitches} mode={heatMode} C={C} w={isMobile ? 150 : 200} h={isMobile ? 180 : 240} bats={batter?.bats} />
               </div>
             ))}
           </div>
