@@ -894,14 +894,19 @@ MONTH_FILES = [
 # Refreshes every 24h. Replaces the old LOCAL_SAVANT_PATH approach which required
 # a parquet file to be deployed alongside the code.
 _local_savant_df = None
-_local_savant_loaded_at = 0  # unix timestamp of last load
-_LOCAL_SAVANT_TTL = 86400    # refresh once per day
+_local_savant_loaded_at = 0        # unix timestamp of last successful (cached) load
+_local_savant_next_refresh = 0     # unix timestamp when the next refresh attempt is allowed
+_local_savant_month_status = {}    # fname -> "ok (N rows, min→max)" | "FAILED"
+_LOCAL_SAVANT_TTL = 86400          # refresh once per day after a COMPLETE load
+_LOCAL_SAVANT_RETRY_TTL = 900      # retry in 15 min after a partial/failed load
 
 
 @app.get("/api/debug/local-savant")
 async def debug_local_savant():
     """
-    Diagnostic: shows what the cached-season loader is actually using.
+    Diagnostic: shows what the cached-season loader is actually using,
+    including per-month fetch status from the most recent load attempt.
+    A "FAILED" month here means the served season is missing that month.
     """
     df = await _load_local_savant_async()
     info = {
@@ -913,10 +918,13 @@ async def debug_local_savant():
         "has_az": "az" in df.columns if df is not None else False,
         "loaded_at_unix": _local_savant_loaded_at,
         "age_seconds": int(time.time() - _local_savant_loaded_at) if _local_savant_loaded_at else None,
+        "next_refresh_in_seconds": max(0, int(_local_savant_next_refresh - time.time())) if _local_savant_next_refresh else None,
+        "month_status": _local_savant_month_status,
     }
     if df is not None and len(df) > 0:
         try:
             info["latest_game_date"] = str(df["game_date"].max())
+            info["earliest_game_date"] = str(df["game_date"].min())
             info["pitcher_count"] = int(df["pitcher_id"].nunique())
         except Exception as e:
             info["error"] = str(e)
@@ -925,17 +933,24 @@ async def debug_local_savant():
 
 async def _load_local_savant_async():
     """
-    Load monthly parquets from GitHub. Cached for 24h.
-    Returns a single combined DataFrame (or None on failure).
+    Load monthly parquets from GitHub into a single season DataFrame.
+
+    Integrity rules (a partial season silently served as complete is how
+    "no barrels since mid-July" happens — never let that occur again):
+      1. Every month that fails the concurrent fetch is retried once, sequentially.
+      2. A COMPLETE load (all expected months) is cached for 24h.
+      3. A PARTIAL load only replaces the existing cache if it reaches at least
+         as far into the season (by max game_date); either way the next refresh
+         is scheduled in 15 min instead of 24h, so the missing months heal fast.
+      4. Per-month status is recorded for /api/debug/local-savant.
     """
-    global _local_savant_df, _local_savant_loaded_at
+    global _local_savant_df, _local_savant_loaded_at, _local_savant_next_refresh, _local_savant_month_status
     import pandas as pd
     import io
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo as _ZI
 
-    age = time.time() - _local_savant_loaded_at
-    if _local_savant_df is not None and age < _LOCAL_SAVANT_TTL:
+    if _local_savant_df is not None and time.time() < _local_savant_next_refresh:
         return _local_savant_df
 
     ct_now = _dt.now(_ZI("America/Chicago"))
@@ -947,10 +962,12 @@ async def _load_local_savant_async():
     ]
 
     async def _fetch_one(client, fname):
+        # 90s timeout: July/August parquets run ~20MB each and were timing out at 45s.
         try:
-            resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=45)
+            resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=90)
             if resp.status_code == 200:
                 return pd.read_parquet(io.BytesIO(resp.content))
+            print(f"[CachedSeason] {fname}: HTTP {resp.status_code}")
         except Exception as e:
             print(f"[CachedSeason] Failed {fname}: {e}")
         return None
@@ -959,20 +976,55 @@ async def _load_local_savant_async():
         results = await asyncio.gather(
             *[_fetch_one(client, f) for f in months_to_fetch]
         )
+        loaded = dict(zip(months_to_fetch, results))
 
-    dfs = [d for d in results if d is not None]
+        # Retry failed months once, sequentially (concurrent burst may be what failed)
+        for fname in [f for f, d in loaded.items() if d is None]:
+            loaded[fname] = await _fetch_one(client, fname)
+
+    failed = [f for f, d in loaded.items() if d is None]
+    dfs = [d for d in loaded.values() if d is not None]
+
+    status = {}
+    for fname in months_to_fetch:
+        d = loaded.get(fname)
+        if d is None:
+            status[fname] = "FAILED"
+        else:
+            try:
+                status[fname] = f"ok ({len(d)} rows, {d['game_date'].min()} \u2192 {d['game_date'].max()})"
+            except Exception:
+                status[fname] = f"ok ({len(d)} rows)"
+    _local_savant_month_status = status
+
     if dfs:
-        _local_savant_df = pd.concat(dfs, ignore_index=True)
-        _local_savant_loaded_at = time.time()
-        print(f"[CachedSeason] Loaded {len(_local_savant_df)} pitches from {len(dfs)} monthly parquets")
+        new_df = pd.concat(dfs, ignore_index=True)
+        use_new = True
+        if failed and _local_savant_df is not None:
+            # Partial load: never replace a fuller season with a shorter one.
+            try:
+                use_new = str(new_df["game_date"].max()) >= str(_local_savant_df["game_date"].max())
+            except Exception:
+                use_new = False
+        if use_new:
+            _local_savant_df = new_df
+            _local_savant_loaded_at = time.time()
+        if failed:
+            print(f"[CachedSeason] PARTIAL load — missing {failed}; "
+                  f"{'using new partial' if use_new else 'keeping previous cache'}; retry in {_LOCAL_SAVANT_RETRY_TTL}s")
+            _local_savant_next_refresh = time.time() + _LOCAL_SAVANT_RETRY_TTL
+        else:
+            print(f"[CachedSeason] Loaded {len(_local_savant_df)} pitches from all {len(dfs)} monthly parquets")
+            _local_savant_next_refresh = time.time() + _LOCAL_SAVANT_TTL
         return _local_savant_df
-    elif _local_savant_df is not None:
-        # Fetch failed but we have stale data — keep using it rather than serve nothing
-        print(f"[CachedSeason] Refresh failed, serving stale data ({len(_local_savant_df)} rows)")
+
+    # Nothing fetched at all
+    _local_savant_next_refresh = time.time() + _LOCAL_SAVANT_RETRY_TTL
+    if _local_savant_df is not None:
+        print(f"[CachedSeason] Refresh failed entirely, serving stale data ({len(_local_savant_df)} rows); retry in {_LOCAL_SAVANT_RETRY_TTL}s")
         return _local_savant_df
-    else:
-        print("[CachedSeason] Failed to load any monthly parquets")
-        return None
+    print("[CachedSeason] Failed to load any monthly parquets")
+    return None
 
 
 # Backwards-compat sync wrapper for any old callers
