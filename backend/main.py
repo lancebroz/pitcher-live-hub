@@ -304,7 +304,7 @@ async def get_batter_cached_season(batter_id: int):
     keep = ["game_pk", "game_date", "play_id", "inning", "at_bat_number", "pitch_number",
             "pitch_type", "pitch_name", "start_speed", "spin_rate", "pfx_x", "pfx_z",
             "plate_x", "plate_z", "zone", "sz_top", "sz_bottom",
-            "call_description", "is_in_play", "is_strike", "events",
+            "call_description", "is_in_play", "is_strike", "is_ball", "events",
             "launch_speed", "launch_angle", "trajectory", "hit_x", "hit_y",
             "balls", "strikes", "batter_hand", "stand", "pitcher_hand", "pitcher_name"]
     cols = [c for c in keep if c in sub.columns]
