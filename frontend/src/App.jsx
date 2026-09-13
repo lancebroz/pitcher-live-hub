@@ -6,7 +6,7 @@ import { USAGE_2025 } from "./usageData2025.js";
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, Cell, ReferenceArea
+  ResponsiveContainer, ReferenceLine, Cell, ReferenceArea, LineChart, Line
 } = recharts;
 
 // ─── Global mobile fixes ───
@@ -5365,6 +5365,55 @@ const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250 }) => {
   return <canvas ref={ref} width={w} height={h} style={{ display: "block" }} />;
 };
 
+// ─── xwOBA (expected wOBA) ───
+// XWOBACON: empirical league wOBAcon by EV×LA bucket, built from the full 2026
+// season of mlb-pitcher-data monthly parquets (~114k tracked non-bunt BBE).
+// Keys are "EV|LA" with EV rounded to the nearest 5 mph (clamped 40–115) and LA
+// to the nearest 10° (clamped -60–80). Sparse cells (<20 BBE) were smoothed into
+// neighboring EV bins / the LA band during table construction. Player-level
+// xwOBAcon↔wOBAcon correlation on this table: 0.82 (386 players, ≥100 BBE).
+// Simplification vs Savant: no sprint-speed adjustment on grounders/topped balls.
+const XWOBACON = {"40|-60":0.127,"40|-50":0.317,"40|-40":0.21,"40|-30":0.246,"40|-20":0.137,"40|-10":0.163,"40|0":0.21,"40|10":0.176,"40|20":0.241,"40|30":0.243,"40|40":0.357,"40|50":0.182,"40|60":0.04,"40|70":0.006,"40|80":0.004,"45|-60":0.188,"45|-50":0.238,"45|-40":0.151,"45|-30":0.122,"45|-20":0.233,"45|-10":0.115,"45|0":0.077,"45|10":0.138,"45|20":0.107,"45|30":0.091,"45|40":0.191,"45|50":0.089,"45|60":0.015,"45|70":0.073,"45|80":0.038,"50|-60":0.176,"50|-50":0.228,"50|-40":0.143,"50|-30":0.116,"50|-20":0.136,"50|-10":0.124,"50|0":0.147,"50|10":0.129,"50|20":0.081,"50|30":0.09,"50|40":0.085,"50|50":0.0,"50|60":0.0,"50|70":0.0,"50|80":0.013,"55|-60":0.169,"55|-50":0.144,"55|-40":0.103,"55|-30":0.121,"55|-20":0.069,"55|-10":0.054,"55|0":0.101,"55|10":0.186,"55|20":0.126,"55|30":0.246,"55|40":0.091,"55|50":0.012,"55|60":0.0,"55|70":0.0,"55|80":0.0,"60|-60":0.198,"60|-50":0.199,"60|-40":0.139,"60|-30":0.076,"60|-20":0.073,"60|-10":0.054,"60|0":0.086,"60|10":0.092,"60|20":0.253,"60|30":0.433,"60|40":0.263,"60|50":0.062,"60|60":0.0,"60|70":0.011,"60|80":0.0,"65|-60":0.231,"65|-50":0.19,"65|-40":0.124,"65|-30":0.036,"65|-20":0.044,"65|-10":0.048,"65|0":0.111,"65|10":0.175,"65|20":0.509,"65|30":0.766,"65|40":0.392,"65|50":0.145,"65|60":0.004,"65|70":0.0,"65|80":0.0,"70|-60":0.265,"70|-50":0.235,"70|-40":0.093,"70|-30":0.045,"70|-20":0.043,"70|-10":0.045,"70|0":0.087,"70|10":0.24,"70|20":0.727,"70|30":0.777,"70|40":0.439,"70|50":0.164,"70|60":0.014,"70|70":0.007,"70|80":0.004,"75|-60":0.301,"75|-50":0.208,"75|-40":0.073,"75|-30":0.047,"75|-20":0.046,"75|-10":0.056,"75|0":0.105,"75|10":0.296,"75|20":0.81,"75|30":0.366,"75|40":0.128,"75|50":0.098,"75|60":0.034,"75|70":0.002,"75|80":0.003,"80|-60":0.358,"80|-50":0.151,"80|-40":0.063,"80|-30":0.055,"80|-20":0.047,"80|-10":0.08,"80|0":0.161,"80|10":0.407,"80|20":0.758,"80|30":0.132,"80|40":0.033,"80|50":0.032,"80|60":0.034,"80|70":0.003,"80|80":0.005,"85|-60":0.277,"85|-50":0.156,"85|-40":0.043,"85|-30":0.057,"85|-20":0.07,"85|-10":0.108,"85|0":0.238,"85|10":0.531,"85|20":0.58,"85|30":0.07,"85|40":0.008,"85|50":0.012,"85|60":0.031,"85|70":0.002,"85|80":0.0,"90|-60":0.285,"90|-50":0.088,"90|-40":0.039,"90|-30":0.07,"90|-20":0.08,"90|-10":0.142,"90|0":0.292,"90|10":0.638,"90|20":0.45,"90|30":0.084,"90|40":0.02,"90|50":0.005,"90|60":0.014,"90|70":0.008,"90|80":0.011,"95|-50":0.121,"95|-40":0.08,"95|-30":0.072,"95|-20":0.109,"95|-10":0.199,"95|0":0.352,"95|10":0.71,"95|20":0.41,"95|30":0.302,"95|40":0.112,"95|50":0.015,"95|60":0.015,"95|70":0.01,"95|80":0.0,"100|-50":0.16,"100|-40":0.168,"100|-30":0.097,"100|-20":0.134,"100|-10":0.219,"100|0":0.405,"100|10":0.732,"100|20":0.582,"100|30":0.911,"100|40":0.407,"100|50":0.012,"100|60":0.013,"100|70":0.049,"100|80":0.0,"105|-50":0.197,"105|-40":0.134,"105|-30":0.116,"105|-20":0.155,"105|-10":0.261,"105|0":0.466,"105|10":0.782,"105|20":0.984,"105|30":1.695,"105|40":0.98,"105|50":0.123,"105|60":0.032,"105|70":0.046,"110|-40":0.089,"110|-30":0.091,"110|-20":0.177,"110|-10":0.329,"110|0":0.521,"110|10":0.805,"110|20":1.276,"110|30":1.968,"110|40":1.75,"110|50":0.132,"110|60":0.031,"115|-50":0.197,"115|-20":0.175,"115|-10":0.326,"115|0":0.491,"115|10":0.889,"115|20":1.575,"115|30":2.05,"115|40":1.764};
+const XWOBACON_LEAGUE = 0.362; // league mean wOBAcon fallback for off-grid values
+
+const _xwobaconLookup = (ev, la) => {
+  if (ev == null || la == null || isNaN(ev) || isNaN(la)) return null;
+  const evb = Math.round(Math.min(115, Math.max(40, ev)) / 5) * 5;
+  const lab = Math.round(Math.min(80, Math.max(-60, la)) / 10) * 10;
+  const v = XWOBACON[`${evb}|${lab}`];
+  return v != null ? v : XWOBACON_LEAGUE;
+};
+
+// xwOBA numerator/denominator for a set of pitches, with the same final-pitch
+// PA gating as the Hitters stat block (contact on the in-play pitch, K on the
+// 2-strike K pitch, walk on the 4th ball, HBP on the HBP pitch). IBB and sac
+// bunts are excluded from xwOBA entirely, matching Savant. Untracked BBE (no
+// EV/LA) fall back to the actual outcome's linear weight.
+const _BBE_FALLBACK_W = { single: 0.882, double: 1.254, triple: 1.590, home_run: 2.050 };
+const xwobaParts = (ps) => {
+  let num = 0, den = 0;
+  for (const p of ps) {
+    const ev = p.events; if (!ev) continue;
+    if (ev === "strikeout" || ev === "strikeout_double_play") { if (_endsPaAsK(p)) den++; continue; }
+    if (ev === "intent_walk") continue;
+    if (ev === "walk") { if (p.is_ball && Number(p.balls) === 3) { num += 0.689; den++; } continue; }
+    if (ev === "hit_by_pitch") {
+      if ((p.call_description || p.description || "").toLowerCase().includes("hit_by_pitch")) { num += 0.720; den++; }
+      continue;
+    }
+    if (!p.is_in_play || p.is_bunt) continue;
+    if (ev === "sac_bunt" || ev === "sac_bunt_double_play") continue;
+    const x = _xwobaconLookup(p.launch_speed, p.launch_angle);
+    num += x != null ? x : (_BBE_FALLBACK_W[ev] || 0);
+    den++;
+  }
+  return { num, den };
+};
+
+// Season date bounds for the Hitters range picker defaults
+const SEASON_START = "2026-03-26";
+const todayLocalISO = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local tz
+
 // ─── Hitter stat tile color coding ───
 // League baselines (mean/std across 2025-26 player-seasons, regulars) for the Hitters
 // tab stat tiles. Same visual convention as the Compare tool: translucent green when
@@ -5441,8 +5490,8 @@ const HittersPage = ({ C, isMobile }) => {
   const [batter, setBatter] = useState(null);
   const [raw, setRaw] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [dStart, setDStart] = useState("");
-  const [dEnd, setDEnd] = useState("");
+  const [dStart, setDStart] = useState(SEASON_START);
+  const [dEnd, setDEnd] = useState(todayLocalISO());
   const [heatMode, setHeatMode] = useState("damage");
   const seqRef = useRef(0);
 
@@ -5457,7 +5506,7 @@ const HittersPage = ({ C, isMobile }) => {
   const loadBatter = (b) => {
     const seq = ++seqRef.current;
     setBatter(b); setQ(b.name); setOpen(false); setRaw(null); setLoading(true);
-    setDStart(""); setDEnd("");
+    setDStart(SEASON_START); setDEnd(todayLocalISO());
     getBatterCachedSeason(b.id).then(rows => {
       if (seq !== seqRef.current) return;
       setRaw((rows || []).map(normalizeLivePitch));
@@ -5581,17 +5630,49 @@ const HittersPage = ({ C, isMobile }) => {
 
   // Stat tile: translucent green/red tint layered over the surface color when the
   // hitter deviates from the league baseline; hover shows the league avg + percentile.
+  // 10-game rolling xwOBA series. One point per game from the 10th game of the
+  // selected range onward; each point covers that game plus the prior nine.
+  const rolling = useMemo(() => {
+    if (!pitches || pitches.length === 0) return [];
+    const byGame = new Map();
+    for (const p of pitches) {
+      const key = `${p.game_date}|${p.game_pk}`;
+      if (!byGame.has(key)) byGame.set(key, { date: p.game_date, ps: [] });
+      byGame.get(key).ps.push(p);
+    }
+    const games = [...byGame.values()].sort((a, b) => a.date.localeCompare(b.date));
+    const parts = games.map(g => xwobaParts(g.ps));
+    const pts = [];
+    for (let i = 9; i < games.length; i++) {
+      let num = 0, den = 0;
+      for (let j = i - 9; j <= i; j++) { num += parts[j].num; den += parts[j].den; }
+      if (den >= 10) pts.push({ date: games[i].date, from: games[i - 9].date, xwoba: +(num / den).toFixed(3), pa: den });
+    }
+    return pts;
+  }, [pitches]);
+
+  const [hoverTile, setHoverTile] = useState(null);
   const cell = (label) => {
     const cc = hitterCellColor(label, stats.raw[label]);
     const tinted = cc && cc.bg !== "transparent";
     return (
-      <div key={label} title={cc ? cc.tip : undefined} style={{ padding: "8px 10px",
+      <div key={label}
+        onMouseEnter={() => setHoverTile(label)}
+        onMouseLeave={() => setHoverTile(h => (h === label ? null : h))}
+        style={{ position: "relative", padding: "8px 10px",
         backgroundColor: C.surface,
         backgroundImage: tinted ? `linear-gradient(${cc.bg}, ${cc.bg})` : "none",
-        border: `1px solid ${C.border}`, borderRadius: "6px",
-        cursor: cc ? "help" : "default" }}>
+        border: `1px solid ${C.border}`, borderRadius: "6px" }}>
         <div style={{ fontSize: "9px", fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.8px" }}>{label}</div>
         <div style={{ fontSize: "16px", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{stats.disp[label]}</div>
+        {cc && hoverTile === label && (
+          <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
+            marginTop: "4px", zIndex: 40, background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: "6px", padding: "6px 10px", fontSize: "10px", color: C.textMuted,
+            whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(0,0,0,0.18)", pointerEvents: "none" }}>
+            {cc.tip}
+          </div>
+        )}
       </div>
     );
   };
@@ -5630,6 +5711,40 @@ const HittersPage = ({ C, isMobile }) => {
               <input type="date" value={dEnd} onChange={e => setDEnd(e.target.value)} style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "5px 8px", fontFamily: "inherit", fontSize: "11px" }} />
             </div>
           </div>
+
+          {rolling.length > 1 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px",
+              padding: "14px 16px 4px", marginBottom: "16px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.textDim, marginBottom: "4px" }}>
+                10-Game Rolling xwOBA
+              </div>
+              <ResponsiveContainer width="100%" height={isMobile ? 140 : 180}>
+                <LineChart data={rolling} margin={{ top: 6, right: 12, left: -14, bottom: 2 }}>
+                  <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.textDim }} tickFormatter={d => d.slice(5)}
+                    minTickGap={32} axisLine={{ stroke: C.border }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: C.textDim }} domain={["auto", "auto"]}
+                    tickFormatter={v => v.toFixed(3).replace(/^0/, "")} axisLine={false} tickLine={false} width={52} />
+                  <ReferenceLine y={0.315} stroke={C.textDim} strokeDasharray="4 4"
+                    label={{ value: "lg avg", fontSize: 9, fill: C.textDim, position: "insideTopRight" }} />
+                  <Tooltip content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload;
+                    return (
+                      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px",
+                        padding: "8px 12px", fontSize: "11px" }}>
+                        <div style={{ fontWeight: 700, color: C.text }}>xwOBA {d.xwoba.toFixed(3).replace(/^0/, "")}</div>
+                        <div style={{ color: C.textMuted, marginTop: "2px" }}>{d.from} → {d.date}</div>
+                        <div style={{ color: C.textDim }}>{d.pa} PA over last 10 games</div>
+                      </div>
+                    );
+                  }} />
+                  <Line type="monotone" dataKey="xwoba" stroke={C.accent} strokeWidth={2} dot={false}
+                    activeDot={{ r: 4, fill: C.accent }} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
 
           {stats ? (
             <div style={{ marginBottom: "6px" }}>
