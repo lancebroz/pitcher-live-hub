@@ -1962,7 +1962,10 @@ const computeReleaseAtHand = (p) => {
 };
 
 const normalizeLivePitch = (p) => {
-  const desc = (p.description || "").toLowerCase();
+  // Batter cached-season rows are raw parquet-shaped: they carry call_description
+  // (snake_case feed codes) and no synthesized description. Fall back so swing/
+  // whiff/K derivation works on both feed shapes.
+  const desc = (p.description || p.call_description || "").toLowerCase();
   const isFoulTip = desc.includes("foul_tip") || desc.includes("foul tip");
   const isStrike = p.is_strike || desc.includes("strike") || desc.includes("foul");
   const isSwing = desc.includes("swing") || desc.includes("foul") || desc.includes("in play") || desc.includes("into_play") || desc.includes("missed_bunt");
@@ -1972,6 +1975,7 @@ const normalizeLivePitch = (p) => {
   const isInPlay = p.is_in_play || desc.includes("in play") || desc.includes("into_play");
   const zone = p.zone;
   const isInZone = zone != null ? (zone >= 1 && zone <= 9) : (Math.abs(p.plate_x || 0) <= 0.83 && (p.plate_z || 0) >= 1.5 && (p.plate_z || 0) <= 3.5);
+  const isOutZone = zone != null ? (zone >= 11 && zone <= 14) : !isInZone;
 
   // Movement data: Savant CSV pfx values are in FEET → multiply by 12 for inches
   // HB is flipped (negated) for pitcher's perspective
@@ -2016,6 +2020,15 @@ const normalizeLivePitch = (p) => {
     plate_z: p.plate_z,
     description: isWhiff ? "swinging_strike" : isCalledStrike ? "called_strike" : isFoul ? "foul" : isInPlay ? "hit_into_play" : desc.includes("hit_by_pitch") ? "hit_by_pitch" : "ball",
     is_in_zone: isInZone,
+    is_out_zone: isOutZone,
+    // Prefer the feed's explicit is_ball; derive from the call code otherwise
+    // (walk detection in the Hitters tab needs this on the 4th-ball pitch).
+    is_ball: p.is_ball != null ? !!p.is_ball
+      : (!isSwing && !isCalledStrike && !isInPlay && desc.includes("ball") && !desc.includes("hit_by_pitch")),
+    // Pitcher hand — the Hitters tab splits on it; also lets pitcher pages skip
+    // the release-side hand inference when the feed states the hand directly.
+    p_throws: p.p_throws || p.pitcher_hand || "",
+    call_description: p.call_description || "",
     is_swing: isSwing,
     is_whiff: isWhiff,
     is_called_strike: isCalledStrike,
