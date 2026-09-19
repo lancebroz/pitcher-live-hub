@@ -5310,13 +5310,13 @@ function noteColor(category) {
 // PA-ending in-play pitches by total bases (an SLG surface); "whiffs" shows whiff
 // density among swings.
 // ─── Hitter zone heatmap ───
-// Identical rendering to the Heatmaps tool's Gaussian view (same GaussianHeatmapCanvas:
+// Identical rendering to the Heatmaps tool's Gaussian-Granular view (same GaussianHeatmapCanvas,
 // sigma, color ramp, dark stage, batter silhouette, strike zone + plate), with the
 // batter's own silhouette drawn on his side of the box. Damage mode weights each BBE
 // by xSLG (expected total bases from the XSLGCON EV×LA grid); whiffs mode is whiff
-// density, matching the pitcher tool. Low-opacity dots overlay each underlying pitch;
-// clicking one opens that play on research.mlb.com.
-const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R" }) => {
+// density, matching the pitcher tool. Low-opacity clickable dots open plays on
+// research.mlb.com: barrels only on damage maps, every whiff on whiff maps.
+const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R", granular = true }) => {
   const [hoverDot, setHoverDot] = useState(null);
   const shown = useMemo(() => {
     const out = [];
@@ -5339,9 +5339,10 @@ const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R" }) => {
   const hand = bats === "L" || bats === "R" ? bats : "all"; // switch hitters show both silhouettes
   return (
     <div style={{ position: "relative", width: "100%", aspectRatio: `${w} / ${h}` }}>
-      <GaussianHeatmapCanvas pitches={shown} width={w * 2} height={h * 2} mode={mode} hand={hand} weightFn={weightFn} />
+      <GaussianHeatmapCanvas pitches={shown} width={w * 2} height={h * 2} mode={mode} hand={hand} granular={granular} weightFn={weightFn} />
       {shown.map((p, i) => {
         if (!p.game_pk || !p.play_id) return null;
+        if (mode === "damage" && !p.is_barrel) return null; // damage dots: barrels only (heat still uses all BBE)
         const left = ((-p.plate_x + 2.5) / 5) * 100; // pitcher POV, matches the canvas transform
         const top = (1 - p.plate_z / 5) * 100;
         if (left < 2 || left > 98 || top < 2 || top > 98) return null;
@@ -5834,9 +5835,9 @@ const HittersPage = ({ C, isMobile }) => {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "14px" }}>
             {splits.map(s => (
-              <div key={s.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "12px" }}>
-                <div style={{ fontSize: "12px", fontWeight: 700, color: C.text, marginBottom: "2px" }}>{s.label}</div>
-                <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "8px" }}>
+              <div key={s.key} style={{ background: "#0a0a12", border: "1px solid #222", borderRadius: "10px", padding: "12px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#e0e0e0", marginBottom: "2px" }}>{s.label}</div>
+                <div style={{ fontSize: "10px", color: "#888", marginBottom: "8px" }}>
                   {s.n} pitches · xSLG {s.xslg} · Contact {s.contact}
                 </div>
                 <BatterZoneHeat pitches={s.pitches} mode={s.mode} C={C} w={isMobile ? 320 : 420} h={isMobile ? 384 : 504} bats={batter?.bats} />
