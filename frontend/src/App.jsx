@@ -5440,6 +5440,16 @@ const computeXSlg = (ps) => {
   return ab > 0 ? (xtb / ab).toFixed(3).replace(/^0/, "") : "—";
 };
 
+// Savant pitch-category groupings (per Baseball Savant's search filters):
+// Fastball = 4-Seam/Sinker/Cutter; Breaking = sliders, sweepers, slurves and all
+// curveball variants; Offspeed = changeup, splitter, forkball, screwball.
+// Knuckleballs, eephus, pitchouts and unknown types only appear under "all".
+const PITCH_CATS = {
+  fastball: new Set(["FF", "SI", "FC", "FA", "FT"]),
+  breaking: new Set(["SL", "ST", "SV", "CU", "KC", "CS"]),
+  offspeed: new Set(["CH", "FS", "FO", "SC"]),
+};
+
 // Season date bounds for the Hitters range picker defaults
 const SEASON_START = "2026-03-26";
 const todayLocalISO = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local tz
@@ -5522,7 +5532,8 @@ const HittersPage = ({ C, isMobile }) => {
   const [loading, setLoading] = useState(false);
   const [dStart, setDStart] = useState(SEASON_START);
   const [dEnd, setDEnd] = useState(todayLocalISO());
-  const [heatMode, setHeatMode] = useState("damage");
+  const [countFilter, setCountFilter] = useState("all");  // all | pre | two
+  const [pitchCat, setPitchCat] = useState("all");         // all | fastball | breaking | offspeed
   const seqRef = useRef(0);
 
   useEffect(() => {
@@ -5639,24 +5650,28 @@ const HittersPage = ({ C, isMobile }) => {
   }, [pitches]);
 
   // 2x2 splits: pitcher hand x pre-two-strike / two-strike
+  // One filtered subset per pitcher hand (count + pitch-category filters applied),
+  // rendered as a Damage card and a Whiffs card each.
   const splits = useMemo(() => {
     if (!pitches) return [];
+    const cat = PITCH_CATS[pitchCat];
     const out = [];
     for (const ph of ["R", "L"]) {
-      for (const [ck, cl] of [["pre", "Pre 2-Strike"], ["two", "Two Strikes"]]) {
-        const sub = pitches.filter(p => (p.p_throws || "") === ph &&
-          (ck === "pre" ? Number(p.strikes) < 2 : Number(p.strikes) === 2));
-        const sw = sub.filter(p => p.is_swing);
-        out.push({
-          key: `${ph}-${ck}`, label: `vs ${ph}HP · ${cl}`,
-          n: sub.length, xslg: computeXSlg(sub),
-          contact: sw.length ? Math.round((1 - sw.filter(p => p.is_whiff).length / sw.length) * 100) + "%" : "—",
-          pitches: sub,
-        });
-      }
+      const sub = pitches.filter(p => (p.p_throws || "") === ph &&
+        (countFilter === "all" ? true :
+         countFilter === "pre" ? Number(p.strikes) < 2 : Number(p.strikes) === 2) &&
+        (!cat || cat.has(p.pitch_type)));
+      const sw = sub.filter(p => p.is_swing);
+      const meta = {
+        n: sub.length, xslg: computeXSlg(sub),
+        contact: sw.length ? Math.round((1 - sw.filter(p => p.is_whiff).length / sw.length) * 100) + "%" : "—",
+        pitches: sub,
+      };
+      out.push({ key: `${ph}-damage`, label: `vs ${ph}HP · Damage (xSLG)`, mode: "damage", ...meta });
+      out.push({ key: `${ph}-whiffs`, label: `vs ${ph}HP · Whiffs`, mode: "whiffs", ...meta });
     }
     return out;
-  }, [pitches]);
+  }, [pitches, countFilter, pitchCat]);
 
   // Stat tile: translucent green/red tint layered over the surface color when the
   // hitter deviates from the league baseline; hover shows the league avg + percentile.
@@ -5793,26 +5808,38 @@ const HittersPage = ({ C, isMobile }) => {
           </div>
 
           {/* splits + heatmaps */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>Zone Maps · Pitcher Hand × Count</div>
-            <div style={{ display: "flex", gap: "4px" }}>
-              {[{ k: "damage", l: "Damage (xSLG)" }, { k: "whiffs", l: "Whiffs" }].map(t => (
-                <button key={t.k} onClick={() => setHeatMode(t.k)} style={{
-                  background: heatMode === t.k ? C.accentGlow : "transparent",
-                  border: `1px solid ${heatMode === t.k ? C.accent : C.border}`,
-                  borderRadius: "4px", padding: "5px 12px", color: heatMode === t.k ? C.accent : C.textDim,
-                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{t.l}</button>
-              ))}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+            flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "2px", textTransform: "uppercase", color: C.accent }}>Zone Maps · Damage & Whiffs by Pitcher Hand</div>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: "4px" }}>
+                {[{ k: "all", l: "All Counts" }, { k: "pre", l: "Pre 2-K" }, { k: "two", l: "2-K" }].map(t => (
+                  <button key={t.k} onClick={() => setCountFilter(t.k)} style={{
+                    background: countFilter === t.k ? C.accentGlow : "transparent",
+                    border: `1px solid ${countFilter === t.k ? C.accent : C.border}`,
+                    borderRadius: "4px", padding: "5px 10px", color: countFilter === t.k ? C.accent : C.textDim,
+                    fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{t.l}</button>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: "4px" }}>
+                {[{ k: "all", l: "All Pitches" }, { k: "fastball", l: "Fastballs" }, { k: "breaking", l: "Breaking" }, { k: "offspeed", l: "Offspeed" }].map(t => (
+                  <button key={t.k} onClick={() => setPitchCat(t.k)} style={{
+                    background: pitchCat === t.k ? C.accentGlow : "transparent",
+                    border: `1px solid ${pitchCat === t.k ? C.accent : C.border}`,
+                    borderRadius: "4px", padding: "5px 10px", color: pitchCat === t.k ? C.accent : C.textDim,
+                    fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{t.l}</button>
+                ))}
+              </div>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: "14px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "14px" }}>
             {splits.map(s => (
-              <div key={s.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "10px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: C.text, marginBottom: "2px" }}>{s.label}</div>
+              <div key={s.key} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "12px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: C.text, marginBottom: "2px" }}>{s.label}</div>
                 <div style={{ fontSize: "10px", color: C.textDim, marginBottom: "8px" }}>
                   {s.n} pitches · xSLG {s.xslg} · Contact {s.contact}
                 </div>
-                <BatterZoneHeat pitches={s.pitches} mode={heatMode} C={C} w={isMobile ? 150 : 200} h={isMobile ? 180 : 240} bats={batter?.bats} />
+                <BatterZoneHeat pitches={s.pitches} mode={s.mode} C={C} w={isMobile ? 320 : 420} h={isMobile ? 384 : 504} bats={batter?.bats} />
               </div>
             ))}
           </div>
