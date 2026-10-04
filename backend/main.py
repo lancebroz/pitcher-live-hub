@@ -885,7 +885,7 @@ DAILY_BASE = "https://raw.githubusercontent.com/lancebroz/mlb-pitcher-data/main/
 MONTH_FILES = [
     "03_march.parquet", "04_april.parquet", "05_may.parquet",
     "06_june.parquet", "07_july.parquet", "08_august.parquet",
-    "09_september.parquet", "10_october.parquet",
+    "09_september.parquet", "10_october.parquet", "11_november.parquet",
 ]
 
 
@@ -961,12 +961,16 @@ async def _load_local_savant_async():
         if int(f.split("_")[0]) <= current_month
     ]
 
+    _ABSENT = "ABSENT"  # month file not published yet (HTTP 404) — expected, not a failure
+
     async def _fetch_one(client, fname):
         # 90s timeout: July/August parquets run ~20MB each and were timing out at 45s.
         try:
             resp = await client.get(f"{PARQUET_BASE}/{fname}", timeout=90)
             if resp.status_code == 200:
                 return pd.read_parquet(io.BytesIO(resp.content))
+            if resp.status_code == 404:
+                return _ABSENT
             print(f"[CachedSeason] {fname}: HTTP {resp.status_code}")
         except Exception as e:
             print(f"[CachedSeason] Failed {fname}: {e}")
@@ -983,13 +987,15 @@ async def _load_local_savant_async():
             loaded[fname] = await _fetch_one(client, fname)
 
     failed = [f for f, d in loaded.items() if d is None]
-    dfs = [d for d in loaded.values() if d is not None]
+    dfs = [d for d in loaded.values() if d is not None and not isinstance(d, str)]
 
     status = {}
     for fname in months_to_fetch:
         d = loaded.get(fname)
         if d is None:
             status[fname] = "FAILED"
+        elif isinstance(d, str):
+            status[fname] = "not published yet"
         else:
             try:
                 status[fname] = f"ok ({len(d)} rows, {d['game_date'].min()} \u2192 {d['game_date'].max()})"
