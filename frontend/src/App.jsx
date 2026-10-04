@@ -2312,17 +2312,19 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onA
             const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
             const pitched = pitchedDates && pitchedDates.has(dateStr);
             const isSelected = dateStr === value;
+            const post = pitched && isPostseasonDate(dateStr); // postseason games render gold
+            const hi = post ? POSTSEASON_GOLD : C.accent;
             return (
               <div key={dateStr} onClick={() => selectDate(day, monthOffset)} style={{
                 fontSize: "11px", textAlign: "center", padding: "5px 0", borderRadius: "4px", cursor: "pointer",
                 fontWeight: (pitched || isSelected) ? 700 : 400,
-                color: isSelected ? "#fff" : pitched ? C.accent : C.text,
-                background: isSelected ? C.accent : pitched ? (C.accent + "22") : "transparent",
-                border: pitched && !isSelected ? `1px solid ${C.accent}55` : "1px solid transparent",
+                color: isSelected ? "#fff" : pitched ? hi : C.text,
+                background: isSelected ? hi : pitched ? (hi + "22") : "transparent",
+                border: pitched && !isSelected ? `1px solid ${hi}55` : "1px solid transparent",
                 transition: "background 0.15s",
               }}
-                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.accentGlow; }}
-                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = pitched ? (C.accent + "22") : "transparent"; }}
+                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = post ? (hi + "33") : C.accentGlow; }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = pitched ? (hi + "22") : "transparent"; }}
               >
                 {day}
               </div>
@@ -3402,6 +3404,15 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
     return new Set(topData.map(p => p.game_date).filter(d => d && d !== "nan"));
   }, [topData]);
 
+  // Full Season = regular season only; postseason games (after Sep 28) are
+  // excluded here but remain reachable through Custom Range date picks.
+  const topRegular = useMemo(() => (
+    topData ? topData.filter(p => !isPostseasonDate(p.game_date)) : null
+  ), [topData]);
+  const cmpRegular = useMemo(() => (
+    cmpData && cmpMode === "2025" ? cmpData.filter(p => !isPostseasonDate(p.game_date)) : cmpData
+  ), [cmpData, cmpMode]);
+
   const searchRef = useRef(null);
   const topEndPickerRef = useRef(null);
   const cmpEndPickerRef = useRef(null);
@@ -3621,10 +3632,10 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
               const gd = String(p.game_date).slice(0, 10);
               return gd >= topStart && gd <= topEnd;
             })
-          : topData;
+          : topRegular;
         const isFullSeason = !topUseRange;
         const topLabel = isFullSeason
-          ? "Full 2026 Season (Statcast + Live)"
+          ? "Full 2026 Season · Regular Season (Statcast + Live)"
           : `2026 Custom Range (${topStart} to ${topEnd})`;
         return (
           <>
@@ -3721,9 +3732,9 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
           {cmpLoading && <div style={{ padding: "20px 0", color: C.textDim, fontSize: "12px" }}>Loading comparison...</div>}
           {!cmpLoading && cmpData && cmpData.length > 0 && (
             <CompareTable
-              rawPitches={cmpData}
+              rawPitches={cmpRegular}
               label={cmpLabel}
-              sublabel={`${cmpData.length} pitches`}
+              sublabel={`${cmpRegular.length} pitches`}
               C={C}
               isMobile={isMobile}
               hand={sharedHand}
@@ -5450,6 +5461,14 @@ const PITCH_CATS = {
   breaking: new Set(["SL", "ST", "SV", "CU", "KC", "CS"]),
   offspeed: new Set(["CH", "FS", "FO", "SC"]),
 };
+
+// Regular season ends Sep 28 (true for both 2025 and 2026); any later date in a
+// season is a postseason game. Compared as MM-DD so the rule covers both years.
+const isPostseasonDate = (d) => {
+  const s = String(d || "").slice(0, 10);
+  return s.length === 10 && s.slice(5) > "09-28";
+};
+const POSTSEASON_GOLD = "#d4af37";
 
 // Season date bounds for the Hitters range picker defaults
 const SEASON_START = "2026-03-26";
