@@ -11,6 +11,11 @@ import { OV_RVBASE } from "./overviewRvBase.js";
 
 const FIP_CONSTANT = 3.15, LG_HR_FB_RATE = 0.119;   // same constants as SummaryStatsBar
 const FB_CODES = ["FF", "SI", "FC", "FA"];
+// MLB team IDs by the abbreviation the search endpoint returns (plus common alternates), for mlbstatic logos
+const TEAM_IDS = { AZ: 109, ARI: 109, ATL: 144, BAL: 110, BOS: 111, CHC: 112, CWS: 145, CHW: 145, CIN: 113, CLE: 114, COL: 115, DET: 116, HOU: 117, KC: 118, KCR: 118,
+  LAA: 108, LAD: 119, MIA: 146, MIL: 158, MIN: 142, NYM: 121, NYY: 147, ATH: 133, OAK: 133, PHI: 143, PIT: 134, SD: 135, SDP: 135, SF: 137, SFG: 137, SEA: 136,
+  STL: 138, TB: 139, TBR: 139, TEX: 140, TOR: 141, WSH: 120, WSN: 120 };
+const headshotUrl = (id) => `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_426,q_auto:best/v1/people/${id}/headshot/67/current`;
 const SHORT = { "4-Seam Fastball": "4-Seam", "Four-Seam Fastball": "4-Seam", "Split-Finger": "Splitter" };
 const r1 = (x) => (Math.round(x * 10) / 10).toFixed(1);
 const R = (x) => Math.round(x * 10) / 10;
@@ -33,6 +38,9 @@ const CSS = `
 .ov-dd div{padding:9px 12px;cursor:pointer;font-size:12px;color:var(--text);border-bottom:1px solid var(--border)}
 .ov-dd div:last-child{border-bottom:0}.ov-dd div:hover{background:var(--surfaceAlt)}
 .ov-dd span{color:var(--dim);margin-left:8px}
+.ov-id{display:flex;align-items:center;gap:10px}
+.ov-face{width:54px;height:54px;border-radius:50%;flex:none;background-color:var(--surfaceAlt);background-size:cover;background-position:center 38%;border:1px solid var(--border)}
+.ov-logo{width:30px;height:30px;flex:none;object-fit:contain}
 .ov-who h1{font-size:20px;margin:0;line-height:1.1;display:inline;font-weight:700}
 .ov-who .nm span{font-size:12px;color:var(--muted);margin-left:8px}
 .ov-stats{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:stretch;flex:1}
@@ -86,6 +94,7 @@ const CSS = `
 .ov-co.hot,.ov-co:hover,.ov-co:focus-visible{width:auto;min-width:86px;z-index:2;border-color:var(--k);outline:none}
 .ov-mix{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
 .ov-mrow{display:grid;grid-template-columns:62px repeat(var(--n),minmax(0,1fr));gap:5px;align-items:stretch}
+.ov-mrow.ov-all{padding-bottom:7px;margin-bottom:1px;border-bottom:2.5px solid var(--text)}
 .ov-chip{border-radius:6px;padding:9px 0;text-align:center;font-weight:700;font-size:13px;color:#fff;letter-spacing:.3px;line-height:1.1;border:0;font-family:inherit}
 .ov-velo{font-size:12px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;color:var(--text);align-self:center}
 .ov-mvtop{padding:12px 14px 0;display:flex;flex-direction:column;gap:5px}
@@ -132,7 +141,12 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-sl .v{font-size:12.5px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);white-space:nowrap}
 .ov-sl .v small{font-size:10px;color:var(--dim);font-weight:500;margin-left:2px}
 .ov-hsub{font-size:10px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--dim);margin-top:4px}
-.ov-hm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:4px}
+.ov-car{display:flex;align-items:center;gap:6px;margin-top:4px}
+.ov-hm{flex:1;min-width:0;max-width:400px;margin:0 auto}
+.ov-arrow{flex:none;width:30px;height:44px;border-radius:8px;background:var(--surfaceAlt);border:1px solid var(--border);color:var(--text);font-size:20px;line-height:1;cursor:pointer}
+.ov-tabs{display:flex;justify-content:center;gap:4px;margin-top:2px}
+.ov-tabs button{background:transparent;border:1px solid var(--border);color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 10px;border-radius:999px;cursor:pointer}
+.ov-tabs button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 .ov-hm .tile{background:#0a0a12;border:1px solid #222;border-radius:8px;padding:8px}
 .ov-hm .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;font-weight:700;color:#e0e0e0}
 .ov-hm .hd span{font-size:10px;color:#888;font-weight:500;font-variant-numeric:tabular-nums}
@@ -341,7 +355,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
               {[["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]].map(([rk, rl]) => {
                 const row = mix.splits[h][rk];
                 return (
-                  <div key={rk} className="ov-mrow" style={{ "--n": mix.types.length }}>
+                  <div key={rk} className={`ov-mrow${rk === "all" ? " ov-all" : ""}`} style={{ "--n": mix.types.length }}>
                     <div className="ov-mlab">{rl}<small>{row.n.toLocaleString()}</small></div>
                     {mix.types.map(t => {
                       const v = row.pct[t.type];
@@ -527,8 +541,12 @@ function leagueRunValue(p, hand) {
   return cell(`${p.pitch_type}|${hand}|${bh}`, p.plate_x) ?? cell(`${p.pitch_type}|${flip(hand)}|${flip(bh)}`, -p.plate_x) ?? 0;
 }
 
+function SideToggle({ side, setSide }) {
+  return <div className="ov-tg3">{[["all", "All"], ["L", "vs LHH"], ["R", "vs RHH"]].map(([k, l]) => <button key={k} aria-pressed={side === k} onClick={() => setSide(k)}>{l}</button>)}</div>;
+}
+
 // ─── Row 2, middle: location heatmaps (the Heatmaps tab's Gaussian granular canvas) ───
-function HeatTile({ label, pitches, mode, Canvas, weightFn }) {
+function HeatTile({ label, pitches, mode, Canvas, weightFn, side }) {
   const ref = useRef(null), [w, setW] = useState(0);
   useEffect(() => {
     if (!ref.current) return undefined;
@@ -537,33 +555,39 @@ function HeatTile({ label, pitches, mode, Canvas, weightFn }) {
   return (
     <div className="tile">
       <div className="hd">{label}<span>{pitches.length.toLocaleString()}</span></div>
-      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand="all" granular weightFn={weightFn || null} />}</div>
+      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand={side || "all"} granular weightFn={weightFn || null} />}</div>
     </div>
   );
 }
-function HeatCard({ mix, year, hand, rvHelpers, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
-  const [sel, setSel] = useState(null), [count, setCount] = useState("all");
+const HEAT_SLIDES = [["success", "Success"], ["frequency", "Frequency"], ["whiffs", "Whiffs"], ["damage", "Damage"]];
+function HeatCard({ mix, year, hand, side, setSide, rvHelpers, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
+  const [sel, setSel] = useState(null), [count, setCount] = useState("all"), [slide, setSlide] = useState(0);
   const types = mix ? mix.types : [], cur = types.find(t => t.type === sel) || types[0];
   const sets = useMemo(() => {
     if (!mix || !cur) return null;
-    const base = mix.valid.filter(p => p.pitch_type === cur.type && p.plate_x != null && p.plate_z != null && pitchMatchesCount(p, count));
-    return { frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
-  }, [mix, cur, count, pitchMatchesCount]);
+    const base = mix.valid.filter(p => p.pitch_type === cur.type && (side === "all" || p.batter_hand === side) && p.plate_x != null && p.plate_z != null && pitchMatchesCount(p, count));
+    return { success: base, frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
+  }, [mix, cur, count, side, pitchMatchesCount]);
   // Success = runs saved per pitch vs. the league average for that pitch type at that spot (+ = good for him)
   const successFn = useMemo(() => (p) => leagueRunValue(p, hand) - pitchRunValue(p, rvHelpers), [hand, rvHelpers]);
+  const [mode, label] = HEAT_SLIDES[slide], step = (d) => setSlide(i => (i + d + HEAT_SLIDES.length) % HEAT_SLIDES.length);
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Location</div></div>
+      <div className="ov-head"><div className="ov-ct">Location</div><SideToggle side={side} setSide={setSide} /></div>
       <div className="ov-body">
         {!sets ? <div className="ov-note">No {year} MLB pitches.</div> : (<>
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
             {types.map(t => <button key={t.type} className="ov-chip" aria-pressed={t.type === cur.type} style={{ background: getPitchColor(t.type) }} onClick={() => setSel(t.type)} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</button>)}
           </div>
-          <div className="ov-hm">
-            <HeatTile label="Frequency" pitches={sets.frequency} mode="frequency" Canvas={GaussianHeatmapCanvas} />
-            <HeatTile label="Whiffs" pitches={sets.whiffs} mode="whiffs" Canvas={GaussianHeatmapCanvas} />
-            <HeatTile label="Damage" pitches={sets.damage} mode="damage" Canvas={GaussianHeatmapCanvas} />
-            <HeatTile label="Success" pitches={sets.frequency} mode="success" Canvas={GaussianHeatmapCanvas} weightFn={successFn} />
+          <div className="ov-car">
+            <button className="ov-arrow" aria-label="Previous map" onClick={() => step(-1)}>‹</button>
+            <div className="ov-hm">
+              <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={side} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} />
+            </div>
+            <button className="ov-arrow" aria-label="Next map" onClick={() => step(1)}>›</button>
+          </div>
+          <div className="ov-tabs">
+            {HEAT_SLIDES.map(([k, l], i) => <button key={k} aria-pressed={i === slide} onClick={() => setSlide(i)}>{l}</button>)}
           </div>
           <div className="ov-foot">
             <span>Count</span>
@@ -571,7 +595,7 @@ function HeatCard({ mix, year, hand, rvHelpers, getPitchColor, PITCH_ABBREV, Gau
               <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
               <option value="ahead">Pitcher Ahead</option><option value="behind">Pitcher Behind</option><option value="leverage">Leverage</option>
             </select>
-            <span className="ov-skey"><i style={{ background: "#22c55e" }} />Success: better than league there<i style={{ background: "#ef4444" }} />worse</span>
+            {mode === "success" && <span className="ov-skey"><i style={{ background: "#22c55e" }} />Better than league there<i style={{ background: "#ef4444" }} />Worse</span>}
           </div>
         </>)}
       </div>
@@ -607,14 +631,13 @@ function arsenalStats(pitches, h, line, box, year, computeSummaryStats) {
 }
 const ARSENAL_ROWS = [["k", "K %"], ["bb", "BB %", true], ["kbb", "K-BB %"], ["era", "ERA", true, 2], ["barrel", "Barrel %", true], ["hr9", "HR/9", true, 2],
   ["swstr", "SwStr %"], ["strike", "Strike %"], ["chase", "Chase %"], ["izwhiff", "In-Zone Whiff %"]];
-function StatCard({ hand, cur, line, box, year, computeSummaryStats }) {
-  const [h, setH] = useState("all");
+function StatCard({ hand, cur, line, box, year, computeSummaryStats, side: h, setSide: setH }) {
   const vals = useMemo(() => arsenalStats(cur, h, line, box, year, computeSummaryStats), [cur, h, line, box, year, computeSummaryStats]);
   const pool = OV_POOLS[year]?.[hand]?.stats?.[h], era = OV_STAT_BASE[year]?.era;
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Results</div>
-        <div className="ov-tg3">{[["all", "All"], ["L", "vs LHH"], ["R", "vs RHH"]].map(([k, l]) => <button key={k} aria-pressed={h === k} onClick={() => setH(k)}>{l}</button>)}</div>
+        <SideToggle side={h} setSide={setH} />
       </div>
       <div className="ov-body">
         {!vals ? <div className="ov-note">No {year} MLB data.</div> : ARSENAL_ROWS.map(([key, label, lowGood, dec]) => {
@@ -639,6 +662,7 @@ export default function OverviewPage({ C, helpers }) {
   const [loading26, setLoading26] = useState(false), [loading25, setLoading25] = useState(false);
   const [box26, setBox26] = useState(null), [box25, setBox25] = useState(null);
   const [err, setErr] = useState("");
+  const [side, setSide] = useState("R");   // batter side shared by the Location and Results containers
   const searchRef = useRef(null), seqRef = useRef(0);
 
   useEffect(() => {
@@ -760,7 +784,13 @@ export default function OverviewPage({ C, helpers }) {
               {results.map(r => <div key={r.id} onClick={() => loadPitcher(r)}><strong>{r.name}</strong>{r.team && <span>{r.team}</span>}{r.throws && <span>({r.throws}HP)</span>}</div>)}
             </div>
           )}
-          {pitcher && <div className="nm"><h1>{pitcher.name}</h1><span>{hand}HP{info?.height_inches ? ` · ${ftIn(info.height_inches)}` : ""}</span></div>}
+          {pitcher && (
+            <div className="ov-id">
+              <div className="ov-face" role="img" aria-label={pitcher.name} style={{ backgroundImage: `url(${headshotUrl(pitcher.id)})` }} />
+              {TEAM_IDS[pitcher.team] && <img className="ov-logo" src={`https://www.mlbstatic.com/team-logos/${TEAM_IDS[pitcher.team]}.svg`} alt={pitcher.team} onError={e => { e.currentTarget.style.display = "none"; }} />}
+              <div className="nm"><h1>{pitcher.name}</h1><span>{hand}HP{info?.height_inches ? ` · ${ftIn(info.height_inches)}` : ""}</span></div>
+            </div>
+          )}
         </div>
         <div className="ov-stats">
           {!pitcher && <div className="ov-note" style={{ padding: "8px 0", textAlign: "left" }}>Search a pitcher to load his season line, release model, pitch mix and movement.</div>}
@@ -791,8 +821,8 @@ export default function OverviewPage({ C, helpers }) {
         </div>
         <div className="ov-row ov-row2">
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
-          <HeatCard mix={busy ? null : mix} year={year} hand={hand} rvHelpers={helpers} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
-          <StatCard hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
+          <HeatCard side={side} setSide={setSide} mix={busy ? null : mix} year={year} hand={hand} rvHelpers={helpers} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
+          <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
         </div>
       </>)}
     </div>
