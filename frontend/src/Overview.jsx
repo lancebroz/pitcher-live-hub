@@ -4,7 +4,7 @@
 // (passed in through `helpers`), so the numbers reconcile across tabs.
 import { useState, useEffect, useMemo, useRef } from "react";
 import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo } from "./api.js";
-import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN } from "./overviewData.js";
+import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 
@@ -51,12 +51,13 @@ const CSS = `
 .ov-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;align-items:stretch}
 .ov-card{flex:1 1 420px;max-width:520px;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
 .ov-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:11px 14px 9px;border-bottom:1px solid var(--border)}
-.ov-ct{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);font-weight:700;margin-bottom:3px}
+.ov-ct{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);font-weight:700}
 .ov-head h2{font-size:17px;line-height:1.1;margin:0;font-weight:700;display:inline}
-.ov-sub{font-size:12px;color:var(--muted);display:inline;margin-left:8px}
+.ov-sub{font-size:12px;color:var(--muted)}
 .ov-tag{color:#ca8a04;margin-left:6px;letter-spacing:.5px}
 .ov-note{color:var(--dim);font-size:12px;padding:28px 18px;text-align:center}
-.ov-stage{position:relative;height:440px;touch-action:none;cursor:grab;overflow:hidden}
+.ov-stage{position:relative;flex:1;min-height:440px;touch-action:none;cursor:grab;overflow:hidden;background:#0a0e17;color:#e2e8f0;--bg:#0a0e17;--surface:#111827;--surfaceAlt:#1a2234;--border:#1e293b;--borderLight:#334155;--text:#e2e8f0;--muted:#94a3b8;--dim:#64748b}
+.ov-stage .ov-tag{position:absolute;top:44px;left:10px;margin:0;font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#facc15;pointer-events:none}
 .ov-stage.drag{cursor:grabbing}
 .ov-stage canvas{display:block;width:100%;height:100%}
 .ov-leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
@@ -116,6 +117,21 @@ const CSS = `
 @media (max-width:820px){.ov-grp.run{margin-left:0}.ov-years{order:-1;margin-left:auto}.ov-who{order:-2}}
 `;
 
+// Colour vs. the league average for that exact subset (season → pitcher hand → batter side), using the
+// same fill rule as the Compare table: neutral within ~0.4 SD, then green (better) / red (worse).
+const STAT_DIR = { k: 1, kbb: 1, bb: -1, era: -1, fip: -1, xfip: -1 };
+const normCdf = (z) => { const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2); const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return z > 0 ? 1 - p : p; };
+function tone(stat, value, base, label) {
+  const v = typeof value === "string" ? parseFloat(value) : value;
+  if (!base || v == null || isNaN(v) || !base[1]) return {};
+  const good = STAT_DIR[stat] * ((v - base[0]) / base[1]);
+  const mag = Math.max(0, Math.min(1, (Math.abs(good) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+  const col = Math.abs(good) < 0.4 ? null : good >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+  const avg = stat === "era" || stat === "fip" || stat === "xfip" ? base[0].toFixed(2) : `${base[0].toFixed(1)}%`;
+  return { style: col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined,
+    title: `${label} avg ${avg}${stat === "era" ? "" : ` · ${ord(Math.max(1, Math.min(99, Math.round(normCdf(good) * 100))))} pctile`}` };
+}
+
 // ─── Season line: mirrors SummaryStatsBar (box-score truth for all-hands when available, pitch-derived splits) ───
 function seasonLine(raw, box, eraOnly, computeSummaryStats) {
   if (!raw || raw.length === 0) return null;
@@ -169,7 +185,7 @@ function primaryFastball(valid) {
 }
 
 // ─── Container 1: 3D release model ───
-function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, yearTag }) {
+function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, yearTag }) {
   const stageRef = useRef(null), canvasRef = useRef(null), svgRef = useRef(null), cardRefs = useRef({}), sceneRef = useRef(null);
   const lastId = useRef(null);
   const [view, setViewName] = useState("quarter");
@@ -184,7 +200,6 @@ function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getP
     sceneRef.current = sc; lastId.current = null;
     return () => { sc.dispose(); sceneRef.current = null; };
   }, [ready]);
-  useEffect(() => { if (sceneRef.current) sceneRef.current.setBg(C.bg); }, [C.bg, ready]);
   useEffect(() => {
     const sc = sceneRef.current; if (!sc || !ready) return;
     const h = heightIn || OV_AVG_HEIGHT_IN;
@@ -195,7 +210,6 @@ function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getP
   }, [ready, pitcher.id, hand, heightIn, fb, armAngle, staticRow, showAvg, showLines, lg, getPitchColor]);
   useEffect(() => { if (sceneRef.current) sceneRef.current.setHot(hot || sticky); }, [hot, sticky, ready]);
 
-  const sub = `${hp}${heightIn ? ` · ${ftIn(heightIn)}` : ""}${fb ? ` · ${SHORT[fb.name] || fb.name}` : ""}`;
   const cards = ready ? [
     { k: "A", name: "Arm angle", val: armAngle, unit: "°", avg: lg.avg.armAngle, dist: lg.dist.armAngle },
     { k: "H", name: "Rel. height", val: fb.relZ, unit: "ft", avg: lg.avg.relZ, dist: lg.dist.relZ },
@@ -205,15 +219,12 @@ function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getP
   const activeHot = hot || sticky;
   return (
     <div className="ov-card">
-      <div className="ov-head"><div>
-        <div className="ov-ct">Release Model{yearTag && <span className="ov-tag">· showing 2026</span>}</div>
-        <h2>{pitcher.name}</h2><span className="ov-sub">{sub}</span>
-      </div></div>
       {!ready ? (
         <div className="ov-note">{!fb ? "No 2026 fastballs on record for this pitcher." : "No 2026 arm angle on file for this pitcher yet."}</div>
       ) : (
         <div className="ov-stage" ref={stageRef}>
           <canvas ref={canvasRef} />
+          {yearTag && <div className="ov-tag">Showing 2026</div>}
           <svg className="ov-leaders" ref={svgRef} />
           <div className="ov-cards">
             {showLines && cards.map(c => {
@@ -247,7 +258,7 @@ function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getP
             <button aria-label="Zoom out" onClick={() => sceneRef.current && sceneRef.current.zoomBy(1.39)}>−</button>
           </div>
           <div className="ov-legend">
-            <span><i style={{ background: "#eceff3", border: "1px solid var(--borderLight)" }} />{pitcher.name}</span>
+            <span><i style={{ background: "#eceff3" }} />{pitcher.name} · {SHORT[fb.name] || fb.name}</span>
             {showAvg && <span><i style={{ background: COL.G }} />Average {hp}</span>}
           </div>
         </div>
@@ -257,10 +268,10 @@ function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getP
 }
 
 // ─── Container 2: pitch mix by batter side and count ───
-function MixCard({ pitcher, mix, year, getPitchColor, PITCH_ABBREV }) {
+function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
   return (
     <div className="ov-card">
-      <div className="ov-head"><div><div className="ov-ct">Pitch Mix</div><h2>{pitcher.name}</h2><span className="ov-sub">Usage by batter side and count</span></div></div>
+      <div className="ov-head"><div className="ov-ct">Pitch Mix</div><span className="ov-sub">Usage by batter side and count</span></div>
       {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
@@ -294,7 +305,7 @@ function MixCard({ pitcher, mix, year, getPitchColor, PITCH_ABBREV }) {
 }
 
 // ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
-function MoveCard({ C, pitcher, hand, mix, year, armAngle, spin, getPitchColor, PITCH_ABBREV }) {
+function MoveCard({ C, hand, mix, year, armAngle, spin, getPitchColor, PITCH_ABBREV }) {
   const cvRef = useRef(null);
   const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0);
   useEffect(() => {
@@ -349,7 +360,7 @@ function MoveCard({ C, pitcher, hand, mix, year, armAngle, spin, getPitchColor, 
 
   return (
     <div className="ov-card">
-      <div className="ov-head"><div><div className="ov-ct">Pitch Movement</div><h2>{pitcher.name}</h2></div></div>
+      <div className="ov-head"><div className="ov-ct">Pitch Movement</div><span className="ov-sub">Pitcher's view</span></div>
       <div className="ov-mvwrap"><canvas ref={cvRef} /></div>
       <div className="ov-mvfoot">
         <div className="ov-mvleg">
@@ -506,10 +517,14 @@ export default function OverviewPage({ C, helpers }) {
   const vars = { "--bg": C.bg, "--surface": C.surface, "--surfaceAlt": C.surfaceAlt, "--border": C.border, "--borderLight": C.borderLight, "--text": C.text, "--muted": C.textMuted, "--dim": C.textDim, "--accent": C.accent };
   const f1 = (x) => (x == null ? "—" : x.toFixed(1));
   const kbb = (o) => (o && o.k != null && o.bb != null ? R(R(o.k) - R(o.bb)) : null);
-  const rate = (lab, a, l, r) => (
+  const base = OV_STAT_BASE[year]?.[hand], hp = `${hand}HP`;
+  const rate = (lab, key, a, l, r) => (
     <div className="ov-grp">
-      <div className="ov-st big"><div className="k">{lab}</div><div className="v">{f1(a)}<small>%</small></div></div>
-      <div className="ov-sp"><div><span>vs L</span><b>{f1(l)}</b></div><div><span>vs R</span><b>{f1(r)}</b></div></div>
+      <div className="ov-st big" {...tone(key, a, base?.all?.[key], `${year} ${hp}`)}><div className="k">{lab}</div><div className="v">{f1(a)}<small>%</small></div></div>
+      <div className="ov-sp">
+        <div {...tone(key, l, base?.L?.[key], `${year} ${hp} vs LHH`)}><span>vs L</span><b>{f1(l)}</b></div>
+        <div {...tone(key, r, base?.R?.[key], `${year} ${hp} vs RHH`)}><span>vs R</span><b>{f1(r)}</b></div>
+      </div>
     </div>
   );
   const busy = year === "2026" ? loading26 : loading25;
@@ -532,12 +547,12 @@ export default function OverviewPage({ C, helpers }) {
           {pitcher && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
           {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || `No ${year} MLB data for this pitcher.`}</div>}
           {pitcher && !busy && line && (<>
-            {rate("K%", line.k, line.L.k, line.R.k)}
-            {rate("BB%", line.bb, line.L.bb, line.R.bb)}
-            {rate("K-BB%", kbb(line), kbb(line.L), kbb(line.R))}
+            {rate("K%", "k", line.k, line.L.k, line.R.k)}
+            {rate("BB%", "bb", line.bb, line.L.bb, line.R.bb)}
+            {rate("K-BB%", "kbb", kbb(line), kbb(line.L), kbb(line.R))}
             <div className="ov-grp run">
-              {[["ERA", line.era], ["FIP", line.fip], ["xFIP", line.xfip], ["IP", line.ip]].map(([k, v]) => (
-                <div key={k} className="ov-st"><div className="k">{k}</div><div className="v">{v}</div></div>
+              {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
+                <div key={k} className="ov-st" {...(key ? tone(key, v, b, lab) : {})}><div className="k">{k}</div><div className="v">{v}</div></div>
               ))}
             </div>
           </>)}
@@ -550,9 +565,9 @@ export default function OverviewPage({ C, helpers }) {
       </div>
       {pitcher && reg26 && (
         <div className="ov-row">
-          <ReleaseCard C={C} pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} yearTag={year !== "2026"} />
-          <MixCard pitcher={pitcher} mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <MoveCard C={C} pitcher={pitcher} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} spin={spin} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} yearTag={year !== "2026"} />
+          <MixCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} spin={spin} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       )}
     </div>
