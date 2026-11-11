@@ -328,7 +328,7 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
 function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Pitch Mix</div><span className="ov-sub">Usage by batter side and count</span></div>
+      <div className="ov-head"><div className="ov-ct">Mix</div></div>
       {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
@@ -417,7 +417,7 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
 
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Pitch Movement</div><span className="ov-sub">Pitcher's view</span></div>
+      <div className="ov-head"><div className="ov-ct">Break</div></div>
       {mix && (
         <div className="ov-mvtop">
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
@@ -482,7 +482,7 @@ function SpinCard({ hand, mix, year, spin, getPitchColor }) {
   const pools = OV_POOLS[year]?.[hand]?.pitch || {};
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Spin</div><span className="ov-sub">Efficiency and rate by pitch</span></div>
+      <div className="ov-head"><div className="ov-ct">Spin</div></div>
       <div className="ov-body">
         <SpinGraphic spin={spin} hand={hand} />
         <div className="ov-hsub">Spin rate · percentile among {hand}HP</div>
@@ -520,7 +520,7 @@ function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanva
   }, [mix, cur, count, pitchMatchesCount]);
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Location</div><span className="ov-sub">Pitcher's view · all batters</span></div>
+      <div className="ov-head"><div className="ov-ct">Location</div></div>
       <div className="ov-body">
         {!sets ? <div className="ov-note">No {year} MLB pitches.</div> : (<>
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
@@ -578,7 +578,7 @@ function StatCard({ hand, cur, line, box, year, computeSummaryStats }) {
   const pool = OV_POOLS[year]?.[hand]?.stats?.[h], era = OV_STAT_BASE[year]?.era;
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Percentiles</div><span className="ov-sub">vs. {hand}HP{h === "all" ? "" : ` facing ${h}HH`}</span>
+      <div className="ov-head"><div className="ov-ct">Results</div>
         <div className="ov-tg3">{[["all", "All"], ["L", "vs LHH"], ["R", "vs RHH"]].map(([k, l]) => <button key={k} aria-pressed={h === k} onClick={() => setH(k)}>{l}</button>)}</div>
       </div>
       <div className="ov-body">
