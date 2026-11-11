@@ -442,10 +442,11 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
           </div>
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><div className="ov-mlab">Velo<small>mph</small></div>
             {mix.types.map(t => {
-              // average velocity, coloured against the league average for that pitch type and pitcher hand
+              // average velocity vs. the league average for that pitch type and pitcher hand: green = harder, red = softer,
+              // stronger colour the further from average (full strength at 2 SD)
               const v = mean(mix.valid.filter(p => p.pitch_type === t.type).map(p => p.release_speed)), bl = OV_POOLS[year]?.[hand]?.pitch?.[t.type]?.v;
               const z = v != null && bl && bl[1] ? (v - bl[0]) / bl[1] : 0;
-              return <div key={t.type} className="ov-velo" style={Math.abs(z) < 0.4 ? undefined : { color: z > 0 ? "#ef4444" : "#3b82f6" }} title={bl ? `${year} ${hand}HP ${t.name} avg ${bl[0].toFixed(1)} mph` : t.name}>{v != null ? v.toFixed(1) : "—"}</div>;
+              return <div key={t.type} className="ov-velo" style={Math.abs(z) < 0.4 ? undefined : { color: `color-mix(in srgb, ${z > 0 ? "#16a34a" : "#dc2626"} ${Math.round(40 + 60 * Math.min(1, (Math.abs(z) - 0.4) / 1.6))}%, var(--text))` }} title={bl ? `${year} ${hand}HP ${t.name} avg ${bl[0].toFixed(1)} mph` : t.name}>{v != null ? v.toFixed(1) : "—"}</div>;
             })}
           </div>
         </div>
