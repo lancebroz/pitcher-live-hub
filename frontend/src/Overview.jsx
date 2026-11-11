@@ -4,7 +4,7 @@
 // (passed in through `helpers`), so the numbers reconcile across tabs.
 import { useState, useEffect, useMemo, useRef } from "react";
 import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo } from "./api.js";
-import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE } from "./overviewData.js";
+import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 
@@ -94,10 +94,10 @@ const CSS = `
 .ov-mcell{border-radius:5px;display:flex;align-items:center;justify-content:center;min-height:40px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text);background:var(--surfaceAlt)}
 .ov-mcell small{font-size:9.5px;font-weight:600;opacity:.75;margin-left:1px}
 .ov-mcell.z{color:var(--dim);font-weight:500}
-.ov-mcell.hi{box-shadow:inset 0 0 0 2px #22c55e}.ov-mcell.lo{box-shadow:inset 0 0 0 2px #3b82f6}
+.ov-mcell.hi{box-shadow:inset 0 0 0 2px #22c55e}.ov-mcell.lo{box-shadow:inset 0 0 0 2px #ef4444}
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
 .ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
-.ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #3b82f6}
+.ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #ef4444}
 .ov-mvwrap{padding:8px 10px 0 6px}
 .ov-mvwrap canvas{display:block;width:100%;aspect-ratio:1/0.82}
 .ov-mvfoot{display:flex;gap:10px;align-items:stretch;padding:6px 12px 12px;margin-top:auto}
@@ -114,6 +114,36 @@ const CSS = `
 .ov-spin .v small{font-size:10px;color:var(--muted);margin-left:1px}
 .ov-spin .s{font-size:9.5px;color:var(--dim);white-space:nowrap}
 .ov-spin svg{display:block;border-radius:6px}
+.ov-lg b{font-weight:700;font-variant-numeric:tabular-nums;margin-left:4px;color:var(--text)}
+.ov-row2{margin-top:14px}
+.ov-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:9px;flex:1}
+.ov-sl{display:grid;grid-template-columns:118px minmax(0,1fr) 62px;align-items:center;gap:10px;min-height:26px}
+.ov-sl .l{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-sl .l i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.ov-sl .t{position:relative;height:6px;border-radius:3px;background:var(--borderLight);margin-right:12px}
+.ov-sl .t::before,.ov-sl .t::after{content:"";position:absolute;top:0;bottom:0;width:2px;background:var(--surface);opacity:.8}
+.ov-sl .t::before{left:50%}.ov-sl .t::after{left:0;width:0}
+.ov-sl .f{position:absolute;left:0;top:-7px;height:20px;border-radius:3px 10px 10px 3px;min-width:12px}
+.ov-sl .c{position:absolute;top:-10px;width:26px;height:26px;border-radius:50%;transform:translateX(-13px);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;color:#fff;border:2px solid var(--surface);font-variant-numeric:tabular-nums}
+.ov-sl .v{font-size:12.5px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);white-space:nowrap}
+.ov-sl .v small{font-size:10px;color:var(--dim);font-weight:500;margin-left:2px}
+.ov-hsub{font-size:10px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--dim);margin-top:4px}
+.ov-pick{display:flex;gap:5px;flex-wrap:wrap}
+.ov-pick button{border:0;border-radius:6px;padding:6px 9px 5px;font-weight:700;font-size:12.5px;color:#fff;cursor:pointer;line-height:1.1;opacity:.38;min-width:44px}
+.ov-pick button small{display:block;font-size:8.5px;font-weight:600;opacity:.9;margin-top:2px}
+.ov-pick button[aria-pressed=true]{opacity:1;box-shadow:0 0 0 2px var(--text)}
+.ov-hm{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ov-hm .tile{background:#0a0a12;border:1px solid #222;border-radius:8px;padding:8px}
+.ov-hm .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;font-weight:700;color:#e0e0e0}
+.ov-hm .hd span{font-size:10px;color:#888;font-weight:500;font-variant-numeric:tabular-nums}
+.ov-hm .cv{width:100%;aspect-ratio:1/1;border-radius:4px;overflow:hidden}
+.ov-hm .cv canvas{display:block;width:100%;height:100%}
+.ov-foot{display:flex;align-items:center;gap:8px;margin-top:auto;font-size:11px;color:var(--dim)}
+.ov-foot select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;font-weight:600;font-family:inherit}
+.ov-tg3{margin-left:auto;display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px}
+.ov-tg3 button{background:transparent;border:0;color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer}
+.ov-tg3 button[aria-pressed=true]{background:var(--surfaceAlt);color:var(--text)}
+.ov-spin{align-self:stretch;justify-content:space-between}
 @media (max-width:820px){.ov-grp.run{margin-left:0}.ov-years{order:-1;margin-left:auto}.ov-who{order:-2}}
 `;
 
@@ -130,6 +160,33 @@ function tone(stat, value, base, label) {
   const avg = stat === "era" || stat === "fip" || stat === "xfip" ? base[0].toFixed(2) : `${base[0].toFixed(1)}%`;
   return { style: col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined,
     title: `${label} avg ${avg}${stat === "era" ? "" : ` · ${ord(Math.max(1, Math.min(99, Math.round(normCdf(good) * 100))))} pctile`}` };
+}
+
+// Percentile of x within a pool stored as 21 quantiles (0–100% in 5% steps). `lowGood` flips it so that
+// a high percentile always means "better", the way Savant's sliders read.
+function pctFromQ(q, x, lowGood) {
+  if (!q || x == null || isNaN(x)) return null;
+  let p;
+  if (x <= q[0]) p = 0; else if (x >= q[20]) p = 100;
+  else { let i = 0; while (i < 19 && x > q[i + 1]) i++; const span = q[i + 1] - q[i]; p = 5 * (i + (span > 0 ? (x - q[i]) / span : 0)); }
+  if (lowGood) p = 100 - p;
+  return Math.max(1, Math.min(99, Math.round(p)));
+}
+// Savant-style ramp: blue (low) → grey (middle) → red (high)
+function pctColor(p) {
+  const lo = [50, 90, 161], mid = [163, 181, 190], hi = [200, 49, 44], t = p / 100;
+  const a = t < .5 ? lo : mid, b = t < .5 ? mid : hi, u = t < .5 ? t * 2 : (t - .5) * 2;
+  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * u)).join(",")})`;
+}
+function Slider({ label, dot, pct, value, unit, title }) {
+  const has = pct != null, col = has ? pctColor(pct) : "transparent", w = has ? Math.max(4, Math.min(100, pct)) : 0;
+  return (
+    <div className="ov-sl" title={title}>
+      <span className="l">{dot && <i style={{ background: dot }} />}{label}</span>
+      <span className="t">{has && <><span className="f" style={{ width: `${w}%`, background: col }} /><span className="c" style={{ left: `${w}%`, background: col }}>{pct}</span></>}</span>
+      <span className="v">{value}{unit && <small>{unit}</small>}</span>
+    </div>
+  );
 }
 
 // ─── Season line: mirrors SummaryStatsBar (box-score truth for all-hands when available, pitch-derived splits) ───
@@ -288,7 +345,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
                     {mix.types.map(t => {
                       const v = row.pct[t.type];
                       if (v == null) return <div key={t.type} className="ov-mcell z">—</div>;
-                      // only the standouts get marked: green well above his norm for that pitch, blue well below
+                      // only the standouts get marked: green well above his norm for that pitch, red well below
                       const rv = Math.round(v), d = rv - Math.round(t.usage), hi = d >= 8 && v >= t.usage * 1.3, lo = d <= -8 && v <= t.usage * .7;
                       return <div key={t.type} className={`ov-mcell${hi ? " hi" : lo ? " lo" : ""}${rv === 0 ? " z" : ""}`} title={`${t.name} · ${v.toFixed(1)}% (his overall: ${t.usage.toFixed(1)}%)`}>{rv}<small>%</small></div>;
                     })}
@@ -305,7 +362,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 }
 
 // ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
-function MoveCard({ C, hand, mix, year, armAngle, spin, getPitchColor, PITCH_ABBREV }) {
+function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV }) {
   const cvRef = useRef(null);
   const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0);
   useEffect(() => {
@@ -365,12 +422,21 @@ function MoveCard({ C, hand, mix, year, armAngle, spin, getPitchColor, PITCH_ABB
       <div className="ov-mvfoot">
         <div className="ov-mvleg">
           <div className="ov-lg">
-            {mix && mix.types.map(t => <span key={t.type}><i style={{ background: getPitchColor(t.type) }} />{PITCH_ABBREV[t.name] || t.type}</span>)}
+            {mix && mix.types.map(t => {
+              // average velocity, coloured against the league average for that pitch type and pitcher hand
+              const v = mean(mix.valid.filter(p => p.pitch_type === t.type).map(p => p.release_speed)), b = OV_POOLS[year]?.[hand]?.pitch?.[t.type]?.v;
+              const z = v != null && b && b[1] ? (v - b[0]) / b[1] : 0;
+              return (
+                <span key={t.type} title={b ? `${year} ${hand}HP ${t.name} avg ${b[0].toFixed(1)} mph` : t.name}>
+                  <i style={{ background: getPitchColor(t.type) }} />{PITCH_ABBREV[t.name] || t.type}
+                  {v != null && <b style={Math.abs(z) < 0.4 ? undefined : { color: z > 0 ? "#ef4444" : "#3b82f6" }}>{v.toFixed(1)}</b>}
+                </span>
+              );
+            })}
             {armAngle != null && <span className="aa"><i />Arm angle</span>}
           </div>
           <button className="ov-avg" aria-pressed={showAvg} onClick={() => setShowAvg(v => !v)}><i />Avg.</button>
         </div>
-        <SpinGraphic spin={spin} hand={hand} year={year} />
       </div>
     </div>
   );
@@ -409,9 +475,126 @@ function SpinGraphic({ spin, hand }) {
   );
 }
 
+// ─── Row 2, left: spin efficiency + spin rate by pitch type ───
+function SpinCard({ hand, mix, year, spin, getPitchColor }) {
+  const pools = OV_POOLS[year]?.[hand]?.pitch || {};
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Spin</div><span className="ov-sub">Efficiency and rate by pitch</span></div>
+      <div className="ov-body">
+        <SpinGraphic spin={spin} hand={hand} />
+        <div className="ov-hsub">Spin rate · percentile among {hand}HP</div>
+        {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : mix.types.map(t => {
+          const v = mean(mix.valid.filter(p => p.pitch_type === t.type).map(p => p.release_spin_rate));
+          return <Slider key={t.type} label={SHORT[t.name] || t.name} dot={getPitchColor(t.type)} pct={pctFromQ(pools[t.type]?.s, v)}
+            value={v != null ? Math.round(v).toLocaleString() : "—"} unit="rpm" title={pools[t.type] ? `Among ${pools[t.type].n} ${hand}HP with 50+ ${t.name}s` : "Too few pitchers throw this to rank it"} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Row 2, middle: location heatmaps (the Heatmaps tab's Gaussian granular canvas) ───
+function HeatTile({ label, pitches, mode, Canvas }) {
+  const ref = useRef(null), [w, setW] = useState(0);
+  useEffect(() => {
+    if (!ref.current) return undefined;
+    const ro = new ResizeObserver(e => setW(Math.floor(e[0].contentRect.width * 2))); ro.observe(ref.current); return () => ro.disconnect();
+  }, []);
+  return (
+    <div className="tile">
+      <div className="hd">{label}<span>{pitches.length.toLocaleString()}</span></div>
+      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand="all" granular />}</div>
+    </div>
+  );
+}
+function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
+  const [sel, setSel] = useState(null), [count, setCount] = useState("all");
+  const types = mix ? mix.types : [], cur = types.find(t => t.type === sel) || types[0];
+  const sets = useMemo(() => {
+    if (!mix || !cur) return null;
+    const base = mix.valid.filter(p => p.pitch_type === cur.type && p.plate_x != null && p.plate_z != null && pitchMatchesCount(p, count));
+    return { frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
+  }, [mix, cur, count, pitchMatchesCount]);
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Location</div><span className="ov-sub">Pitcher's view · all batters</span></div>
+      <div className="ov-body">
+        {!sets ? <div className="ov-note">No {year} MLB pitches.</div> : (<>
+          <div className="ov-pick">
+            {types.map(t => <button key={t.type} aria-pressed={t.type === cur.type} style={{ background: getPitchColor(t.type) }} onClick={() => setSel(t.type)} title={t.name}>{PITCH_ABBREV[t.name] || t.type}<small>{SHORT[t.name] || t.name}</small></button>)}
+          </div>
+          <div className="ov-hm">
+            <HeatTile label="Frequency" pitches={sets.frequency} mode="frequency" Canvas={GaussianHeatmapCanvas} />
+            <HeatTile label="Whiffs" pitches={sets.whiffs} mode="whiffs" Canvas={GaussianHeatmapCanvas} />
+            <HeatTile label="Damage" pitches={sets.damage} mode="damage" Canvas={GaussianHeatmapCanvas} />
+          </div>
+          <div className="ov-foot">
+            <span>Count</span>
+            <select value={count} onChange={e => setCount(e.target.value)} aria-label="Count situation">
+              <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
+              <option value="ahead">Pitcher Ahead</option><option value="behind">Pitcher Behind</option><option value="leverage">Leverage</option>
+            </select>
+          </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+// ─── Row 2, right: whole-arsenal percentile sliders ───
+function arsenalStats(pitches, h, line, box, year, computeSummaryStats) {
+  if (!pitches || !line) return null;
+  const f = pitches.filter(p => (h === "all" || p.batter_hand === h) && p.pitch_name && p.pitch_name.trim() !== "" && p.pitch_name.toLowerCase() !== "nan");
+  if (!f.length) return null;
+  let sw = 0, wh = 0, st = 0, ozs = 0, ozt = 0, izw = 0, izs = 0, ba = 0, bbe = 0;
+  for (const p of f) {   // same definitions as computeMetrics
+    if (p.is_whiff) wh++; if (p.is_swing) sw++; if (p.is_swing || p.is_called_strike) st++;
+    if (!p.is_in_zone) { ozt++; if (p.is_swing) ozs++; } else if (p.is_swing) { izs++; if (p.is_whiff) izw++; }
+    if (p.is_in_play && !p.is_bunt) { bbe++; if (p.is_barrel) ba++; }
+  }
+  const c = f.length, pc = (n, d) => (d > 0 ? 100 * n / d : null);
+  const src = h === "all" ? line : line[h];
+  // HR/9: official box totals for the full 2026 line, otherwise counted from at-bat-ending events
+  let hr9 = null;
+  if (h === "all" && year === "2026" && box && box.outs > 0 && box.home_runs != null) hr9 = 27 * box.home_runs / box.outs;
+  else {
+    const ab = new Map();
+    for (const p of pitches) { if ((h !== "all" && p.batter_hand !== h) || !p.game_pk || p.at_bat_number == null) continue; const ev = (p.events || "").toLowerCase().trim(); if (ev) ab.set(`${p.game_pk}-${p.at_bat_number}`, ev); }
+    let hr = 0; for (const ev of ab.values()) if (ev === "home_run") hr++;
+    const s = computeSummaryStats(pitches, h), ip = s ? String(s.ip).split(".") : null, outs = ip ? Number(ip[0]) * 3 + Number(ip[1] || 0) : 0;
+    if (outs > 0) hr9 = 27 * hr / outs;
+  }
+  return { k: src?.k, bb: src?.bb, kbb: src && src.k != null && src.bb != null ? R(R(src.k) - R(src.bb)) : null, era: h === "all" ? parseFloat(line.era) : null,
+    barrel: pc(ba, bbe), hr9, swstr: pc(wh, c), strike: pc(st, c), chase: pc(ozs, ozt), izwhiff: pc(izw, izs) };
+}
+const ARSENAL_ROWS = [["k", "K %"], ["bb", "BB %", true], ["kbb", "K-BB %"], ["era", "ERA", true, 2], ["barrel", "Barrel %", true], ["hr9", "HR/9", true, 2],
+  ["swstr", "SwStr %"], ["strike", "Strike %"], ["chase", "Chase %"], ["izwhiff", "In-Zone Whiff %"]];
+function StatCard({ hand, cur, line, box, year, computeSummaryStats }) {
+  const [h, setH] = useState("all");
+  const vals = useMemo(() => arsenalStats(cur, h, line, box, year, computeSummaryStats), [cur, h, line, box, year, computeSummaryStats]);
+  const pool = OV_POOLS[year]?.[hand]?.stats?.[h], era = OV_STAT_BASE[year]?.era;
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Percentiles</div><span className="ov-sub">vs. {hand}HP{h === "all" ? "" : ` facing ${h}HH`}</span>
+        <div className="ov-tg3">{[["all", "All"], ["L", "vs LHH"], ["R", "vs RHH"]].map(([k, l]) => <button key={k} aria-pressed={h === k} onClick={() => setH(k)}>{l}</button>)}</div>
+      </div>
+      <div className="ov-body">
+        {!vals ? <div className="ov-note">No {year} MLB data.</div> : ARSENAL_ROWS.map(([key, label, lowGood, dec]) => {
+          const v = vals[key], ok = v != null && !isNaN(v);
+          // ERA has no pitch-level pool (earned runs aren't in the feed): rank it against league ERA with an assumed spread
+          const pct = !ok ? null : key === "era" ? (era ? Math.max(1, Math.min(99, Math.round(normCdf((era[0] - v) / era[1]) * 100))) : null) : pctFromQ(pool?.[key], v, lowGood);
+          return <Slider key={key} label={label} pct={pct} value={ok ? v.toFixed(dec || 1) : "—"}
+            title={key === "era" ? (h === "all" ? `League ERA ${era ? era[0].toFixed(2) : "—"} · approximate percentile` : "ERA isn't split by batter side") : pool ? `Among ${pool.n} qualified ${hand}HP` : ""} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ───
 export default function OverviewPage({ C, helpers }) {
-  const { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV } = helpers;
+  const { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount } = helpers;
   const [q, setQ] = useState(""), [results, setResults] = useState([]), [open, setOpen] = useState(false);
   const [pitcher, setPitcher] = useState(null), [info, setInfo] = useState(null);
   const [year, setYear] = useState("2026");
@@ -563,13 +746,18 @@ export default function OverviewPage({ C, helpers }) {
           </div>
         )}
       </div>
-      {pitcher && reg26 && (
+      {pitcher && reg26 && (<>
         <div className="ov-row">
           <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} yearTag={year !== "2026"} />
           <MixCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} spin={spin} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
-      )}
+        <div className="ov-row ov-row2">
+          <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
+          <HeatCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
+          <StatCard hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
+        </div>
+      </>)}
     </div>
   );
 }

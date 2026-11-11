@@ -5874,7 +5874,7 @@ const HittersPage = ({ C, isMobile }) => {
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV };
+const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
