@@ -1,8 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo, Component } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo, Component, lazy, Suspense } from "react";
 import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport, searchBatters, getBatterCachedSeason } from "./api.js";
 import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
+
+// Overview tab is code-split so its 3D library only downloads when the tab is opened.
+const OverviewPage = lazy(() => import("./Overview.jsx"));
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -5869,6 +5872,10 @@ const HittersPage = ({ C, isMobile }) => {
   );
 };
 
+// Shared with the Overview tab so it normalises pitches and computes season stats
+// exactly the way the Compare tab does (stable identity → safe in hook deps).
+const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV };
+
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
   const C = themes[theme];
@@ -5881,7 +5888,7 @@ export default function PitcherTracker() {
   // Otherwise default to "tracker" as before.
   const initialPage = (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("pitcher_id"))
     ? "heatmaps" : "tracker";
-  const [page, setPage] = useState(initialPage); // "tracker" | "compare" | "heatmaps" | "leaderboard" | "report"
+  const [page, setPage] = useState(initialPage); // "tracker" | "overview" | "compare" | "heatmaps" | "leaderboard" | "report"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
   const [livePitchData, setLivePitchData] = useState(null);
@@ -6150,7 +6157,7 @@ export default function PitcherTracker() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
-              {[{ k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "hitters", l: "Hitters" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
+              {[{ k: "tracker", l: "Tracker" }, { k: "overview", l: "Overview" }, { k: "compare", l: "Compare" }, { k: "hitters", l: "Hitters" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
                 <button key={p.k} onClick={() => setPage(p.k)} style={{
                   padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
                   background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
@@ -6235,8 +6242,8 @@ export default function PitcherTracker() {
       </div>
 
       <div style={{ maxWidth: "1440px", margin: "0 auto", padding: isMobile ? "16px 12px" : "24px 32px" }}>
-        {/* Search */}
-        <div style={{ display: "flex", gap: "12px", marginBottom: "24px", alignItems: "center", flexWrap: "wrap" }}>
+        {/* Search (the Overview tab has its own pitcher search, so this one is hidden there) */}
+        <div style={{ display: page === "overview" ? "none" : "flex", gap: "12px", marginBottom: "24px", alignItems: "center", flexWrap: "wrap" }}>
           <AutocompleteInput value={pitcherName} onChange={setPitcherName} onSelect={handleLoadPitcher} C={C} />
           <button onClick={() => handleLoadPitcher()} style={{
             background: C.accent, border: "none", borderRadius: "6px", padding: "10px 20px",
@@ -6484,6 +6491,11 @@ export default function PitcherTracker() {
         <ViewErrorBoundary C={C} resetKey={page}>
         {page === "tracker" && !activePitcher && (
           <StartersGrid C={C} logos={teamLogos} onSelect={handleSelectFromGame} isMobile={isMobile} />
+        )}
+        {page === "overview" && (
+          <Suspense fallback={<div style={{ padding: "32px", color: C.textDim, fontSize: "12px" }}>Loading overview…</div>}>
+            <OverviewPage C={C} isMobile={isMobile} helpers={OVERVIEW_HELPERS} />
+          </Suspense>
         )}
         {page === "compare" && (
           <ComparePage C={C} isMobile={isMobile} teamLogos={teamLogos} />

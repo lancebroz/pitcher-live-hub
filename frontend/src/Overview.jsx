@@ -1,0 +1,560 @@
+// ─── Overview tab ───────────────────────────────────────────────────────────────
+// Search a pitcher → season line + three containers: 3D release model, pitch mix, pitch movement.
+// Pitch data comes from the same endpoints and the same normaliser as the Compare tool
+// (passed in through `helpers`), so the numbers reconcile across tabs.
+import { useState, useEffect, useMemo, useRef } from "react";
+import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo } from "./api.js";
+import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN } from "./overviewData.js";
+import { solvePose } from "./releaseSolver.js";
+import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
+
+const FIP_CONSTANT = 3.15, LG_HR_FB_RATE = 0.119;   // same constants as SummaryStatsBar
+const FB_CODES = ["FF", "SI", "FC", "FA"];
+const SHORT = { "4-Seam Fastball": "4-Seam", "Four-Seam Fastball": "4-Seam", "Split-Finger": "Splitter" };
+const r1 = (x) => (Math.round(x * 10) / 10).toFixed(1);
+const R = (x) => Math.round(x * 10) / 10;
+const mean = (a) => { const f = a.filter(v => v != null && !isNaN(v)); return f.length ? f.reduce((s, v) => s + v, 0) / f.length : null; };
+const ftIn = (i) => { const f = Math.floor(i / 12), r = Math.round((i - f * 12) * 2) / 2; return `${f}′${r}″`; };
+const sgn = (x, unit) => { const v = R(x); return (v > 0 ? "+" : v < 0 ? "−" : "±") + Math.abs(v).toFixed(1) + unit; };
+const ord = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+const pctile = (arr, x) => { let lo = 0, eq = 0; for (const v of arr) { if (v < x - 1e-9) lo++; else if (Math.abs(v - x) <= 1e-9) eq++; } return Math.max(1, Math.min(99, Math.round(100 * (lo + eq / 2) / arr.length))); };
+const validType = (p) => p.pitch_type && p.pitch_type !== "PO" && p.pitch_type !== "UN" && p.pitch_name !== "Other" &&
+  p.pitch_type.toLowerCase() !== "nan" && (p.pitch_name || "").toLowerCase() !== "nan";
+
+const CSS = `
+.ov{--cH:${COL.H};--cE:${COL.E};--cS:${COL.S};--cA:${COL.A}}
+.ov *{box-sizing:border-box}
+.ov button{font-family:inherit}
+.ov-sum{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:14px}
+.ov-who{display:flex;flex-direction:column;gap:6px;min-width:220px;position:relative}
+.ov-who input{width:100%;padding:8px 11px;font-size:12.5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:inherit;outline:none}
+.ov-dd{position:absolute;top:36px;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:6px;z-index:30;max-height:300px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.ov-dd div{padding:9px 12px;cursor:pointer;font-size:12px;color:var(--text);border-bottom:1px solid var(--border)}
+.ov-dd div:last-child{border-bottom:0}.ov-dd div:hover{background:var(--surfaceAlt)}
+.ov-dd span{color:var(--dim);margin-left:8px}
+.ov-who h1{font-size:20px;margin:0;line-height:1.1;display:inline;font-weight:700}
+.ov-who .nm span{font-size:12px;color:var(--muted);margin-left:8px}
+.ov-stats{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:stretch;flex:1}
+.ov-grp{display:flex;gap:6px;align-items:stretch}
+.ov-grp.run{margin-left:auto}
+.ov-st{background:var(--surfaceAlt);border:1px solid var(--border);border-radius:8px;padding:6px 12px 7px;min-width:66px}
+.ov-st .k{font-size:9.5px;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.ov-st .v{font-size:20px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums}
+.ov-st.big .v{font-size:26px}.ov-st .v small{font-size:12px;color:var(--muted);margin-left:1px}
+.ov-sp{display:flex;flex-direction:column;gap:4px}
+.ov-sp div{flex:1;display:flex;align-items:center;gap:7px;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 8px;min-width:78px}
+.ov-sp span{font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);font-weight:700}
+.ov-sp b{font-size:12.5px;font-variant-numeric:tabular-nums}
+.ov-years{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px;align-self:flex-start}
+.ov-years button{background:transparent;border:0;color:var(--dim);font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer}
+.ov-years button[aria-pressed=true]{background:var(--accent);color:#fff}
+.ov-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;align-items:stretch}
+.ov-card{flex:1 1 420px;max-width:520px;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.ov-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:11px 14px 9px;border-bottom:1px solid var(--border)}
+.ov-ct{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);font-weight:700;margin-bottom:3px}
+.ov-head h2{font-size:17px;line-height:1.1;margin:0;font-weight:700;display:inline}
+.ov-sub{font-size:12px;color:var(--muted);display:inline;margin-left:8px}
+.ov-tag{color:#ca8a04;margin-left:6px;letter-spacing:.5px}
+.ov-note{color:var(--dim);font-size:12px;padding:28px 18px;text-align:center}
+.ov-stage{position:relative;height:440px;touch-action:none;cursor:grab;overflow:hidden}
+.ov-stage.drag{cursor:grabbing}
+.ov-stage canvas{display:block;width:100%;height:100%}
+.ov-leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.ov-seg{position:absolute;top:8px;display:flex;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:3px}
+.ov-seg button{background:transparent;border:0;color:var(--muted);font-size:10.5px;font-weight:600;padding:5px 7px;border-radius:5px;cursor:pointer}
+.ov-seg.views{left:8px}.ov-seg.views button.on{background:var(--accent);color:#fff}
+.ov-seg.tg{right:8px}.ov-seg.tg button{color:var(--dim)}.ov-seg.tg button[aria-pressed=true]{color:var(--text);background:var(--surfaceAlt)}
+.ov-zoom{position:absolute;left:8px;bottom:8px;display:flex;gap:4px}
+.ov-zoom button{width:26px;height:26px;border-radius:6px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:14px;cursor:pointer;line-height:1}
+.ov-legend{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:10px;font-size:10.5px;color:var(--muted);background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:6px;pointer-events:none;white-space:nowrap}
+.ov-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.ov-cards{position:absolute;inset:0;pointer-events:none}
+.ov-co{position:absolute;left:0;top:0;width:86px;display:block;text-align:left;pointer-events:auto;background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--k);border-radius:6px;padding:5px 7px 6px;color:var(--text);cursor:pointer;will-change:transform}
+.ov-co span{display:block}
+.ov-co .k{font-size:8.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.ov-co .v{font-size:16px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums}
+.ov-co .v small{font-size:10px;font-weight:600;color:var(--muted);margin-left:2px}
+.ov-co .bar{position:relative;height:3px;border-radius:2px;background:var(--borderLight);margin:5px 4px 4px}
+.ov-co .bar .a{position:absolute;left:50%;top:-2px;width:2px;height:7px;background:var(--muted);transform:translateX(-1px)}
+.ov-co .bar .p{position:absolute;top:-2.5px;width:8px;height:8px;border-radius:50%;background:var(--k);border:1.5px solid var(--surface);transform:translateX(-4px)}
+.ov-co .pc{font-size:10px;color:var(--muted)}
+.ov-co .pc b,.ov-co .d b{color:var(--text);font-weight:700}
+.ov-co .d{display:none;font-size:9.5px;margin-top:2px;white-space:nowrap;color:var(--muted)}
+.ov-co.hot .d,.ov-co:hover .d{display:block}
+.ov-co.hot,.ov-co:hover,.ov-co:focus-visible{width:auto;min-width:86px;z-index:2;border-color:var(--k);outline:none}
+.ov-mix{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.ov-mrow{display:grid;grid-template-columns:62px repeat(var(--n),minmax(0,1fr));gap:5px;align-items:stretch}
+.ov-chip{border-radius:6px;padding:7px 0 6px;text-align:center;font-weight:700;font-size:13px;color:#fff;letter-spacing:.3px;line-height:1.1}
+.ov-chip small{display:block;font-size:9px;font-weight:600;opacity:.85;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px}
+.ov-msec{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--muted);margin:10px 0 2px}
+.ov-msec::before,.ov-msec::after{content:"";flex:1;height:1px;background:var(--border)}
+.ov-mlab{display:flex;flex-direction:column;justify-content:center;font-size:11.5px;font-weight:600;color:var(--text);line-height:1.15}
+.ov-mlab small{font-size:9.5px;color:var(--dim);font-weight:500;font-variant-numeric:tabular-nums}
+.ov-mcell{border-radius:5px;display:flex;align-items:center;justify-content:center;min-height:40px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text);background:var(--surfaceAlt)}
+.ov-mcell small{font-size:9.5px;font-weight:600;opacity:.75;margin-left:1px}
+.ov-mcell.z{color:var(--dim);font-weight:500}
+.ov-mcell.hi{box-shadow:inset 0 0 0 2px #22c55e}.ov-mcell.lo{box-shadow:inset 0 0 0 2px #3b82f6}
+.ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
+.ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
+.ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #3b82f6}
+.ov-mvwrap{padding:8px 10px 0 6px}
+.ov-mvwrap canvas{display:block;width:100%;aspect-ratio:1/0.82}
+.ov-mvfoot{display:flex;gap:10px;align-items:stretch;padding:6px 12px 12px;margin-top:auto}
+.ov-mvleg{flex:1;display:flex;flex-direction:column;gap:7px;justify-content:center;min-width:0}
+.ov-lg{display:flex;flex-wrap:wrap;gap:5px 10px;font-size:10.5px;color:var(--muted)}
+.ov-lg i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.ov-lg .aa{white-space:nowrap}.ov-lg .aa i{width:14px;height:0;border-top:2px dotted var(--text);border-radius:0;vertical-align:3px}
+.ov-avg{align-self:flex-start;display:flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--border);border-radius:4px;padding:3px 9px;color:var(--dim);font-size:10px;font-weight:600;cursor:pointer}
+.ov-avg i{width:8px;height:8px;border-radius:50%;background:var(--dim);border:1.5px solid #000}
+.ov-avg[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}.ov-avg[aria-pressed=true] i{background:var(--accent)}
+.ov-spin{display:flex;align-items:center;gap:9px;border:1px solid var(--border);border-radius:8px;padding:6px 6px 6px 10px;background:var(--surfaceAlt)}
+.ov-spin .k{font-size:8.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);font-weight:700;line-height:1.25}
+.ov-spin .v{font-size:19px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.ov-spin .v small{font-size:10px;color:var(--muted);margin-left:1px}
+.ov-spin .s{font-size:9.5px;color:var(--dim);white-space:nowrap}
+.ov-spin svg{display:block;border-radius:6px}
+@media (max-width:820px){.ov-grp.run{margin-left:0}.ov-years{order:-1;margin-left:auto}.ov-who{order:-2}}
+`;
+
+// ─── Season line: mirrors SummaryStatsBar (box-score truth for all-hands when available, pitch-derived splits) ───
+function seasonLine(raw, box, eraOnly, computeSummaryStats) {
+  if (!raw || raw.length === 0) return null;
+  const all = computeSummaryStats(raw, "all"); if (!all) return null;
+  const num = (s) => { const v = parseFloat(s); return isNaN(v) ? null : v; };
+  const out = { k: num(all.kPct), bb: num(all.bbPct), fip: all.fip, xfip: all.xfip, ip: all.ip, era: "—" };
+  const useBox = !eraOnly && box && box.batters_faced > 0;
+  if (useBox) {
+    const bf = box.batters_faced;
+    out.k = (box.strikeouts / bf) * 100; out.bb = (box.walks / bf) * 100;
+    const ip = box.outs / 3;
+    if (ip > 0) {
+      out.fip = ((13 * box.home_runs + 3 * (box.walks + box.hit_batsmen) - 2 * box.strikeouts) / ip + FIP_CONSTANT).toFixed(2);
+      let fb = 0; for (const p of raw) if (p.is_in_play && p.bb_type === "fly_ball") fb++;
+      out.xfip = ((13 * fb * LG_HR_FB_RATE + 3 * (box.walks + box.hit_batsmen) - 2 * box.strikeouts) / ip + FIP_CONSTANT).toFixed(2);
+    }
+  }
+  if (!eraOnly && box && box.innings != null) out.ip = Number(box.innings).toFixed(1);
+  if (box && box.era != null) out.era = Number(box.era).toFixed(2);
+  const split = (h) => { const s = computeSummaryStats(raw, h); return s ? { k: num(s.kPct), bb: num(s.bbPct) } : { k: null, bb: null }; };
+  out.L = split("L"); out.R = split("R");
+  return out;
+}
+
+function buildMix(pitches) {
+  const v = pitches.filter(validType), tot = v.length; if (!tot) return null;
+  const cnt = {}, names = {};
+  for (const p of v) { cnt[p.pitch_type] = (cnt[p.pitch_type] || 0) + 1; names[p.pitch_type] = p.pitch_name; }
+  const types = Object.keys(cnt).filter(t => cnt[t] / tot >= 0.01).sort((a, b) => cnt[b] - cnt[a])
+    .map(t => ({ type: t, name: names[t], usage: 100 * cnt[t] / tot }));
+  const splits = {};
+  for (const h of ["R", "L"]) {
+    const dh = v.filter(p => p.batter_hand === h);
+    const row = (sub) => { const c = {}; for (const p of sub) c[p.pitch_type] = (c[p.pitch_type] || 0) + 1; const pct = {}; types.forEach(t => { pct[t.type] = sub.length ? 100 * (c[t.type] || 0) / sub.length : null; }); return { n: sub.length, pct }; };
+    splits[h] = { all: row(dh), pre: row(dh.filter(p => p.strikes != null && p.strikes < 2)), two: row(dh.filter(p => p.strikes === 2)) };
+  }
+  return { types, splits, valid: v };
+}
+
+// Primary fastball: four-seam when he throws one, otherwise his most-used fastball.
+function primaryFastball(valid) {
+  const tot = valid.length, cnt = {};
+  for (const p of valid) cnt[p.pitch_type] = (cnt[p.pitch_type] || 0) + 1;
+  let code = null;
+  if ((cnt.FF || 0) >= Math.max(40, 0.05 * tot)) code = "FF";
+  else code = FB_CODES.filter(c => c !== "FF" && cnt[c]).sort((a, b) => cnt[b] - cnt[a])[0] || (cnt.FF ? "FF" : null);
+  if (!code) return null;
+  const ps = valid.filter(p => p.pitch_type === code);
+  return { type: code, name: ps[0].pitch_name, n: ps.length, usage: 100 * ps.length / tot,
+    relZ: mean(ps.map(p => p.release_pos_z)), relX: mean(ps.map(p => p.release_pos_x)), ext: mean(ps.map(p => p.release_extension)) };
+}
+
+// ─── Container 1: 3D release model ───
+function ReleaseCard({ C, pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, yearTag }) {
+  const stageRef = useRef(null), canvasRef = useRef(null), svgRef = useRef(null), cardRefs = useRef({}), sceneRef = useRef(null);
+  const lastId = useRef(null);
+  const [view, setViewName] = useState("quarter");
+  const [showAvg, setShowAvg] = useState(true), [showLines, setShowLines] = useState(true);
+  const [hot, setHot] = useState(null), [sticky, setSticky] = useState(null);
+  const lg = OV_LEAGUE[hand] || OV_LEAGUE.R, hp = `${hand}HP`;
+  const ready = fb && armAngle != null && fb.relZ != null && fb.relX != null && fb.ext != null;
+
+  useEffect(() => {
+    if (!ready) return undefined;
+    const sc = createReleaseScene({ canvas: canvasRef.current, stage: stageRef.current, svg: svgRef.current, getCards: () => cardRefs.current, onViewChange: setViewName });
+    sceneRef.current = sc; lastId.current = null;
+    return () => { sc.dispose(); sceneRef.current = null; };
+  }, [ready]);
+  useEffect(() => { if (sceneRef.current) sceneRef.current.setBg(C.bg); }, [C.bg, ready]);
+  useEffect(() => {
+    const sc = sceneRef.current; if (!sc || !ready) return;
+    const h = heightIn || OV_AVG_HEIGHT_IN;
+    const pose = solvePose({ heightIn: h, hand, relX: fb.relX, relZ: fb.relZ, ext: fb.ext, armAngle, front: staticRow?.f, comX: staticRow?.c });
+    const a = lg.avg, avg = solvePose({ heightIn: OV_AVG_HEIGHT_IN, hand, relX: a.relX, relZ: a.relZ, ext: a.ext, armAngle: a.armAngle, front: lg.front, comX: lg.comX });
+    sc.setData({ pose, avg, pitchColor: getPitchColor(fb.type), showAvg, showLines, resetView: lastId.current !== pitcher.id });
+    lastId.current = pitcher.id;
+  }, [ready, pitcher.id, hand, heightIn, fb, armAngle, staticRow, showAvg, showLines, lg, getPitchColor]);
+  useEffect(() => { if (sceneRef.current) sceneRef.current.setHot(hot || sticky); }, [hot, sticky, ready]);
+
+  const sub = `${hp}${heightIn ? ` · ${ftIn(heightIn)}` : ""}${fb ? ` · ${SHORT[fb.name] || fb.name}` : ""}`;
+  const cards = ready ? [
+    { k: "A", name: "Arm angle", val: armAngle, unit: "°", avg: lg.avg.armAngle, dist: lg.dist.armAngle },
+    { k: "H", name: "Rel. height", val: fb.relZ, unit: "ft", avg: lg.avg.relZ, dist: lg.dist.relZ },
+    { k: "S", name: "Rel. side", val: fb.relX, unit: "ft", avg: lg.avg.relX, dist: lg.dist.relX, abs: true },
+    { k: "E", name: "Extension", val: fb.ext, unit: "ft", avg: lg.avg.ext, dist: lg.dist.ext },
+  ] : [];
+  const activeHot = hot || sticky;
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div>
+        <div className="ov-ct">Release Model{yearTag && <span className="ov-tag">· showing 2026</span>}</div>
+        <h2>{pitcher.name}</h2><span className="ov-sub">{sub}</span>
+      </div></div>
+      {!ready ? (
+        <div className="ov-note">{!fb ? "No 2026 fastballs on record for this pitcher." : "No 2026 arm angle on file for this pitcher yet."}</div>
+      ) : (
+        <div className="ov-stage" ref={stageRef}>
+          <canvas ref={canvasRef} />
+          <svg className="ov-leaders" ref={svgRef} />
+          <div className="ov-cards">
+            {showLines && cards.map(c => {
+              // deltas use the rounded values shown, so the arithmetic on screen always checks out
+              const v = c.abs ? Math.abs(c.val) : c.val, a = c.abs ? Math.abs(c.avg) : c.avg, dv = R(v) - R(a), pc = pctile(c.dist, R(v) === R(a) ? a : v);
+              return (
+                <button key={c.k} ref={el => { if (el) cardRefs.current[c.k] = el; else delete cardRefs.current[c.k]; }}
+                  className={`ov-co${activeHot === c.k ? " hot" : ""}`} style={{ "--k": COL[c.k] }}
+                  onMouseEnter={() => setHot(c.k)} onMouseLeave={() => setHot(null)} onFocus={() => setHot(c.k)} onBlur={() => setHot(null)}
+                  onClick={() => setSticky(s => (s === c.k ? null : c.k))}>
+                  <span className="k">{c.name}</span>
+                  <span className="v">{r1(c.val)}<small>{c.unit}</small></span>
+                  <span className="bar"><span className="a" /><span className="p" style={{ left: `${pc}%` }} /></span>
+                  <span className="pc"><b>{ord(pc)}</b> pct</span>
+                  <span className="d"><b>{sgn(dv, c.unit === "°" ? "°" : " ft")}</b> vs avg {r1(c.avg)}{c.unit === "°" ? "°" : ""}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="ov-seg views">
+            {[["quarter", "3/4"], ["catcher", "Front"], ["open", "Side"], ["behind", "Back"], ["top", "Top"]].map(([k, l]) => (
+              <button key={k} className={view === k ? "on" : ""} onClick={() => sceneRef.current && sceneRef.current.setView(k)}>{l}</button>
+            ))}
+          </div>
+          <div className="ov-seg tg">
+            <button aria-pressed={showAvg} onClick={() => setShowAvg(v => !v)}>Avg</button>
+            <button aria-pressed={showLines} onClick={() => setShowLines(v => !v)}>Lines</button>
+          </div>
+          <div className="ov-zoom">
+            <button aria-label="Zoom in" onClick={() => sceneRef.current && sceneRef.current.zoomBy(.72)}>+</button>
+            <button aria-label="Zoom out" onClick={() => sceneRef.current && sceneRef.current.zoomBy(1.39)}>−</button>
+          </div>
+          <div className="ov-legend">
+            <span><i style={{ background: "#eceff3", border: "1px solid var(--borderLight)" }} />{pitcher.name}</span>
+            {showAvg && <span><i style={{ background: COL.G }} />Average {hp}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Container 2: pitch mix by batter side and count ───
+function MixCard({ pitcher, mix, year, getPitchColor, PITCH_ABBREV }) {
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div><div className="ov-ct">Pitch Mix</div><h2>{pitcher.name}</h2><span className="ov-sub">Usage by batter side and count</span></div></div>
+      {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : (
+        <div className="ov-mix">
+          <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
+            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}<small>{SHORT[t.name] || t.name}</small></div>)}
+          </div>
+          {[["R", "vs RHH"], ["L", "vs LHH"]].map(([h, lab]) => (
+            <div key={h} style={{ display: "contents" }}>
+              <div className="ov-msec">{lab}</div>
+              {[["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]].map(([rk, rl]) => {
+                const row = mix.splits[h][rk];
+                return (
+                  <div key={rk} className="ov-mrow" style={{ "--n": mix.types.length }}>
+                    <div className="ov-mlab">{rl}<small>{row.n.toLocaleString()}</small></div>
+                    {mix.types.map(t => {
+                      const v = row.pct[t.type];
+                      if (v == null) return <div key={t.type} className="ov-mcell z">—</div>;
+                      // only the standouts get marked: green well above his norm for that pitch, blue well below
+                      const rv = Math.round(v), d = rv - Math.round(t.usage), hi = d >= 8 && v >= t.usage * 1.3, lo = d <= -8 && v <= t.usage * .7;
+                      return <div key={t.type} className={`ov-mcell${hi ? " hi" : lo ? " lo" : ""}${rv === 0 ? " z" : ""}`} title={`${t.name} · ${v.toFixed(1)}% (his overall: ${t.usage.toFixed(1)}%)`}>{rv}<small>%</small></div>;
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          <div className="ov-mkey"><i />Well above his overall usage of that pitch<i />Well below</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
+function MoveCard({ C, pitcher, hand, mix, year, armAngle, spin, getPitchColor, PITCH_ABBREV }) {
+  const cvRef = useRef(null);
+  const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0);
+  useEffect(() => {
+    const cv = cvRef.current; if (!cv) return undefined;
+    const ro = new ResizeObserver(() => setTick(t => t + 1)); ro.observe(cv); return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    const cv = cvRef.current; if (!cv) return;
+    const cw = cv.clientWidth, ch = cv.clientHeight; if (!cw || !ch) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); cv.width = cw * dpr; cv.height = ch * dpr;
+    const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, cw, ch);
+    const mL = 38, mB = 30, mT = 6, mR = 8, side = Math.min(cw - mL - mR, ch - mT - mB), x0 = mL + (cw - mL - mR - side) / 2, y0 = mT, AX = 25;
+    const X = (v) => x0 + (v + AX) / (2 * AX) * side, Y = (v) => y0 + (AX - v) / (2 * AX) * side;
+    c.font = "10px 'DM Sans',sans-serif"; c.textBaseline = "middle";
+    for (let g = -25; g <= 25; g += 5) {
+      c.strokeStyle = g === 0 ? C.borderLight : C.border; c.lineWidth = 1; c.setLineDash(g === 0 ? [] : [3, 3]);
+      c.beginPath(); c.moveTo(X(g), Y(-AX)); c.lineTo(X(g), Y(AX)); c.moveTo(X(-AX), Y(g)); c.lineTo(X(AX), Y(g)); c.stroke();
+      c.fillStyle = C.textDim; c.textAlign = "center"; c.fillText(g, X(g), Y(-AX) + 10); c.textAlign = "right"; c.fillText(g, X(-AX) - 5, Y(g));
+    }
+    c.setLineDash([]); c.textAlign = "center"; c.fillStyle = C.textDim;
+    c.fillText("Horizontal Break (in)", x0 + side / 2, Y(-AX) + 24);
+    c.save(); c.translate(x0 - 28, y0 + side / 2); c.rotate(-Math.PI / 2); c.fillText("Induced Vertical Break (in)", 0, 0); c.restore();
+    if (!mix) return;
+    const idx = {}; mix.types.forEach((t, i) => { idx[t.type] = i; });
+    const sums = mix.types.map(() => [0, 0, 0]);
+    c.save(); c.beginPath(); c.rect(X(-AX), Y(AX), side, side); c.clip();
+    for (const p of mix.valid) {
+      const ti = idx[p.pitch_type]; if (ti == null || p.pfx_x == null || p.pfx_z == null) continue;
+      sums[ti][0] += p.pfx_x; sums[ti][1] += p.pfx_z; sums[ti][2]++;
+      c.beginPath(); c.arc(X(p.pfx_x), Y(p.pfx_z), 2.7, 0, 6.2832); c.globalAlpha = .8; c.fillStyle = getPitchColor(p.pitch_type); c.fill();
+      c.globalAlpha = .45; c.strokeStyle = "#000"; c.lineWidth = .5; c.stroke();
+    }
+    c.globalAlpha = 1;
+    // arm angle: dotted line from the origin out the arm side (pitcher's view: RHP arm side is +x)
+    const s = hand === "L" ? -1 : 1, hasAA = armAngle != null, th = (armAngle || 0) * Math.PI / 180, dx = s * Math.cos(th), dy = Math.sin(th);
+    const tEdge = Math.min(AX / Math.abs(dx || 1e-9), AX / Math.abs(dy || 1e-9));
+    if (hasAA) { c.strokeStyle = C.text; c.lineWidth = 1.6; c.setLineDash([2, 4]); c.lineCap = "round"; c.beginPath(); c.moveTo(X(0), Y(0)); c.lineTo(X(dx * tEdge), Y(dy * tEdge)); c.stroke(); c.setLineDash([]); }
+    if (showAvg) sums.forEach((a, ti) => {
+      if (!a[2]) return; c.beginPath(); c.arc(X(a[0] / a[2]), Y(a[1] / a[2]), 7, 0, 6.2832);
+      c.fillStyle = getPitchColor(mix.types[ti].type); c.shadowColor = "rgba(0,0,0,.75)"; c.shadowBlur = 9 * dpr; c.shadowOffsetY = 2.5 * dpr; c.fill();
+      c.shadowColor = "transparent"; c.shadowBlur = 0; c.shadowOffsetY = 0; c.lineWidth = 2; c.strokeStyle = "#000"; c.stroke();
+    });
+    c.restore();
+    if (hasAA) {
+      const txt = `${r1(armAngle)}°`; c.font = "700 10.5px 'DM Sans',sans-serif";
+      const tw = c.measureText(txt).width + 8;
+      const lx = Math.max(X(-AX) + tw / 2 + 2, Math.min(X(AX) - tw / 2 - 2, X(dx * tEdge * .9) - s * (tw / 2 + 4)));
+      const ly = Math.max(Y(AX) + 9, Math.min(Y(-AX) - 9, Y(dy * tEdge * .9) + (dy >= 0 ? 12 : -12)));
+      c.fillStyle = C.surface; c.globalAlpha = .88; c.fillRect(lx - tw / 2, ly - 8, tw, 16); c.globalAlpha = 1; c.fillStyle = C.text; c.textAlign = "center"; c.fillText(txt, lx, ly + .5);
+    }
+  }, [mix, armAngle, hand, showAvg, C, tick, getPitchColor]);
+
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div><div className="ov-ct">Pitch Movement</div><h2>{pitcher.name}</h2></div></div>
+      <div className="ov-mvwrap"><canvas ref={cvRef} /></div>
+      <div className="ov-mvfoot">
+        <div className="ov-mvleg">
+          <div className="ov-lg">
+            {mix && mix.types.map(t => <span key={t.type}><i style={{ background: getPitchColor(t.type) }} />{PITCH_ABBREV[t.name] || t.type}</span>)}
+            {armAngle != null && <span className="aa"><i />Arm angle</span>}
+          </div>
+          <button className="ov-avg" aria-pressed={showAvg} onClick={() => setShowAvg(v => !v)}><i />Avg.</button>
+        </div>
+        <SpinGraphic spin={spin} hand={hand} year={year} />
+      </div>
+    </div>
+  );
+}
+
+// Spin efficiency = share of spin that is perpendicular to the ball's flight (the part that makes it move).
+// Seen from above with the pitch travelling up the frame: 100% = spin axis square to the flight path;
+// the axis swings toward the flight path by the "gyro angle", where efficiency = cos(gyro angle).
+function SpinGraphic({ spin, hand }) {
+  const label = <div className="k">{spin?.name || "Fastball"}<br />spin efficiency</div>;
+  if (!spin || spin.eff == null) return <div className="ov-spin"><div>{label}<div className="v">—</div></div></div>;
+  const e = spin.eff, gyro = Math.acos(Math.min(1, e / 100)) * 180 / Math.PI, s = hand === "L" ? 1 : -1, rot = s * gyro;   // glove-side end leads: cut-style spin
+  const W = 132, H = 92, bx = 84, by = 34, Rb = 19;
+  let st = "";
+  for (let i = -4; i <= 4; i++) { const a = i * .17; st += `<line x1="${(Math.sin(a) * Rb * 1.02).toFixed(1)}" y1="${(-Rb * .52 - Math.cos(a) * 3 + 6).toFixed(1)}" x2="${(Math.sin(a) * Rb * 1.02 + Math.sin(a) * 1.5).toFixed(1)}" y2="${(-Rb * .52 - Math.cos(a) * 3 + 2.2).toFixed(1)}"/>`; }
+  const seam = `<path d="M${-Rb * .82} ${-Rb * .46} Q0 ${-Rb * .9} ${Rb * .82} ${-Rb * .46}" fill="none" stroke="#b91c1c" stroke-width="1"/><g stroke="#b91c1c" stroke-width=".8" transform="translate(0,-5.2)">${st}</g>`;
+  const skin = "#b3a79b", skinD = "#978b80";
+  const svg = `<defs><radialGradient id="ovsb" cx="38%" cy="32%" r="75%"><stop offset="0" stop-color="#ffffff"/><stop offset=".7" stop-color="#e5e7eb"/><stop offset="1" stop-color="#b6bcc6"/></radialGradient>` +
+    `<linearGradient id="ovsd" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9a7658"/><stop offset="1" stop-color="#7d5f47"/></linearGradient>` +
+    `<linearGradient id="ovsk" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${skinD}"/><stop offset=".45" stop-color="${skin}"/><stop offset="1" stop-color="${skinD}"/></linearGradient>` +
+    `<clipPath id="ovsc"><circle r="${Rb}"/></clipPath></defs>` +
+    `<rect width="${W}" height="${H}" fill="url(#ovsd)"/>` +
+    `<line x1="${bx - 40}" y1="${by}" x2="${bx + 40}" y2="${by}" stroke="#f1f5f9" stroke-opacity=".45" stroke-width="1" stroke-dasharray="2 3"/>` +
+    `<path d="M${bx} ${by - Rb - 3} V5 M${bx - 3.5} 9.5 L${bx} 5 L${bx + 3.5} 9.5" fill="none" stroke="#f1f5f9" stroke-opacity=".7" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>` +
+    // hand following through below the ball: right hand for a righty, left for a lefty (seen from above)
+    `<g transform="translate(${bx + s * 2} ${by + 30}) scale(${s} 1) rotate(-24)">` +
+    `<path d="M-8 60 L-6.5 20 Q-7 12 -9.5 6 L-9 -8 Q-8.6 -11 -6.6 -11 Q-4.8 -11 -4.6 -8 L-4.3 -13 Q-4 -16.5 -1.8 -16.5 Q.4 -16.5 .6 -13 L.9 -12 Q1.3 -15 3.3 -15 Q5.4 -15 5.5 -11.5 L5.7 -8 Q6.2 -10.5 8 -10.3 Q9.9 -10 9.8 -6.5 L9.3 6 Q11.5 3 13.6 4.4 Q15 5.6 13.6 8 L9.5 15 Q8 18.5 8 22 L10.5 60 Z" fill="url(#ovsk)" stroke="#6f655c" stroke-width=".6" stroke-linejoin="round"/>` +
+    `<path d="M-4.4 -8 V2 M.8 -12 V2 M5.6 -8 V2" stroke="#857a70" stroke-width=".6" fill="none"/></g>` +
+    `<g transform="translate(${bx} ${by}) rotate(${rot.toFixed(1)})"><line x1="-36" y1="0" x2="36" y2="0" stroke="#0b0f17" stroke-width="4.5"/>` +
+    `<circle r="${Rb}" fill="url(#ovsb)" stroke="#6b7280" stroke-width=".6"/><g clip-path="url(#ovsc)">${seam}<g transform="scale(1,-1)">${seam}</g></g></g>`;
+  return (
+    <div className="ov-spin">
+      <div>{label}<div className="v">{r1(e)}<small>%</small></div><div className="s">axis {Math.round(gyro)}° off square</div></div>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Spin axis tilted ${Math.round(gyro)} degrees from square`} dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
+  );
+}
+
+// ─── Page ───
+export default function OverviewPage({ C, helpers }) {
+  const { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV } = helpers;
+  const [q, setQ] = useState(""), [results, setResults] = useState([]), [open, setOpen] = useState(false);
+  const [pitcher, setPitcher] = useState(null), [info, setInfo] = useState(null);
+  const [year, setYear] = useState("2026");
+  const [d26, setD26] = useState(null), [d25, setD25] = useState(null);
+  const [loading26, setLoading26] = useState(false), [loading25, setLoading25] = useState(false);
+  const [box26, setBox26] = useState(null), [box25, setBox25] = useState(null);
+  const [err, setErr] = useState("");
+  const searchRef = useRef(null), seqRef = useRef(0);
+
+  useEffect(() => {
+    if (q.trim().length < 2 || (pitcher && q === pitcher.name)) { setResults([]); return undefined; }
+    let alive = true;
+    const t = setTimeout(async () => {
+      try { const data = await searchPitchers(q); if (alive) { setResults(data || []); setOpen(true); } } catch { if (alive) setResults([]); }
+    }, 200);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q, pitcher]);
+  useEffect(() => {
+    const h = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const loadPitcher = async (p) => {
+    const seq = ++seqRef.current;
+    setPitcher(p); setQ(p.name); setOpen(false); setResults([]);
+    setD26(null); setD25(null); setBox26(null); setBox25(null); setInfo(null); setErr(""); setYear("2026");
+    setLoading26(true);
+    getPitcherInfo(p.id).then(r => { if (seq === seqRef.current && r && !r.error) setInfo(r); }).catch(() => {});
+    try {
+      // Same progressive load as the Compare tab: cached season first, today's live games merged in after.
+      const livePromise = getSeasonData(p.id).catch(() => []);
+      const cachedRaw = await getCachedSeason(p.id).catch(() => []);
+      if (seq !== seqRef.current) return;
+      if (cachedRaw && cachedRaw.length > 0) {
+        setD26(normAndFilter(cachedRaw)); setLoading26(false);
+        livePromise.then(liveRaw => {
+          if (seq !== seqRef.current || !liveRaw || liveRaw.length === 0) return;
+          const real = new Set(cachedRaw.filter(x => x.game_pk && x.pitch_type && x.pitch_type.toLowerCase() !== "nan").map(x => String(x.game_pk)));
+          const extra = liveRaw.filter(x => x.game_pk && !real.has(String(x.game_pk)));
+          if (extra.length) setD26(normAndFilter([...cachedRaw, ...extra]));
+        });
+        return;
+      }
+      const liveRaw = await livePromise;
+      if (seq !== seqRef.current) return;
+      setD26(normAndFilter(liveRaw || []));
+    } catch (e) {
+      console.error("Overview load failed", e);
+      if (seq === seqRef.current) setErr("Failed to load 2026 season data.");
+    }
+    if (seq === seqRef.current) setLoading26(false);
+  };
+
+  // 2025 loads on demand, from the same Statcast endpoint the Compare tab uses for its 2025 row.
+  useEffect(() => {
+    if (year !== "2025" || !pitcher || d25 || loading25) return;
+    const seq = seqRef.current; setLoading25(true);
+    getStatcast(pitcher.id, "2025-03-27", "2025-09-28").then(raw => {
+      if (seq !== seqRef.current) return;
+      setD25(normAndFilter(raw || [])); setLoading25(false);
+    }).catch(() => { if (seq === seqRef.current) { setD25([]); setLoading25(false); } });
+  }, [year, pitcher, d25, loading25, normAndFilter]);
+
+  // Full season = regular season only (postseason is anything after Sep 28), as on the Compare tab.
+  const reg26 = useMemo(() => (d26 ? d26.filter(p => !isPostseasonDate(p.game_date)) : null), [d26, isPostseasonDate]);
+  const reg25 = useMemo(() => (d25 ? d25.filter(p => !isPostseasonDate(p.game_date)) : null), [d25, isPostseasonDate]);
+  const cur = year === "2026" ? reg26 : reg25;
+
+  // Official ERA / IP / box totals: season API for 2026 (as Compare does); box scores for 2025 (ERA only).
+  useEffect(() => {
+    if (!reg26 || !pitcher) return undefined;
+    const pks = Array.from(new Set(reg26.map(p => p.game_pk).filter(Boolean))).slice(0, 200); if (!pks.length) return undefined;
+    let alive = true; getPitcherEra(pitcher.id, pks, "season").then(r => { if (alive) setBox26(r || null); }).catch(() => {});
+    return () => { alive = false; };
+  }, [reg26, pitcher]);
+  useEffect(() => {
+    if (!reg25 || !pitcher) return undefined;
+    const pks = Array.from(new Set(reg25.map(p => p.game_pk).filter(Boolean))).slice(0, 200); if (!pks.length) return undefined;
+    let alive = true; getPitcherEra(pitcher.id, pks, "games").then(r => { if (alive) setBox25(r || null); }).catch(() => {});
+    return () => { alive = false; };
+  }, [reg25, pitcher]);
+
+  const line = useMemo(() => seasonLine(cur, year === "2026" ? box26 : box25, year !== "2026", computeSummaryStats), [cur, year, box26, box25, computeSummaryStats]);
+  const mix = useMemo(() => (cur ? buildMix(cur) : null), [cur]);
+  const mix26 = useMemo(() => (reg26 ? buildMix(reg26) : null), [reg26]);
+  const fb = useMemo(() => (mix26 ? primaryFastball(mix26.valid) : null), [mix26]);
+  const hand = useMemo(() => {
+    const h = info?.pitch_hand || pitcher?.throws; if (h === "L" || h === "R") return h;
+    const src = reg26 || []; let l = 0, r = 0; for (const p of src) { if (p.p_throws === "L") l++; else if (p.p_throws === "R") r++; }
+    if (l || r) return l > r ? "L" : "R";
+    const x = mean(src.map(p => p.release_pos_x)); return x != null && x > 0 ? "L" : "R";
+  }, [info, pitcher, reg26]);
+  const srow = pitcher ? OV_PITCHERS[pitcher.id] : null;
+  const armAngle = fb && srow?.a ? (srow.a[fb.type] ?? null) : null;
+  const spin = useMemo(() => {
+    if (!mix) return null;
+    const codes = mix.types.map(t => t.type), code = codes.includes("FF") ? "FF" : codes.find(c => c === "SI" || c === "FC");
+    if (!code) return null;
+    const v = srow?.s?.[year.slice(2)]?.[code];
+    return { name: { FF: "4-Seam", SI: "Sinker", FC: "Cutter" }[code], eff: v ?? null };
+  }, [mix, srow, year]);
+
+  const vars = { "--bg": C.bg, "--surface": C.surface, "--surfaceAlt": C.surfaceAlt, "--border": C.border, "--borderLight": C.borderLight, "--text": C.text, "--muted": C.textMuted, "--dim": C.textDim, "--accent": C.accent };
+  const f1 = (x) => (x == null ? "—" : x.toFixed(1));
+  const kbb = (o) => (o && o.k != null && o.bb != null ? R(R(o.k) - R(o.bb)) : null);
+  const rate = (lab, a, l, r) => (
+    <div className="ov-grp">
+      <div className="ov-st big"><div className="k">{lab}</div><div className="v">{f1(a)}<small>%</small></div></div>
+      <div className="ov-sp"><div><span>vs L</span><b>{f1(l)}</b></div><div><span>vs R</span><b>{f1(r)}</b></div></div>
+    </div>
+  );
+  const busy = year === "2026" ? loading26 : loading25;
+
+  return (
+    <div className="ov" style={vars}>
+      <style>{CSS}</style>
+      <div className="ov-sum">
+        <div className="ov-who" ref={searchRef}>
+          <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)} placeholder="Search pitcher..." aria-label="Search pitcher" />
+          {open && results.length > 0 && (
+            <div className="ov-dd">
+              {results.map(r => <div key={r.id} onClick={() => loadPitcher(r)}><strong>{r.name}</strong>{r.team && <span>{r.team}</span>}{r.throws && <span>({r.throws}HP)</span>}</div>)}
+            </div>
+          )}
+          {pitcher && <div className="nm"><h1>{pitcher.name}</h1><span>{hand}HP{info?.height_inches ? ` · ${ftIn(info.height_inches)}` : ""}</span></div>}
+        </div>
+        <div className="ov-stats">
+          {!pitcher && <div className="ov-note" style={{ padding: "8px 0", textAlign: "left" }}>Search a pitcher to load his season line, release model, pitch mix and movement.</div>}
+          {pitcher && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
+          {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || `No ${year} MLB data for this pitcher.`}</div>}
+          {pitcher && !busy && line && (<>
+            {rate("K%", line.k, line.L.k, line.R.k)}
+            {rate("BB%", line.bb, line.L.bb, line.R.bb)}
+            {rate("K-BB%", kbb(line), kbb(line.L), kbb(line.R))}
+            <div className="ov-grp run">
+              {[["ERA", line.era], ["FIP", line.fip], ["xFIP", line.xfip], ["IP", line.ip]].map(([k, v]) => (
+                <div key={k} className="ov-st"><div className="k">{k}</div><div className="v">{v}</div></div>
+              ))}
+            </div>
+          </>)}
+        </div>
+        {pitcher && (
+          <div className="ov-years">
+            {["2026", "2025"].map(y => <button key={y} aria-pressed={year === y} onClick={() => setYear(y)}>{y}</button>)}
+          </div>
+        )}
+      </div>
+      {pitcher && reg26 && (
+        <div className="ov-row">
+          <ReleaseCard C={C} pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} yearTag={year !== "2026"} />
+          <MixCard pitcher={pitcher} mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <MoveCard C={C} pitcher={pitcher} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} spin={spin} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+        </div>
+      )}
+    </div>
+  );
+}
