@@ -629,7 +629,7 @@ function arsenalStats(pitches, h, line, box, year, computeSummaryStats) {
   return { k: src?.k, bb: src?.bb, kbb: src && src.k != null && src.bb != null ? R(R(src.k) - R(src.bb)) : null, era: h === "all" ? parseFloat(line.era) : null,
     barrel: pc(ba, bbe), hr9, swstr: pc(wh, c), strike: pc(st, c), chase: pc(ozs, ozt), izwhiff: pc(izw, izs) };
 }
-const ARSENAL_ROWS = [["k", "K %"], ["bb", "BB %", true], ["kbb", "K-BB %"], ["era", "ERA", true, 2], ["barrel", "Barrel %", true], ["hr9", "HR/9", true, 2],
+const ARSENAL_ROWS = [["k", "K %"], ["bb", "BB %", true], ["kbb", "K-BB %"], ["barrel", "Barrel %", true], ["hr9", "HR/9", true, 2],
   ["swstr", "SwStr %"], ["strike", "Strike %"], ["chase", "Chase %"], ["izwhiff", "In-Zone Whiff %"]];
 function StatCard({ hand, cur, line, box, year, computeSummaryStats, side: h, setSide: setH }) {
   const vals = useMemo(() => arsenalStats(cur, h, line, box, year, computeSummaryStats), [cur, h, line, box, year, computeSummaryStats]);
