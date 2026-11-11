@@ -7,6 +7,7 @@ import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcher
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
+import { OV_RVBASE } from "./overviewRvBase.js";
 
 const FIP_CONSTANT = 3.15, LG_HR_FB_RATE = 0.119;   // same constants as SummaryStatsBar
 const FB_CODES = ["FF", "SI", "FC", "FA"];
@@ -131,14 +132,14 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-sl .v{font-size:12.5px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);white-space:nowrap}
 .ov-sl .v small{font-size:10px;color:var(--dim);font-weight:500;margin-left:2px}
 .ov-hsub{font-size:10px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--dim);margin-top:4px}
-.ov-hm{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:4px}
-.ov-hm .tile{grid-column:span 2}.ov-hm .tile:first-child{grid-column:2 / span 2}
+.ov-hm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:4px}
 .ov-hm .tile{background:#0a0a12;border:1px solid #222;border-radius:8px;padding:8px}
 .ov-hm .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;font-weight:700;color:#e0e0e0}
 .ov-hm .hd span{font-size:10px;color:#888;font-weight:500;font-variant-numeric:tabular-nums}
 .ov-hm .cv{width:100%;aspect-ratio:1/1;border-radius:4px;overflow:hidden}
 .ov-hm .cv canvas{display:block;width:100%;height:100%}
 .ov-foot{display:flex;align-items:center;gap:8px;margin-top:auto;font-size:11px;color:var(--dim)}
+.ov-skey{margin-left:auto;font-size:10px;white-space:nowrap}.ov-skey i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 4px 0 8px}
 .ov-foot select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;font-weight:600;font-family:inherit}
 .ov-tg3{margin-left:auto;display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px}
 .ov-tg3 button{background:transparent;border:0;color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer}
@@ -245,7 +246,7 @@ function primaryFastball(valid) {
 function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, yearTag }) {
   const stageRef = useRef(null), canvasRef = useRef(null), svgRef = useRef(null), cardRefs = useRef({}), sceneRef = useRef(null);
   const lastId = useRef(null);
-  const [view, setViewName] = useState("quarter");
+  const [view, setViewName] = useState("catcher");
   const [showAvg, setShowAvg] = useState(true), [showLines, setShowLines] = useState(true);
   const [hot, setHot] = useState(null), [sticky, setSticky] = useState(null);
   const lg = OV_LEAGUE[hand] || OV_LEAGUE.R, hp = `${hand}HP`;
@@ -346,15 +347,17 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
                       const v = row.pct[t.type];
                       if (v == null) return <div key={t.type} className="ov-mcell z">—</div>;
                       // only the standouts get marked: green well above his norm for that pitch, red well below
-                      const rv = Math.round(v), d = rv - Math.round(t.usage), hi = d >= 8 && v >= t.usage * 1.3, lo = d <= -8 && v <= t.usage * .7;
-                      return <div key={t.type} className={`ov-mcell${hi ? " hi" : lo ? " lo" : ""}${rv === 0 ? " z" : ""}`} title={`${t.name} · ${v.toFixed(1)}% (his overall: ${t.usage.toFixed(1)}%)`}>{rv}<small>%</small></div>;
+                      // Overall row: vs. his whole mix (both batter sides). Pre-2K / 2K rows: vs. his Overall for that batter side.
+                      const base = rk === "all" ? t.usage : mix.splits[h].all.pct[t.type];
+                      const rv = Math.round(v), d = base == null ? 0 : rv - Math.round(base), hi = d >= 8 && v >= base * 1.3, lo = d <= -8 && v <= base * .7;
+                      return <div key={t.type} className={`ov-mcell${hi ? " hi" : lo ? " lo" : ""}${rv === 0 ? " z" : ""}`} title={`${t.name} · ${v.toFixed(1)}% (${rk === "all" ? "his overall" : `his overall ${lab}`}: ${base == null ? "—" : base.toFixed(1)}%)`}>{rv}<small>%</small></div>;
                     })}
                   </div>
                 );
               })}
             </div>
           ))}
-          <div className="ov-mkey"><i />Well above his overall usage of that pitch<i />Well below</div>
+          <div className="ov-mkey"><i />Well above his usual usage<i />Well below</div>
         </div>
       )}
     </div>
@@ -496,8 +499,36 @@ function SpinCard({ hand, mix, year, spin, getPitchColor }) {
   );
 }
 
+// Run value of one pitch from the batter's side (+ = good for the hitter). Balls in play are scored by
+// expected damage from exit velocity and launch angle (xwOBAcon → runs on the EVENT_LW scale), not the
+// actual result; everything else by the change in count run expectancy, or the K / BB / HBP weight.
+function pitchRunValue(p, { xwobaconLookup, COUNT_RE, EVENT_LW }) {
+  const b = Math.max(0, Math.min(3, Number(p.balls) || 0)), s = Math.max(0, Math.min(2, Number(p.strikes) || 0));
+  const re = (bb, ss) => COUNT_RE[`${bb}-${ss}`] ?? 0, cur = re(b, s);
+  if (p.is_in_play) {
+    const x = xwobaconLookup(p.launch_speed, p.launch_angle), ev = (p.events || "").toLowerCase().trim();
+    return (x != null ? -0.264 + 0.827 * x : (EVENT_LW[ev] ?? -0.264)) - cur;
+  }
+  if (p.is_ball) return (b === 3 ? EVENT_LW.walk : re(b + 1, s)) - cur;
+  if (p.is_whiff || p.is_called_strike) return (s === 2 ? EVENT_LW.strikeout : re(b, s + 1)) - cur;
+  if (p.is_swing) return s >= 2 ? 0 : re(b, s + 1) - cur;                                   // foul
+  if ((p.events || "").toLowerCase().trim() === "hit_by_pitch") return EVENT_LW.hit_by_pitch - cur;
+  return 0;
+}
+// League-average run value for that pitch type, pitcher hand, batter side and location (mirrored from
+// the opposite-handed table when a matchup is too rare to have its own).
+function leagueRunValue(p, hand) {
+  const T = OV_RVBASE, cell = (key, x) => {
+    const t = T.t[key]; if (!t) return null;
+    const xi = Math.max(0, Math.min(T.nx - 1, Math.floor((x - T.x0) / T.d))), zi = Math.max(0, Math.min(T.nz - 1, Math.floor((p.plate_z - T.z0) / T.d)));
+    return t[zi * T.nx + xi] / 1000;
+  };
+  const bh = p.batter_hand === "L" ? "L" : "R", flip = (h) => (h === "L" ? "R" : "L");
+  return cell(`${p.pitch_type}|${hand}|${bh}`, p.plate_x) ?? cell(`${p.pitch_type}|${flip(hand)}|${flip(bh)}`, -p.plate_x) ?? 0;
+}
+
 // ─── Row 2, middle: location heatmaps (the Heatmaps tab's Gaussian granular canvas) ───
-function HeatTile({ label, pitches, mode, Canvas }) {
+function HeatTile({ label, pitches, mode, Canvas, weightFn }) {
   const ref = useRef(null), [w, setW] = useState(0);
   useEffect(() => {
     if (!ref.current) return undefined;
@@ -506,11 +537,11 @@ function HeatTile({ label, pitches, mode, Canvas }) {
   return (
     <div className="tile">
       <div className="hd">{label}<span>{pitches.length.toLocaleString()}</span></div>
-      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand="all" granular />}</div>
+      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand="all" granular weightFn={weightFn || null} />}</div>
     </div>
   );
 }
-function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
+function HeatCard({ mix, year, hand, rvHelpers, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
   const [sel, setSel] = useState(null), [count, setCount] = useState("all");
   const types = mix ? mix.types : [], cur = types.find(t => t.type === sel) || types[0];
   const sets = useMemo(() => {
@@ -518,6 +549,8 @@ function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanva
     const base = mix.valid.filter(p => p.pitch_type === cur.type && p.plate_x != null && p.plate_z != null && pitchMatchesCount(p, count));
     return { frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
   }, [mix, cur, count, pitchMatchesCount]);
+  // Success = runs saved per pitch vs. the league average for that pitch type at that spot (+ = good for him)
+  const successFn = useMemo(() => (p) => leagueRunValue(p, hand) - pitchRunValue(p, rvHelpers), [hand, rvHelpers]);
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Location</div></div>
@@ -530,6 +563,7 @@ function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanva
             <HeatTile label="Frequency" pitches={sets.frequency} mode="frequency" Canvas={GaussianHeatmapCanvas} />
             <HeatTile label="Whiffs" pitches={sets.whiffs} mode="whiffs" Canvas={GaussianHeatmapCanvas} />
             <HeatTile label="Damage" pitches={sets.damage} mode="damage" Canvas={GaussianHeatmapCanvas} />
+            <HeatTile label="Success" pitches={sets.frequency} mode="success" Canvas={GaussianHeatmapCanvas} weightFn={successFn} />
           </div>
           <div className="ov-foot">
             <span>Count</span>
@@ -537,6 +571,7 @@ function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanva
               <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
               <option value="ahead">Pitcher Ahead</option><option value="behind">Pitcher Behind</option><option value="leverage">Leverage</option>
             </select>
+            <span className="ov-skey"><i style={{ background: "#22c55e" }} />Success: better than league there<i style={{ background: "#ef4444" }} />worse</span>
           </div>
         </>)}
       </div>
@@ -756,7 +791,7 @@ export default function OverviewPage({ C, helpers }) {
         </div>
         <div className="ov-row ov-row2">
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
-          <HeatCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
+          <HeatCard mix={busy ? null : mix} year={year} hand={hand} rvHelpers={helpers} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
           <StatCard hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
         </div>
       </>)}

@@ -222,7 +222,7 @@ function measure(P, who, colors) {
   }
 
   // ─── camera rig: orbit about the body, drift toward the ball as you zoom in ───
-  var cam = { az: 0, el: .2, r: 19, taz: 0, tel: .2, tr: 19 }, pose = null, pivot = new THREE.Vector3(), curPivot = new THREE.Vector3(), curView = "quarter", sized = false, placedPivot = false;
+  var cam = { az: 0, el: .07, r: 19, taz: 0, tel: .07, tr: 19 }, pose = null, pivot = new THREE.Vector3(), curPivot = new THREE.Vector3(), curView = "catcher", sized = false, placedPivot = false;
   function viewAngles(name) {
     var s = pose ? pose.s : -1;
     // the panel can have no size while the page boots — never let that become an infinite camera distance
@@ -309,7 +309,7 @@ function measure(P, who, colors) {
   function up(e) { delete ptrs[e.pointerId]; pinch0 = 0; if (!Object.keys(ptrs).length) stage.classList.remove("drag"); }
   function zoomBy(f) { freeView(); cam.tr = Math.max(3.2, Math.min(150, cam.tr * f)); }
   function wheel(e) { e.preventDefault(); zoomBy(Math.exp(e.deltaY * .0012)); }
-  function dbl(e) { if (!e.target.closest("button")) setView("quarter"); }
+  function dbl(e) { if (!e.target.closest("button")) setView("catcher"); }
   stage.addEventListener("pointerdown", down); stage.addEventListener("pointermove", move);
   stage.addEventListener("pointerup", up); stage.addEventListener("pointercancel", up);
   stage.addEventListener("wheel", wheel, { passive: false }); stage.addEventListener("dblclick", dbl);
@@ -322,7 +322,7 @@ function measure(P, who, colors) {
       buildFigure(fig, d.pose, MATS.uniform);
       if (S.ghost && d.avg) buildGhostArm(ghost, d.avg); else clear(ghost);
       buildAnnotations(d.pose, d.pitchColor || "#dc2626", d.avg);
-      if (d.resetView || !placedPivot) { setView("quarter", true); curPivot.copy(bodyPivot()); placedPivot = true; }
+      if (d.resetView || !placedPivot) { setView("catcher", true); curPivot.copy(bodyPivot()); placedPivot = true; }
     },
     setView: setView, zoomBy: zoomBy,
     setHot: function (k) { hot = k; styleTubes(); },

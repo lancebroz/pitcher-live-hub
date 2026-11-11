@@ -1143,8 +1143,12 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
     const gridW = granular ? 300 : 200;
     const gridH = granular ? 300 : 200;
     const grid = new Float32Array(gridW * gridH);
-    const sigma = granular ? (mode === "damage" ? 0.20 : 0.17) : (mode === "damage" ? 0.35 : 0.30);
+    const sigma = granular ? (mode === "damage" ? 0.20 : mode === "success" ? 0.24 : 0.17) : (mode === "damage" ? 0.35 : 0.30);
     const bw2 = sigma * sigma;
+    // "success" mode (Overview tab): weightFn returns a signed value per pitch (+ = good for the
+    // pitcher). `grid` holds the kernel-weighted sum of those values and `den` the kernel-weighted
+    // pitch count, so sum / count is the local average and count drives how strongly it shows.
+    const den = mode === "success" ? new Float32Array(gridW * gridH) : null;
 
     // Stamp each pitch onto the grid (negate plate_x for pitcher POV)
     for (const p of pitches) {
@@ -1163,13 +1167,16 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
         for (let gx = Math.max(0, Math.floor(gxC - rad)); gx <= Math.min(gridW - 1, Math.ceil(gxC + rad)); gx++) {
           const dx = (gx / gridW) * 5 - 2.5 - px;
           const dy = (1 - gy / gridH) * 5 - p.plate_z;
-          grid[gy * gridW + gx] += weight * Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
+          const kern = Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
+          grid[gy * gridW + gx] += weight * kern;
+          if (den) den[gy * gridW + gx] += kern;
         }
       }
     }
 
     let maxVal = 0;
-    for (let i = 0; i < grid.length; i++) if (grid[i] > maxVal) maxVal = grid[i];
+    const maxSrc = den || grid;
+    for (let i = 0; i < maxSrc.length; i++) if (maxSrc[i] > maxVal) maxVal = maxSrc[i];
     if (maxVal === 0) return;
 
     // Color ramps
@@ -1202,6 +1209,19 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
         const gx1 = Math.min(gx0 + 1, gridW - 1), gy1 = Math.min(gy0 + 1, gridH - 1);
         const fx = gxf - gx0, fy = gyf - gy0;
         const raw = grid[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + grid[gy0 * gridW + gx1] * fx * (1 - fy) + grid[gy1 * gridW + gx0] * (1 - fx) * fy + grid[gy1 * gridW + gx1] * fx * fy;
+        if (den) {
+          const d = den[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + den[gy0 * gridW + gx1] * fx * (1 - fy) + den[gy1 * gridW + gx0] * (1 - fx) * fy + den[gy1 * gridW + gx1] * fx * fy;
+          // Local average, shrunk toward neutral until a spot has ~8 pitches behind it; full colour at ±0.035 runs/pitch
+          const sv = Math.max(-1, Math.min(1, (raw / (d + 8)) / 0.035));
+          const m = Math.pow(Math.abs(sv), 0.7), aS = Math.min(1, (d / maxVal) * 3.6);
+          const c = sv >= 0 ? [34, 197, 94] : [239, 68, 68];
+          const sIdx = (py * w + px) * 4;
+          imgData.data[sIdx] = Math.round(10 * (1 - aS) + (17 + (c[0] - 17) * m) * aS);
+          imgData.data[sIdx + 1] = Math.round(10 * (1 - aS) + (24 + (c[1] - 24) * m) * aS);
+          imgData.data[sIdx + 2] = Math.round(18 * (1 - aS) + (39 + (c[2] - 39) * m) * aS);
+          imgData.data[sIdx + 3] = 255;
+          continue;
+        }
         const val = raw / maxVal;
         const t = Math.pow(Math.min(val, 1), 0.6);
         const [r, g, b, a] = ramp(t);
@@ -5874,7 +5894,7 @@ const HittersPage = ({ C, isMobile }) => {
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount };
+const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, COUNT_RE, EVENT_LW };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
