@@ -85,7 +85,10 @@ const CSS = `
 .ov-co.hot,.ov-co:hover,.ov-co:focus-visible{width:auto;min-width:86px;z-index:2;border-color:var(--k);outline:none}
 .ov-mix{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
 .ov-mrow{display:grid;grid-template-columns:62px repeat(var(--n),minmax(0,1fr));gap:5px;align-items:stretch}
-.ov-chip{border-radius:6px;padding:7px 0 6px;text-align:center;font-weight:700;font-size:13px;color:#fff;letter-spacing:.3px;line-height:1.1}
+.ov-chip{border-radius:6px;padding:9px 0;text-align:center;font-weight:700;font-size:13px;color:#fff;letter-spacing:.3px;line-height:1.1;border:0;font-family:inherit}
+.ov-velo{font-size:12px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;color:var(--text);align-self:center}
+.ov-mvtop{padding:12px 14px 0;display:flex;flex-direction:column;gap:5px}
+button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opacity:1;box-shadow:0 0 0 2px var(--text)}
 .ov-chip small{display:block;font-size:9px;font-weight:600;opacity:.85;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px}
 .ov-msec{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--muted);margin:10px 0 2px}
 .ov-msec::before,.ov-msec::after{content:"";flex:1;height:1px;background:var(--border)}
@@ -116,8 +119,8 @@ const CSS = `
 .ov-spin svg{display:block;border-radius:6px}
 .ov-lg b{font-weight:700;font-variant-numeric:tabular-nums;margin-left:4px;color:var(--text)}
 .ov-row2{margin-top:14px}
-.ov-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:9px;flex:1}
-.ov-sl{display:grid;grid-template-columns:118px minmax(0,1fr) 62px;align-items:center;gap:10px;min-height:26px}
+.ov-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.ov-sl{display:grid;grid-template-columns:118px minmax(0,1fr) 62px;align-items:center;gap:10px;min-height:32px}
 .ov-sl .l{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ov-sl .l i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
 .ov-sl .t{position:relative;height:6px;border-radius:3px;background:var(--borderLight);margin-right:12px}
@@ -128,11 +131,8 @@ const CSS = `
 .ov-sl .v{font-size:12.5px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);white-space:nowrap}
 .ov-sl .v small{font-size:10px;color:var(--dim);font-weight:500;margin-left:2px}
 .ov-hsub{font-size:10px;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;color:var(--dim);margin-top:4px}
-.ov-pick{display:flex;gap:5px;flex-wrap:wrap}
-.ov-pick button{border:0;border-radius:6px;padding:6px 9px 5px;font-weight:700;font-size:12.5px;color:#fff;cursor:pointer;line-height:1.1;opacity:.38;min-width:44px}
-.ov-pick button small{display:block;font-size:8.5px;font-weight:600;opacity:.9;margin-top:2px}
-.ov-pick button[aria-pressed=true]{opacity:1;box-shadow:0 0 0 2px var(--text)}
-.ov-hm{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ov-hm{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:4px}
+.ov-hm .tile{grid-column:span 2}.ov-hm .tile:first-child{grid-column:2 / span 2}
 .ov-hm .tile{background:#0a0a12;border:1px solid #222;border-radius:8px;padding:8px}
 .ov-hm .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;font-weight:700;color:#e0e0e0}
 .ov-hm .hd span{font-size:10px;color:#888;font-weight:500;font-variant-numeric:tabular-nums}
@@ -332,7 +332,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
       {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
-            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}<small>{SHORT[t.name] || t.name}</small></div>)}
+            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
           </div>
           {[["R", "vs RHH"], ["L", "vs LHH"]].map(([h, lab]) => (
             <div key={h} style={{ display: "contents" }}>
@@ -418,23 +418,25 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Pitch Movement</div><span className="ov-sub">Pitcher's view</span></div>
+      {mix && (
+        <div className="ov-mvtop">
+          <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
+            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
+          </div>
+          <div className="ov-mrow" style={{ "--n": mix.types.length }}><div className="ov-mlab">Velo<small>mph</small></div>
+            {mix.types.map(t => {
+              // average velocity, coloured against the league average for that pitch type and pitcher hand
+              const v = mean(mix.valid.filter(p => p.pitch_type === t.type).map(p => p.release_speed)), bl = OV_POOLS[year]?.[hand]?.pitch?.[t.type]?.v;
+              const z = v != null && bl && bl[1] ? (v - bl[0]) / bl[1] : 0;
+              return <div key={t.type} className="ov-velo" style={Math.abs(z) < 0.4 ? undefined : { color: z > 0 ? "#ef4444" : "#3b82f6" }} title={bl ? `${year} ${hand}HP ${t.name} avg ${bl[0].toFixed(1)} mph` : t.name}>{v != null ? v.toFixed(1) : "—"}</div>;
+            })}
+          </div>
+        </div>
+      )}
       <div className="ov-mvwrap"><canvas ref={cvRef} /></div>
       <div className="ov-mvfoot">
-        <div className="ov-mvleg">
-          <div className="ov-lg">
-            {mix && mix.types.map(t => {
-              // average velocity, coloured against the league average for that pitch type and pitcher hand
-              const v = mean(mix.valid.filter(p => p.pitch_type === t.type).map(p => p.release_speed)), b = OV_POOLS[year]?.[hand]?.pitch?.[t.type]?.v;
-              const z = v != null && b && b[1] ? (v - b[0]) / b[1] : 0;
-              return (
-                <span key={t.type} title={b ? `${year} ${hand}HP ${t.name} avg ${b[0].toFixed(1)} mph` : t.name}>
-                  <i style={{ background: getPitchColor(t.type) }} />{PITCH_ABBREV[t.name] || t.type}
-                  {v != null && <b style={Math.abs(z) < 0.4 ? undefined : { color: z > 0 ? "#ef4444" : "#3b82f6" }}>{v.toFixed(1)}</b>}
-                </span>
-              );
-            })}
-            {armAngle != null && <span className="aa"><i />Arm angle</span>}
-          </div>
+        <div className="ov-mvleg" style={{ flexDirection: "row", alignItems: "center", gap: "12px" }}>
+          <div className="ov-lg">{armAngle != null && <span className="aa"><i />Arm angle</span>}</div>
           <button className="ov-avg" aria-pressed={showAvg} onClick={() => setShowAvg(v => !v)}><i />Avg.</button>
         </div>
       </div>
@@ -521,8 +523,8 @@ function HeatCard({ mix, year, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanva
       <div className="ov-head"><div className="ov-ct">Location</div><span className="ov-sub">Pitcher's view · all batters</span></div>
       <div className="ov-body">
         {!sets ? <div className="ov-note">No {year} MLB pitches.</div> : (<>
-          <div className="ov-pick">
-            {types.map(t => <button key={t.type} aria-pressed={t.type === cur.type} style={{ background: getPitchColor(t.type) }} onClick={() => setSel(t.type)} title={t.name}>{PITCH_ABBREV[t.name] || t.type}<small>{SHORT[t.name] || t.name}</small></button>)}
+          <div className="ov-mrow" style={{ "--n": types.length }}><span />
+            {types.map(t => <button key={t.type} className="ov-chip" aria-pressed={t.type === cur.type} style={{ background: getPitchColor(t.type) }} onClick={() => setSel(t.type)} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</button>)}
           </div>
           <div className="ov-hm">
             <HeatTile label="Frequency" pitches={sets.frequency} mode="frequency" Canvas={GaussianHeatmapCanvas} />
