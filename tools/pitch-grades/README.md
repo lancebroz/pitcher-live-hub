@@ -13,14 +13,16 @@ Built November 2026 from the stuff model in `lancebroz/stuff-plus-repo` (v3), wi
 
 Scale: 100 is the league-average pitch that season. 10 points is 0.45 runs per 100 pitches on all three,
 so a point of Stuff+ and a point of Location+ are worth the same. Pitch-type grades sit on the same scale
-(a league-average sweeper is about 107, a league-average changeup about 93), and the Overview colors each
-cell against the league average for that pitch type.
+(a league-average sweeper is about 107, a league-average changeup about 93). The grades also carry the
+platoon advantage (the average RHP is about 105 vs RHH and 95 vs LHH), so the Overview colors every number
+against the league average for the same pitcher hand, batter side and pitch type.
 
 ## How it is built
 
 1. `01_prepare.py` prices every pitch (count run-expectancy change; balls in play valued by exit velocity
    and launch angle, same construction as stuff-plus-repo) and builds features. LHP are mirrored so one
-   model serves both hands.
+   model serves both hands (pitcher hand and same-side/opposite-side batter are inputs). Pooling tested
+   better than v3's separate RHP and LHP models (next-season correlation 0.400 vs 0.392).
 2. `02_train_and_grade.py`
    - Location model: run value from location + count + pitch type + hands. Pitcher-held-out.
    - Stuff model: trained on run value with the location model's prediction subtracted, so it cannot be

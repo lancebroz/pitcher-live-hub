@@ -390,7 +390,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 
 // ─── Grades: Stuff+ / Location+ / Pitching+ (tools/pitch-grades). Cell = [Stuff+, Location+, Pitching+, pitches]. ───
 // 100 = league-average pitch that season, 10 points = 0.45 runs per 100 pitches on all three, so the grades are comparable.
-// Colour is vs the league for that exact subset: overall tiles vs 100, pitch-type cells vs the league mean for that pitch type.
+// Colour is vs the league for that exact subset: same pitcher hand, batter side and (in the container) pitch type.
 const FlagIcon = ({ color = "currentColor" }) => <svg viewBox="0 0 9 10" aria-hidden="true"><path d="M1 0v10" stroke={color} strokeWidth="1.4" /><path d="M1.6 .6h6.6L6.4 3l1.8 2.4H1.6z" fill={color} /></svg>;
 const FLAG_TEXT = {
   u: ["Unique shape", "Few other pitchers throw anything close to his shape and release. The model grades him only from other pitchers, so his Stuff+ is a guess from distant comparisons and may be well off."],
@@ -404,8 +404,8 @@ function gradeTone(v, ref, label, n) {
   return { style: col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined,
     title: `${label} ${v} · league avg ${ref[0]}${n != null ? ` · ${n.toLocaleString()} pitches` : ""} · ${ord(Math.max(1, Math.min(99, Math.round(normCdf(z) * 100))))} pctile` };
 }
-function GradesCard({ gr, mix, year, getPitchColor, PITCH_ABBREV }) {
-  const lg = OV_GRADES_LG[year] || {}, types = mix ? mix.types.filter(t => gr?.t?.[t.type]) : [];
+function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV }) {
+  const lg = OV_GRADES_LG[year]?.[hand] || {}, SK = ["a", "L", "R"], types = mix ? mix.types.filter(t => gr?.t?.[t.type]) : [];
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Grades</div></div>
@@ -422,14 +422,14 @@ function GradesCard({ gr, mix, year, getPitchColor, PITCH_ABBREV }) {
                   <div className="ov-mlab">{lab}</div>
                   {types.map(t => {
                     const c = gr.t[t.type][i];
-                    return c ? <div key={t.type} className="ov-ccell" {...gradeTone(c[mi], lg.t?.[t.type]?.[mk], `${t.name} ${lab} · ${mlab}`, c[3])}><b>{c[mi]}</b></div>
+                    return c ? <div key={t.type} className="ov-ccell" {...gradeTone(c[mi], lg.t?.[t.type]?.[SK[i]]?.[mk] || lg.t?.[t.type]?.a?.[mk], `${hand}HP ${t.name} ${lab} · ${mlab}`, c[3])}><b>{c[mi]}</b></div>
                       : <div key={t.type} className="ov-ccell z">—</div>;
                   })}
                 </div>
               ))}
             </div>
           ))}
-          <div className="ov-cnote">100 = average pitch · 10 points = 0.45 runs per 100 pitches · color is vs the league for that pitch type{gr.u?.some(u => types.find(t => t.type === u)) && <><br /><span className="fl"><FlagIcon /></span>unique shape, few close matches among other pitchers</>}</div>
+          <div className="ov-cnote">100 = average pitch · 10 points = 0.45 runs per 100 pitches · color is vs {hand}HP with that pitch type and batter side{gr.u?.some(u => types.find(t => t.type === u)) && <><br /><span className="fl"><FlagIcon /></span>unique shape, few close matches among other pitchers</>}</div>
         </div>
       )}
     </div>
@@ -850,10 +850,10 @@ export default function OverviewPage({ C, helpers }) {
           {pitcher && !busy && line && (<>
             {gr?.a && GRADE_ROWS.map(([mk, mi, mlab]) => (
               <div key={mk} className="ov-grp">
-                <div className="ov-st big" {...gradeTone(gr.a[mi], OV_GRADES_LG[year]?.all?.[mk], `${year} ${mlab}`, gr.a[3])}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
+                <div className="ov-st big" {...gradeTone(gr.a[mi], OV_GRADES_LG[year]?.[hand]?.all?.a?.[mk], `${year} ${hand}HP ${mlab}`, gr.a[3])}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
                 <div className="ov-sp">
-                  <div {...gradeTone(gr.L?.[mi], OV_GRADES_LG[year]?.all?.[mk], `${year} ${mlab} vs LHH`, gr.L?.[3])}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
-                  <div {...gradeTone(gr.R?.[mi], OV_GRADES_LG[year]?.all?.[mk], `${year} ${mlab} vs RHH`, gr.R?.[3])}><span>vs R</span><b>{gr.R ? gr.R[mi] : "—"}</b></div>
+                  <div {...gradeTone(gr.L?.[mi], OV_GRADES_LG[year]?.[hand]?.all?.L?.[mk], `${year} ${hand}HP ${mlab} vs LHH`, gr.L?.[3])}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
+                  <div {...gradeTone(gr.R?.[mi], OV_GRADES_LG[year]?.[hand]?.all?.R?.[mk], `${year} ${hand}HP ${mlab} vs RHH`, gr.R?.[3])}><span>vs R</span><b>{gr.R ? gr.R[mi] : "—"}</b></div>
                 </div>
               </div>
             ))}
@@ -882,7 +882,7 @@ export default function OverviewPage({ C, helpers }) {
           <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
         </div>
         <div className="ov-row ov-row3">
-          <GradesCard gr={gr} mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
     </div>
