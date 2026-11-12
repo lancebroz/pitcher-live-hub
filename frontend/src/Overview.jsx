@@ -257,13 +257,13 @@ function primaryFastball(valid) {
 }
 
 // ─── Container 1: 3D release model ───
-function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, yearTag }) {
+function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, year }) {
   const stageRef = useRef(null), canvasRef = useRef(null), svgRef = useRef(null), cardRefs = useRef({}), sceneRef = useRef(null);
   const lastId = useRef(null);
   const [view, setViewName] = useState("catcher");
   const [showAvg, setShowAvg] = useState(true), [showLines, setShowLines] = useState(true);
   const [hot, setHot] = useState(null), [sticky, setSticky] = useState(null);
-  const lg = OV_LEAGUE[hand] || OV_LEAGUE.R, hp = `${hand}HP`;
+  const LY = OV_LEAGUE[year] || OV_LEAGUE["2026"], lg = LY[hand] || LY.R, is26 = year === "2026", hp = `${hand}HP`;
   const ready = fb && armAngle != null && fb.relZ != null && fb.relX != null && fb.ext != null;
 
   useEffect(() => {
@@ -275,7 +275,7 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
   useEffect(() => {
     const sc = sceneRef.current; if (!sc || !ready) return;
     const h = heightIn || OV_AVG_HEIGHT_IN;
-    const pose = solvePose({ heightIn: h, hand, relX: fb.relX, relZ: fb.relZ, ext: fb.ext, armAngle, front: staticRow?.f, comX: staticRow?.c });
+    const pose = solvePose({ heightIn: h, hand, relX: fb.relX, relZ: fb.relZ, ext: fb.ext, armAngle, front: is26 ? staticRow?.f : undefined, comX: is26 ? staticRow?.c : undefined });
     const a = lg.avg, avg = solvePose({ heightIn: OV_AVG_HEIGHT_IN, hand, relX: a.relX, relZ: a.relZ, ext: a.ext, armAngle: a.armAngle, front: lg.front, comX: lg.comX });
     sc.setData({ pose, avg, pitchColor: getPitchColor(fb.type), showAvg, showLines, resetView: lastId.current !== pitcher.id });
     lastId.current = pitcher.id;
@@ -292,11 +292,10 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
   return (
     <div className="ov-card">
       {!ready ? (
-        <div className="ov-note">{!fb ? "No 2026 fastballs on record for this pitcher." : "No 2026 arm angle on file for this pitcher yet."}</div>
+        <div className="ov-note">{!fb ? `No ${year} fastballs on record for this pitcher.` : `No ${year} arm angle on file for this pitcher yet.`}</div>
       ) : (
         <div className="ov-stage" ref={stageRef}>
           <canvas ref={canvasRef} />
-          {yearTag && <div className="ov-tag">Showing 2026</div>}
           <svg className="ov-leaders" ref={svgRef} />
           <div className="ov-cards">
             {showLines && cards.map(c => {
@@ -741,16 +740,16 @@ export default function OverviewPage({ C, helpers }) {
 
   const line = useMemo(() => seasonLine(cur, year === "2026" ? box26 : box25, year !== "2026", computeSummaryStats), [cur, year, box26, box25, computeSummaryStats]);
   const mix = useMemo(() => (cur ? buildMix(cur) : null), [cur]);
-  const mix26 = useMemo(() => (reg26 ? buildMix(reg26) : null), [reg26]);
-  const fb = useMemo(() => (mix26 ? primaryFastball(mix26.valid) : null), [mix26]);
+  const fb = useMemo(() => (mix ? primaryFastball(mix.valid) : null), [mix]);
   const hand = useMemo(() => {
     const h = info?.pitch_hand || pitcher?.throws; if (h === "L" || h === "R") return h;
-    const src = reg26 || []; let l = 0, r = 0; for (const p of src) { if (p.p_throws === "L") l++; else if (p.p_throws === "R") r++; }
+    const src = (reg26 && reg26.length ? reg26 : cur) || []; let l = 0, r = 0; for (const p of src) { if (p.p_throws === "L") l++; else if (p.p_throws === "R") r++; }
     if (l || r) return l > r ? "L" : "R";
     const x = mean(src.map(p => p.release_pos_x)); return x != null && x > 0 ? "L" : "R";
-  }, [info, pitcher, reg26]);
+  }, [info, pitcher, reg26, cur]);
   const srow = pitcher ? OV_PITCHERS[pitcher.id] : null;
-  const armAngle = fb && srow?.a ? (srow.a[fb.type] ?? null) : null;
+  const aaMap = year === "2026" ? srow?.a : srow?.a25;
+  const armAngle = fb && aaMap ? (aaMap[fb.type] ?? null) : null;
   const spin = useMemo(() => {
     if (!mix) return null;
     const codes = mix.types.map(t => t.type), code = codes.includes("FF") ? "FF" : codes.find(c => c === "SI" || c === "FC");
@@ -816,9 +815,9 @@ export default function OverviewPage({ C, helpers }) {
       </div>
       {pitcher && reg26 && (<>
         <div className="ov-row">
-          <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} yearTag={year !== "2026"} />
+          <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={busy ? null : fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} year={year} />
           <MixCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={year === "2026" ? armAngle : null} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={armAngle} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
         <div className="ov-row ov-row2">
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
