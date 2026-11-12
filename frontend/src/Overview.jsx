@@ -8,7 +8,10 @@ import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { OV_RVBASE } from "./overviewRvBase.js";
-import { OV_GRADES, OV_GRADES_LG } from "./overviewGrades.js";
+import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
+
+// Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
+let OV_LAST_PITCHER = null;
 
 const FB_CODES = ["FF", "SI", "FC", "FA"];
 // MLB team IDs by the abbreviation the search endpoint returns (plus common alternates), for mlbstatic logos
@@ -748,6 +751,7 @@ export default function OverviewPage({ C, helpers }) {
   }, []);
 
   const loadPitcher = async (p) => {
+    OV_LAST_PITCHER = p;
     const seq = ++seqRef.current;
     setPitcher(p); setQ(p.name); setOpen(false); setResults([]);
     setD26(null); setD25(null); setBox26(null); setBox25(null); setInfo(null); setErr(""); setYear("2026");
@@ -777,6 +781,15 @@ export default function OverviewPage({ C, helpers }) {
     }
     if (seq === seqRef.current) setLoading26(false);
   };
+
+  // First visit: open on a random 2026 pitcher (600+ pitches). Coming back to the tab restores the last one viewed.
+  useEffect(() => {
+    if (OV_LAST_PITCHER) { loadPitcher(OV_LAST_PITCHER); return; }
+    if (!OV_RANDOM_POOL.length) return;
+    const [id, name, team, throws] = OV_RANDOM_POOL[Math.floor(Math.random() * OV_RANDOM_POOL.length)];
+    loadPitcher({ id, name, team, throws });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 2025 loads on demand, from the same Statcast endpoint the Compare tab uses for its 2025 row.
   useEffect(() => {

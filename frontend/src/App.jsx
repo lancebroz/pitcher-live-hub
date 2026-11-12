@@ -5913,9 +5913,9 @@ export default function PitcherTracker() {
   const [pitcherId, setPitcherId] = useState(null);
   const [pitcherHand, setPitcherHand] = useState("");
   // Default to "heatmaps" when arriving via deep link (from Compare's "View as Heatmap" button).
-  // Otherwise default to "tracker" as before.
+  // Otherwise default to the Overview tab.
   const initialPage = (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("pitcher_id"))
-    ? "heatmaps" : "tracker";
+    ? "heatmaps" : "overview";
   const [page, setPage] = useState(initialPage); // "tracker" | "overview" | "compare" | "heatmaps" | "leaderboard" | "report"
   const [view, setView] = useState("live");
   const [pitchData, setPitchData] = useState(null);
@@ -6185,7 +6185,7 @@ export default function PitcherTracker() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "4px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "2px" }}>
-              {[{ k: "tracker", l: "Tracker" }, { k: "overview", l: "Overview" }, { k: "compare", l: "Compare" }, { k: "hitters", l: "Hitters" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
+              {[{ k: "overview", l: "Overview" }, { k: "tracker", l: "Tracker" }, { k: "compare", l: "Compare" }, { k: "hitters", l: "Hitters" }, { k: "heatmaps", l: "Heatmaps" }, { k: "leaderboard", l: "Leaderboard" }].map(p => (
                 <button key={p.k} onClick={() => setPage(p.k)} style={{
                   padding: "6px 14px", fontSize: "10px", fontWeight: 700, letterSpacing: "1.5px", textTransform: "uppercase",
                   background: page === p.k ? C.accent : "transparent", color: page === p.k ? "#fff" : C.textDim,
