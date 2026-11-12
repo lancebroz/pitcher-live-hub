@@ -116,6 +116,7 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-ccell.z{color:var(--dim)}
 .ov-res{cursor:help;display:flex;flex-direction:column;justify-content:center}.ov-grp.run .ov-st{padding-left:9px;padding-right:9px;min-width:58px}
 .ov-res{padding-left:9px;padding-right:9px;min-width:0}.ov-res .v{font-size:15px;white-space:nowrap}
+.ov-tip{position:fixed;z-index:50;max-width:min(300px,calc(100vw - 16px));background:#111827;color:#f3f4f6;font-size:12px;line-height:1.4;font-weight:500;padding:8px 10px;border-radius:7px;box-shadow:0 6px 20px rgba(0,0,0,.35);pointer-events:none;text-align:left;letter-spacing:0;text-transform:none}
 .ov-flags{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
 .ov-flag{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#b45309;background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.45);border-radius:5px;padding:2px 6px;cursor:help;margin-left:0!important}
 .ov-flag svg{width:9px;height:10px;flex:none}
@@ -735,6 +736,24 @@ export default function OverviewPage({ C, helpers }) {
   const [box26, setBox26] = useState(null), [box25, setBox25] = useState(null);
   const [err, setErr] = useState("");
   const [side, setSide] = useState("R");   // batter side shared by the Location and Results containers
+  // Touch devices have no hover, so a tap on anything with hover text (a `title`) shows that text in a popover.
+  const rootRef = useRef(null), [tip, setTip] = useState(null);
+  useEffect(() => {
+    const root = rootRef.current; if (!root) return undefined;
+    let touch = false;
+    const down = (e) => { touch = !!e.pointerType && e.pointerType !== "mouse"; };
+    const click = (e) => {
+      if (!touch) return;
+      const el = e.target.closest ? e.target.closest("[title]") : null, text = el && root.contains(el) ? el.getAttribute("title") : "";
+      if (!text) { setTip(null); return; }
+      const r = el.getBoundingClientRect(), vw = window.innerWidth, half = Math.min(150, vw / 2 - 8), below = r.bottom + 130 < window.innerHeight;
+      setTip(t => (t && t.el === el ? null : { el, text, x: Math.max(half + 8, Math.min(vw - half - 8, r.left + r.width / 2)), y: below ? r.bottom + 6 : r.top - 6, below }));
+    };
+    const hide = () => setTip(null);
+    document.addEventListener("pointerdown", down, true); document.addEventListener("click", click);
+    window.addEventListener("scroll", hide, true); window.addEventListener("resize", hide);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("click", click); window.removeEventListener("scroll", hide, true); window.removeEventListener("resize", hide); };
+  }, []);
   const searchRef = useRef(null), seqRef = useRef(0);
 
   useEffect(() => {
@@ -846,8 +865,9 @@ export default function OverviewPage({ C, helpers }) {
   const gr = pitcher ? OV_GRADES[year]?.[pitcher.id] || null : null;
 
   return (
-    <div className="ov" style={vars}>
+    <div className="ov" style={vars} ref={rootRef}>
       <style>{CSS}</style>
+      {tip && <div className="ov-tip" role="tooltip" style={{ left: tip.x, top: tip.y, transform: `translate(-50%, ${tip.below ? "0" : "-100%"})` }}>{tip.text}</div>}
       <div className="ov-sum">
         <div className="ov-who" ref={searchRef}>
           <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)} placeholder="Search pitcher..." aria-label="Search pitcher" />
