@@ -127,7 +127,10 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
 .ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
 .ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #ef4444}
-.ov-mvwrap{padding:8px 10px 0 6px}
+.ov-mvwrap{padding:8px 10px 0 6px;position:relative}
+.ov-dot{position:absolute;z-index:3;transform:translate(-50%,calc(-100% - 14px));margin:8px 0 0 6px;background:#111827;color:#f3f4f6;border-radius:7px;border-left:3px solid var(--k);padding:7px 10px 8px;font-size:11.5px;line-height:1.5;pointer-events:none;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column}
+.ov-dot[data-flip=l]{transform:translate(calc(-100% - 14px),-50%)}.ov-dot[data-flip=r]{transform:translate(14px,-50%)}
+.ov-dot b{font-size:12px;margin-bottom:2px}.ov-dot span{display:flex;justify-content:space-between;gap:14px;font-variant-numeric:tabular-nums;font-weight:600}.ov-dot i{font-style:normal;color:#9ca3af;font-weight:500}
 .ov-mvwrap canvas{display:block;width:100%;aspect-ratio:1/0.82}
 .ov-mvfoot{display:flex;gap:10px;align-items:stretch;padding:6px 12px 12px;margin-top:auto}
 .ov-mvleg{flex:1;display:flex;flex-direction:column;gap:7px;justify-content:center;min-width:0}
@@ -467,8 +470,16 @@ function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV }) {
 
 // ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
 function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV }) {
-  const cvRef = useRef(null);
-  const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0);
+  const cvRef = useRef(null), dotsRef = useRef([]);
+  const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0), [hov, setHov] = useState(null);
+  // Hovering (or tapping) an average dot shows that pitch's average velocity, movement and spin.
+  const pickDot = (e) => {
+    const cv = cvRef.current; if (!cv) return null;
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    let best = null, bd = 13;
+    for (const d of dotsRef.current) { const dist = Math.hypot(d.x - mx, d.y - my); if (dist < bd) { bd = dist; best = d; } }
+    return best;
+  };
   useEffect(() => {
     const cv = cvRef.current; if (!cv) return undefined;
     const ro = new ResizeObserver(() => setTick(t => t + 1)); ro.observe(cv); return () => ro.disconnect();
@@ -489,13 +500,16 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
     c.setLineDash([]); c.textAlign = "center"; c.fillStyle = C.textDim;
     c.fillText("Horizontal Break (in)", x0 + side / 2, Y(-AX) + 24);
     c.save(); c.translate(x0 - 28, y0 + side / 2); c.rotate(-Math.PI / 2); c.fillText("Induced Vertical Break (in)", 0, 0); c.restore();
+    dotsRef.current = [];
     if (!mix) return;
     const idx = {}; mix.types.forEach((t, i) => { idx[t.type] = i; });
-    const sums = mix.types.map(() => [0, 0, 0]);
+    const sums = mix.types.map(() => [0, 0, 0, 0, 0, 0, 0]);   // hb, ivb, n, velo sum, velo n, spin sum, spin n
     c.save(); c.beginPath(); c.rect(X(-AX), Y(AX), side, side); c.clip();
     for (const p of mix.valid) {
       const ti = idx[p.pitch_type]; if (ti == null || p.pfx_x == null || p.pfx_z == null) continue;
       sums[ti][0] += p.pfx_x; sums[ti][1] += p.pfx_z; sums[ti][2]++;
+      if (p.release_speed != null && !isNaN(p.release_speed)) { sums[ti][3] += p.release_speed; sums[ti][4]++; }
+      if (p.release_spin_rate != null && !isNaN(p.release_spin_rate) && p.release_spin_rate > 0) { sums[ti][5] += p.release_spin_rate; sums[ti][6]++; }
       c.beginPath(); c.arc(X(p.pfx_x), Y(p.pfx_z), 2.7, 0, 6.2832); c.globalAlpha = .8; c.fillStyle = getPitchColor(p.pitch_type); c.fill();
       c.globalAlpha = .45; c.strokeStyle = "#000"; c.lineWidth = .5; c.stroke();
     }
@@ -506,6 +520,8 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
     if (hasAA) { c.strokeStyle = C.text; c.lineWidth = 1.6; c.setLineDash([2, 4]); c.lineCap = "round"; c.beginPath(); c.moveTo(X(0), Y(0)); c.lineTo(X(dx * tEdge), Y(dy * tEdge)); c.stroke(); c.setLineDash([]); }
     if (showAvg) sums.forEach((a, ti) => {
       if (!a[2]) return; c.beginPath(); c.arc(X(a[0] / a[2]), Y(a[1] / a[2]), 7, 0, 6.2832);
+      const t = mix.types[ti];
+      dotsRef.current.push({ type: t.type, name: t.name, x: X(a[0] / a[2]), y: Y(a[1] / a[2]), hb: a[0] / a[2], ivb: a[1] / a[2], n: a[2], velo: a[4] ? a[3] / a[4] : null, spin: a[6] ? a[5] / a[6] : null });
       c.fillStyle = getPitchColor(mix.types[ti].type); c.shadowColor = "rgba(0,0,0,.75)"; c.shadowBlur = 9 * dpr; c.shadowOffsetY = 2.5 * dpr; c.fill();
       c.shadowColor = "transparent"; c.shadowBlur = 0; c.shadowOffsetY = 0; c.lineWidth = 2; c.strokeStyle = "#000"; c.stroke();
     });
@@ -538,7 +554,20 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
           </div>
         </div>
       )}
-      <div className="ov-mvwrap"><canvas ref={cvRef} /></div>
+      <div className="ov-mvwrap">
+        <canvas ref={cvRef} style={{ cursor: hov ? "pointer" : "default" }}
+          onMouseMove={e => { const d = pickDot(e); setHov(h => (d ? (h && h.type === d.type ? h : d) : null)); }} onMouseLeave={() => setHov(null)}
+          onClick={e => setHov(pickDot(e))} />
+        {hov && showAvg && (
+          <div className="ov-dot" style={{ left: hov.x, top: hov.y, "--k": getPitchColor(hov.type) }} data-flip={hov.y < 96 ? (hov.x > (cvRef.current?.clientWidth || 0) / 2 ? "l" : "r") : undefined}>
+            <b>{hov.name}</b>
+            <span><i>Velo</i>{hov.velo != null ? `${hov.velo.toFixed(1)} mph` : "—"}</span>
+            <span><i>iVB</i>{`${hov.ivb.toFixed(1)} in`}</span>
+            <span><i>HB</i>{`${hov.hb.toFixed(1)} in`}</span>
+            <span><i>Spin</i>{hov.spin != null ? `${Math.round(hov.spin).toLocaleString()} rpm` : "—"}</span>
+          </div>
+        )}
+      </div>
       <div className="ov-mvfoot">
         <div className="ov-mvleg" style={{ flexDirection: "row", alignItems: "center", gap: "12px" }}>
           <div className="ov-lg">{armAngle != null && <span className="aa"><i />Arm angle</span>}</div>
