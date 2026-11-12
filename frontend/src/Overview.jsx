@@ -116,7 +116,7 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-ccell.z{color:var(--dim)}
 .ov-res{cursor:help;display:flex;flex-direction:column;justify-content:center}.ov-grp.run .ov-st{padding-left:9px;padding-right:9px;min-width:58px}
 .ov-res{padding-left:9px;padding-right:9px;min-width:0}.ov-res .v{font-size:15px;white-space:nowrap}
-.ov-tip{position:fixed;z-index:50;max-width:min(300px,calc(100vw - 16px));background:#111827;color:#f3f4f6;font-size:12px;line-height:1.4;font-weight:500;padding:8px 10px;border-radius:7px;box-shadow:0 6px 20px rgba(0,0,0,.35);pointer-events:none;text-align:left;letter-spacing:0;text-transform:none}
+.ov-tip{white-space:pre-line;position:fixed;z-index:50;max-width:min(300px,calc(100vw - 16px));background:#111827;color:#f3f4f6;font-size:12px;line-height:1.4;font-weight:500;padding:8px 10px;border-radius:7px;box-shadow:0 6px 20px rgba(0,0,0,.35);pointer-events:none;text-align:left;letter-spacing:0;text-transform:none}
 .ov-flags{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
 .ov-flag{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#b45309;background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.45);border-radius:5px;padding:2px 6px;cursor:help;margin-left:0!important}
 .ov-flag svg{width:9px;height:10px;flex:none}
@@ -406,7 +406,8 @@ const FLAG_TEXT = {
 const RESULT_LEVELS = { 2: ["Well above", "rgba(34,197,94,.36)"], 1: ["Above", "rgba(34,197,94,.16)"], 0: ["In line", null], "-1": ["Below", "rgba(239,68,68,.16)"], "-2": ["Well below", "rgba(239,68,68,.36)"] };
 function resultsTile(gr) {
   const [lvl, gap, res] = gr.r, [word, col] = RESULT_LEVELS[lvl];
-  const tip = `Actual results grade out at ${res} against a Pitching+ of ${gr.a[2]} over ${gr.a[3].toLocaleString()} pitches. Adjusted for sample size, that is about ${gap > 0 ? "+" : ""}${gap} points ${gap >= 0 ? "better" : "worse"} than his grades expect.`
+  const lead = lvl === 0 ? "In line: his results match what his grades expect." : `${word}: his results are ${lvl > 0 ? "better" : "worse"} than his grades expect${Math.abs(lvl) === 2 ? ", by a wide margin" : ""}.`;
+  const tip = `${lead}\nActual results grade out at ${res} against a Pitching+ of ${gr.a[2]} over ${gr.a[3].toLocaleString()} pitches. Adjusted for sample size, that is about ${gap > 0 ? "+" : ""}${gap} points.\nGaps like this are partly skill the grades can't see (sequencing, deception) and partly noise; about a third carries over to the next season.`
     + (gr.f?.includes("u") && lvl > 0 ? " He carries the unique-shape flag, so part of this gap may be the model underrating his stuff." : "");
   return <div className="ov-st ov-res" title={tip} style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}><div className="k">Results</div><div className="v">{word}</div></div>;
 }
@@ -417,6 +418,20 @@ function gradeTone(v, ref, label, n) {
   const col = Math.abs(z) < 0.4 ? null : z >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
   return { style: col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined,
     title: `${label} ${v} · league avg ${ref[0]}${n != null ? ` · ${n.toLocaleString()} pitches` : ""} · ${ord(Math.max(1, Math.min(99, Math.round(normCdf(z) * 100))))} pctile` };
+}
+// Plain-language read of a header grade: what the number measures, where it ranks for that subset, and what it is worth in runs.
+const GRADE_ABOUT = {
+  s: "Stuff+ grades the shape of his pitches (velocity, movement, release, spin) and ignores where they end up. It is the most stable grade and the best predictor of next season.",
+  l: "Location+ grades where his pitches end up for the pitch type and count, and ignores stuff. It describes this season well but says little about the next.",
+  p: "Pitching+ grades stuff and location together in one model. It is the best single read on how well he has pitched.",
+};
+function gradeStory(mk, mlab, v, ref, n, who, about) {
+  if (v == null || !ref || !ref[1]) return undefined;
+  const pct = Math.max(1, Math.min(99, Math.round(normCdf((v - ref[0]) / ref[1]) * 100)));
+  const word = pct >= 95 ? "elite" : pct >= 85 ? "well above average" : pct >= 65 ? "above average" : pct > 35 ? "about average" : pct > 15 ? "below average" : pct > 5 ? "well below average" : "among the lowest";
+  const runs = (v - ref[0]) * 0.045, worth = Math.abs(runs) < 0.05 ? `Right at the average ${who} (${ref[0]}).`
+    : `About ${Math.abs(runs).toFixed(1)} runs per 100 pitches ${runs > 0 ? "better" : "worse"} than the average ${who} (${ref[0]}).`;
+  return `${mlab} ${v}: ${word} for a ${who}, ${ord(pct)} percentile.\n${worth}${about ? `\n${GRADE_ABOUT[mk]}` : ""}${n != null ? `\n${n.toLocaleString()} pitches.` : ""}`;
 }
 function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV }) {
   const lg = OV_GRADES_LG[year]?.[hand] || {}, SK = ["a", "L", "R"], types = mix ? mix.types.filter(t => gr?.t?.[t.type]) : [];
@@ -891,15 +906,18 @@ export default function OverviewPage({ C, helpers }) {
           {pitcher && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
           {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || `No ${year} MLB data for this pitcher.`}</div>}
           {pitcher && !busy && line && (<>
-            {gr?.a && GRADE_ROWS.map(([mk, mi, mlab]) => (
-              <div key={mk} className="ov-grp">
-                <div className="ov-st big" {...gradeTone(gr.a[mi], OV_GRADES_LG[year]?.[hand]?.all?.a?.[mk], `${year} ${hand}HP ${mlab}`, gr.a[3])}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
-                <div className="ov-sp">
-                  <div {...gradeTone(gr.L?.[mi], OV_GRADES_LG[year]?.[hand]?.all?.L?.[mk], `${year} ${hand}HP ${mlab} vs LHH`, gr.L?.[3])}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
-                  <div {...gradeTone(gr.R?.[mi], OV_GRADES_LG[year]?.[hand]?.all?.R?.[mk], `${year} ${hand}HP ${mlab} vs RHH`, gr.R?.[3])}><span>vs R</span><b>{gr.R ? gr.R[mi] : "—"}</b></div>
+            {gr?.a && GRADE_ROWS.map(([mk, mi, mlab]) => {
+              const L = OV_GRADES_LG[year]?.[hand]?.all || {}, who = hand === "L" ? "left-hander" : "right-hander";
+              return (
+                <div key={mk} className="ov-grp">
+                  <div className="ov-st big" {...gradeTone(gr.a[mi], L.a?.[mk], "", gr.a[3])} title={gradeStory(mk, mlab, gr.a[mi], L.a?.[mk], gr.a[3], who, true)}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
+                  <div className="ov-sp">
+                    <div {...gradeTone(gr.L?.[mi], L.L?.[mk], "", gr.L?.[3])} title={gr.L ? gradeStory(mk, `${mlab} vs LHH`, gr.L[mi], L.L?.[mk], gr.L[3], `${who} facing lefties`) : undefined}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
+                    <div {...gradeTone(gr.R?.[mi], L.R?.[mk], "", gr.R?.[3])} title={gr.R ? gradeStory(mk, `${mlab} vs RHH`, gr.R[mi], L.R?.[mk], gr.R[3], `${who} facing righties`) : undefined}><span>vs R</span><b>{gr.R ? gr.R[mi] : "—"}</b></div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {gr?.r && resultsTile(gr)}
             <div className="ov-grp run">
               {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
