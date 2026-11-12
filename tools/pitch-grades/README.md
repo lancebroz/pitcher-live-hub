@@ -30,7 +30,16 @@ cell against the league average for that pitch type.
    - Small samples are regressed toward the league average for that pitch type
      (about 1-3 pitches for Stuff, about 120-160 for Location, about 50-90 for Pitching).
 
-Run: `PITCH_DATA=<parquet folders> STUFF_REPO=<stuff-plus-repo checkout> python 01_prepare.py && python 02_train_and_grade.py`
+3. `03_flags.py` adds low-confidence flags and rewrites the frontend file.
+   - Unique shape: a pitch type whose average shape and release has few close matches among other pitchers
+     (distance to the 5th-closest other pitcher of 1.0 or more, in spread-of-pitchers units over velocity,
+     movement, release point, extension, arm angle and spin). A pitcher is flagged when 40%+ of his pitches
+     are flagged pitch types. 24 of 797 pitchers in 2026 (16 of the 423 with 600+ pitches).
+   - Small sample: fewer than 200 pitches in the season. 163 of 797 in 2026.
+   - Why it matters: for typical shapes, the grade with and without the pitcher's own history differs by
+     about 2 points; for the most unusual 2% of pitch types it differs by about 7.
+
+Run: `PITCH_DATA=<parquet folders> STUFF_REPO=<stuff-plus-repo checkout> python 01_prepare.py && python 02_train_and_grade.py && python 03_flags.py`
 (about 25 minutes on 2 cores). Needs `lightgbm`, `pandas`, `pyarrow`.
 
 ## What changed from stuff-plus-repo v3, and why

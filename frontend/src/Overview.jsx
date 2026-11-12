@@ -111,6 +111,11 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-ccell{border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:36px;background-color:var(--surfaceAlt);color:var(--text);line-height:1.1}
 .ov-ccell b{font-size:14.5px;font-variant-numeric:tabular-nums}.ov-ccell small{font-size:9.5px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
 .ov-ccell.z{color:var(--dim)}
+.ov-flags{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.ov-flag{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#b45309;background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.45);border-radius:5px;padding:2px 6px;cursor:help;margin-left:0!important}
+.ov-flag svg{width:9px;height:10px;flex:none}
+.ov-chip .fl{display:inline-block;margin-left:4px;vertical-align:1px}.ov-chip .fl svg{width:8px;height:9px}
+.ov-cnote .fl svg{width:8px;height:9px;vertical-align:-1px;margin-right:3px}
 .ov-cnote{font-size:10.5px;color:var(--dim);text-align:center;margin-top:auto;padding-top:8px;line-height:1.45}
 .ov-row3{margin-top:14px;justify-content:flex-start}
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
@@ -386,6 +391,11 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 // ─── Grades: Stuff+ / Location+ / Pitching+ (tools/pitch-grades). Cell = [Stuff+, Location+, Pitching+, pitches]. ───
 // 100 = league-average pitch that season, 10 points = 0.45 runs per 100 pitches on all three, so the grades are comparable.
 // Colour is vs the league for that exact subset: overall tiles vs 100, pitch-type cells vs the league mean for that pitch type.
+const FlagIcon = ({ color = "currentColor" }) => <svg viewBox="0 0 9 10" aria-hidden="true"><path d="M1 0v10" stroke={color} strokeWidth="1.4" /><path d="M1.6 .6h6.6L6.4 3l1.8 2.4H1.6z" fill={color} /></svg>;
+const FLAG_TEXT = {
+  u: ["Unique shape", "Few other pitchers throw anything close to his shape and release, so Stuff+ is extrapolating from distant comparisons. Treat it as an estimate."],
+  s: ["Small sample", "Fewer than 200 pitches this season. Location+ and Pitching+ are still pulled most of the way toward average."],
+};
 const GRADE_ROWS = [["s", 0, "Stuff+"], ["l", 1, "Location+"], ["p", 2, "Pitching+"]];
 function gradeTone(v, ref, label, n) {
   if (v == null || !ref || !ref[1]) return {};
@@ -402,7 +412,7 @@ function GradesCard({ gr, mix, year, getPitchColor, PITCH_ABBREV }) {
       {!gr?.a || !types.length ? <div className="ov-note">No {year} pitch grades for this pitcher.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
-            {types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
+            {types.map(t => { const u = gr.u?.includes(t.type); return <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={u ? `${t.name} · unique shape: few close matches among other pitchers, Stuff+ is extrapolating` : t.name}>{PITCH_ABBREV[t.name] || t.type}{u && <span className="fl"><FlagIcon color="#fff" /></span>}</div>; })}
           </div>
           {GRADE_ROWS.map(([mk, mi, mlab]) => (
             <div key={mk} style={{ display: "contents" }}>
@@ -419,7 +429,7 @@ function GradesCard({ gr, mix, year, getPitchColor, PITCH_ABBREV }) {
               ))}
             </div>
           ))}
-          <div className="ov-cnote">100 = average pitch · 10 points = 0.45 runs per 100 pitches · color is vs the league for that pitch type</div>
+          <div className="ov-cnote">100 = average pitch · 10 points = 0.45 runs per 100 pitches · color is vs the league for that pitch type{gr.u?.some(u => types.find(t => t.type === u)) && <><br /><span className="fl"><FlagIcon /></span>unique shape, few close matches among other pitchers</>}</div>
         </div>
       )}
     </div>
@@ -827,7 +837,9 @@ export default function OverviewPage({ C, helpers }) {
             <div className="ov-id">
               <div className="ov-face" role="img" aria-label={pitcher.name} style={{ backgroundImage: `url(${headshotUrl(pitcher.id)})` }} />
               {TEAM_IDS[pitcher.team] && <img className="ov-logo" src={`https://www.mlbstatic.com/team-logos/${TEAM_IDS[pitcher.team]}.svg`} alt={pitcher.team} onError={e => { e.currentTarget.style.display = "none"; }} />}
-              <div className="nm"><h1>{pitcher.name}</h1><span>{hand}HP{info?.height_inches ? ` · ${ftIn(info.height_inches)}` : ""}</span></div>
+              <div className="nm"><h1>{pitcher.name}</h1><span>{hand}HP{info?.height_inches ? ` · ${ftIn(info.height_inches)}` : ""}</span>
+                {gr?.f && <div className="ov-flags">{[...gr.f].map(k => <span key={k} className="ov-flag" title={FLAG_TEXT[k][1]}><FlagIcon />{FLAG_TEXT[k][0]}</span>)}</div>}
+              </div>
             </div>
           )}
         </div>
