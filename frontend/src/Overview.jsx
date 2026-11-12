@@ -393,7 +393,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 // Colour is vs the league for that exact subset: overall tiles vs 100, pitch-type cells vs the league mean for that pitch type.
 const FlagIcon = ({ color = "currentColor" }) => <svg viewBox="0 0 9 10" aria-hidden="true"><path d="M1 0v10" stroke={color} strokeWidth="1.4" /><path d="M1.6 .6h6.6L6.4 3l1.8 2.4H1.6z" fill={color} /></svg>;
 const FLAG_TEXT = {
-  u: ["Unique shape", "Few other pitchers throw anything close to his shape and release, so Stuff+ is extrapolating from distant comparisons. Treat it as an estimate."],
+  u: ["Unique shape", "Few other pitchers throw anything close to his shape and release. The model grades him only from other pitchers, so his Stuff+ is a guess from distant comparisons and may be well off."],
   s: ["Small sample", "Fewer than 200 pitches this season. Location+ and Pitching+ are still pulled most of the way toward average."],
 };
 const GRADE_ROWS = [["s", 0, "Stuff+"], ["l", 1, "Location+"], ["p", 2, "Pitching+"]];
@@ -412,7 +412,7 @@ function GradesCard({ gr, mix, year, getPitchColor, PITCH_ABBREV }) {
       {!gr?.a || !types.length ? <div className="ov-note">No {year} pitch grades for this pitcher.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
-            {types.map(t => { const u = gr.u?.includes(t.type); return <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={u ? `${t.name} · unique shape: few close matches among other pitchers, Stuff+ is extrapolating` : t.name}>{PITCH_ABBREV[t.name] || t.type}{u && <span className="fl"><FlagIcon color="#fff" /></span>}</div>; })}
+            {types.map(t => { const u = gr.u?.includes(t.type); return <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={u ? `${t.name} · unique shape: few close matches among other pitchers, so this Stuff+ may be well off` : t.name}>{PITCH_ABBREV[t.name] || t.type}{u && <span className="fl"><FlagIcon color="#fff" /></span>}</div>; })}
           </div>
           {GRADE_ROWS.map(([mk, mi, mlab]) => (
             <div key={mk} style={{ display: "contents" }}>

@@ -26,7 +26,8 @@ cell against the league average for that pitch type.
    - Stuff model: trained on run value with the location model's prediction subtracted, so it cannot be
      paid for location. Pitch-level features, one pooled model.
    - Pitching model: one joint model on shape + location + count.
-   - Stuff and Pitching grades for a season come from a model trained on the other three seasons.
+   - Every grade comes from a model that has never seen that pitcher in any season (4 folds grouped by
+     pitcher). A grade reflects only what similar pitches did for other pitchers, never his own results.
    - Small samples are regressed toward the league average for that pitch type
      (about 1-3 pitches for Stuff, about 120-160 for Location, about 50-90 for Pitching).
 
@@ -66,9 +67,9 @@ Tested and rejected:
 
 | | Stuff+ | Location+ | Pitching+ |
 |---|---|---|---|
-| Correlation with FanGraphs, 2026, 327 pitchers with 50+ IP | 0.87 | 0.80 | 0.91 |
-| Mean absolute difference from FanGraphs (points) | 3.4 | 2.9 | 2.8 |
-| Year-to-year stability | 0.87 | 0.68 | 0.70 |
+| Correlation with FanGraphs, 2026, 327 pitchers with 50+ IP | 0.83 | 0.80 | 0.89 |
+| Mean absolute difference from FanGraphs (points) | 3.7 | 2.9 | 2.8 |
+| Year-to-year stability | 0.86 | 0.68 | 0.70 |
 | Predicts next-season run value (r) | 0.42 | 0.01 | 0.39 |
 | First 300 pitches predict rest-of-season run value (r) | 0.43 | 0.00 | - |
 
@@ -78,6 +79,10 @@ Same-season, Stuff+ explains 24% of the variation in run value and Stuff+ with L
 ## Known limits
 
 - Grades are frozen at the build date. Re-run after new data; for a new season, train on all prior seasons.
-- FanGraphs still rates unusual release points higher (Tyler Rogers 136 there, 123 here).
+- Pitcher-held-out grading means a one-of-a-kind arm is graded from distant comparisons (Tyler Rogers is
+  100 here, 136 at FanGraphs). That is deliberate: the unique-shape flag marks those cases instead of the
+  model learning the pitcher. Flagged pitchers sit 8.8 points from FanGraphs Stuff+ on average, unflagged 3.5.
+- The alternative tested was grading each season with a model trained on the other three seasons (pitcher
+  seen). It tracked FanGraphs closer (0.87) and gave Rogers 123, with no gain in next-season prediction.
 - Location+ assumes every pitcher aims where the league aims for that pitch type and count.
 - 2023 has no optical arm angle; the stuff-plus-repo imputer fills it.
