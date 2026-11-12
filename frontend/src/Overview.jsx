@@ -8,6 +8,7 @@ import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { OV_RVBASE } from "./overviewRvBase.js";
+import { OV_COMMAND, OV_COMMAND_META } from "./overviewCommand.js";
 
 const FB_CODES = ["FF", "SI", "FC", "FA"];
 // MLB team IDs by the abbreviation the search endpoint returns (plus common alternates), for mlbstatic logos
@@ -107,6 +108,13 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-mcell small{font-size:9.5px;font-weight:600;opacity:.75;margin-left:1px}
 .ov-mcell.z{color:var(--dim);font-weight:500}
 .ov-mcell.hi{box-shadow:inset 0 0 0 2px #22c55e}.ov-mcell.lo{box-shadow:inset 0 0 0 2px #ef4444}
+.ov-ccell{border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:44px;background-color:var(--surfaceAlt);color:var(--text);line-height:1.1}
+.ov-ccell b{font-size:14.5px;font-variant-numeric:tabular-nums}.ov-ccell small{font-size:9.5px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
+.ov-ccell.z{color:var(--dim)}
+.ov-csum{display:flex;align-items:baseline;gap:8px;margin-left:auto;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ov-cnote{font-size:10.5px;color:var(--dim);text-align:center;margin-top:auto;padding-top:8px;line-height:1.45}
+.ov-cnote a{color:inherit}
+.ov-row3{margin-top:14px;justify-content:flex-start}
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
 .ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
 .ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #ef4444}
@@ -377,6 +385,44 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
   );
 }
 
+// ─── Command: Open Command miss distance (pitch location vs the catcher's inferred target) as a 100-centred grade ───
+// Cell = [grade, median miss in inches, tracked pitches]. Grade colours: neutral within 0.4 SD (4 points), then green / red.
+function cmdTone(c, label) {
+  if (!c) return {};
+  const z = (c[0] - 100) / 10, mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+  const col = Math.abs(z) < 0.4 ? null : z >= 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+  return { style: col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined,
+    title: `${label} · Command+ ${c[0]} · median miss ${c[1].toFixed(1)} in · ${c[2].toLocaleString()} tracked pitches · ${ord(Math.max(1, Math.min(99, Math.round(normCdf(z) * 100))))} pctile` };
+}
+function CommandCard({ cmd, mix, year, getPitchColor, PITCH_ABBREV }) {
+  const types = mix ? mix.types.filter(t => cmd?.t?.[t.type]) : [];
+  const through = OV_COMMAND_META[year]?.through, partial = through && through.slice(5) < "09-20";
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Command</div>
+        {cmd?.a && <div className="ov-csum"><span>{cmd.a[1].toFixed(1)} in median miss</span><span>{cmd.a[2].toLocaleString()} pitches</span></div>}
+      </div>
+      {!cmd?.a || !types.length ? <div className="ov-note">No {year} command tracking for this pitcher.</div> : (
+        <div className="ov-mix">
+          <div className="ov-mrow" style={{ "--n": types.length }}><span />
+            {types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
+          </div>
+          {[[0, "Overall", "ov-all"], [2, "vs RHH", ""], [1, "vs LHH", ""]].map(([i, lab, cls]) => (
+            <div key={lab} className={`ov-mrow ${cls}`} style={{ "--n": types.length }}>
+              <div className="ov-mlab">{lab}</div>
+              {types.map(t => {
+                const c = cmd.t[t.type][i];
+                return c ? <div key={t.type} className="ov-ccell" {...cmdTone(c, `${t.name} ${lab}`)}><b>{c[0]}</b><small>{c[1].toFixed(1)}″</small></div>
+                  : <div key={t.type} className="ov-ccell z">—</div>;
+              })}
+            </div>
+          ))}
+          <div className="ov-cnote">Command+ · 100 = average for that pitch type · small number = median miss from the catcher's target{partial ? ` · through ${new Date(through + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}<br />Data: <a href="https://github.com/tomdoyo/open-command" target="_blank" rel="noreferrer">Open Command</a> (Tom Kim), CC BY-NC-SA 4.0</div>
+        </div>
+      )}
+    </div>
+  );
+}
 // ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
 function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV }) {
   const cvRef = useRef(null);
@@ -772,6 +818,7 @@ export default function OverviewPage({ C, helpers }) {
     </div>
   );
   const busy = year === "2026" ? loading26 : loading25;
+  const cmd = pitcher ? OV_COMMAND[year]?.[pitcher.id] || null : null;
 
   return (
     <div className="ov" style={vars}>
@@ -797,6 +844,15 @@ export default function OverviewPage({ C, helpers }) {
           {pitcher && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
           {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || `No ${year} MLB data for this pitcher.`}</div>}
           {pitcher && !busy && line && (<>
+            {cmd?.a && (
+              <div className="ov-grp">
+                <div className="ov-st big" {...cmdTone(cmd.a, `${year} overall`)}><div className="k">Command+</div><div className="v">{cmd.a[0]}</div></div>
+                <div className="ov-sp">
+                  <div {...cmdTone(cmd.L, `${year} vs LHH`)}><span>vs L</span><b>{cmd.L ? cmd.L[0] : "—"}</b></div>
+                  <div {...cmdTone(cmd.R, `${year} vs RHH`)}><span>vs R</span><b>{cmd.R ? cmd.R[0] : "—"}</b></div>
+                </div>
+              </div>
+            )}
             {rate("K%", "k", line.k, line.L.k, line.R.k)}
             {rate("BB%", "bb", line.bb, line.L.bb, line.R.bb)}
             {rate("K-BB%", "kbb", kbb(line), kbb(line.L), kbb(line.R))}
@@ -823,6 +879,9 @@ export default function OverviewPage({ C, helpers }) {
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
           <HeatCard side={side} setSide={setSide} mix={busy ? null : mix} year={year} hand={hand} rvHelpers={helpers} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
           <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
+        </div>
+        <div className="ov-row ov-row3">
+          <CommandCard cmd={cmd} mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
     </div>
