@@ -275,7 +275,7 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
   useEffect(() => {
     const sc = sceneRef.current; if (!sc || !ready) return;
     const h = heightIn || OV_AVG_HEIGHT_IN;
-    const pose = solvePose({ heightIn: h, hand, relX: fb.relX, relZ: fb.relZ, ext: fb.ext, armAngle, front: is26 ? staticRow?.f : undefined, comX: is26 ? staticRow?.c : undefined });
+    const pose = solvePose({ heightIn: h, hand, relX: fb.relX, relZ: fb.relZ, ext: fb.ext, armAngle, front: is26 ? staticRow?.f : staticRow?.f25, comX: is26 ? staticRow?.c : staticRow?.c25 });
     const a = lg.avg, avg = solvePose({ heightIn: OV_AVG_HEIGHT_IN, hand, relX: a.relX, relZ: a.relZ, ext: a.ext, armAngle: a.armAngle, front: lg.front, comX: lg.comX });
     sc.setData({ pose, avg, pitchColor: getPitchColor(fb.type), showAvg, showLines, resetView: lastId.current !== pitcher.id });
     lastId.current = pitcher.id;
