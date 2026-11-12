@@ -2216,7 +2216,7 @@ const computeHistoricalSummary = (pitchData) => {
   // Actually, let's just show the stats we can compute accurately and skip ERA since we can't get ER
   // Instead, we'll compute FIP which is more meaningful from pitch data:
   // FIP = ((13*HR + 3*(BB+HBP) - 2*K) / IP) + constant
-  const FIP_CONSTANT = 3.15;
+  const FIP_CONSTANT = fipConstsFor(pitchData).c;
   const homeRuns = abEndPitches.filter(p => (p.events || "").toLowerCase() === "home_run").length;
   const fip = ipNum > 0 ? (((13 * homeRuns + 3 * walks - 2 * strikeouts) / ipNum) + FIP_CONSTANT).toFixed(2) : "-.--";
 
@@ -2400,6 +2400,16 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onA
 };
 
 // ─── Table Columns ───
+// FIP / xFIP constants by season, aligned to FanGraphs.
+//   c    = FanGraphs "Guts!" cFIP for that season.
+//   hrfb = league HR per (fly ball + popup) in this app's own batted-ball labels. FanGraphs counts infield
+//          flies as fly balls, so xFIP uses FB + PU; the rate comes from our feed so league xFIP = league FIP.
+const FIP_CONSTS = { 2025: { c: 3.135, hrfb: 0.1346 }, 2026: { c: 3.100, hrfb: 0.1318 } };
+const fipConstsFor = (pitches) => {
+  let y = null;
+  if (pitches) for (const p of pitches) { if (p && p.game_date) { y = parseInt(String(p.game_date).slice(0, 4), 10); break; } }
+  return FIP_CONSTS[y] || FIP_CONSTS[2026];
+};
 const STUFF_COLS = [
   { key: "name", label: "Pitch", align: "left" }, { key: "count", label: "#" },
   { key: "avgVelo", label: "Velo" }, { key: "maxVelo", label: "Max" },
@@ -2769,8 +2779,7 @@ const computeSummaryStats = (rawPitches, hand) => {
   const kbbPct = kPct - bbPctDisplay;
 
   // FIP = (13×HR + 3×(BB+HBP) - 2×K) / IP + constant
-  const FIP_CONSTANT = 3.15;
-  const LG_HR_FB_RATE = 0.119; // league-average HR/FB rate (2025: 11.9%)
+  const { c: FIP_CONSTANT, hrfb: LG_HR_FB_RATE } = fipConstsFor(pitches);
   let fip = null, xfip = null, siera = null;
   let hr = 0;
   // Count HR from deduped at-bat events (same dedup as K/BB to avoid 4-5x overcounts)
@@ -2780,7 +2789,7 @@ const computeSummaryStats = (rawPitches, hand) => {
   if (ipNum > 0) {
     fip = (13 * hr + 3 * (bb + hbp) - 2 * so) / ipNum + FIP_CONSTANT;
     // xFIP: replace actual HR with expected HR (FB × league HR/FB rate)
-    const expectedHR = fb * LG_HR_FB_RATE;
+    const expectedHR = (fb + pu) * LG_HR_FB_RATE;
     xfip = (13 * expectedHR + 3 * (bb + hbp) - 2 * so) / ipNum + FIP_CONSTANT;
   }
   // SIERA with 2026 run-environment adjustment
@@ -2868,8 +2877,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
   let fipDisplay = stats.fip, xfipDisplay = stats.xfip, sieraDisplay = stats.siera;
   if (useBox) {
     const ip = boxStats.outs / 3.0;
-    const FIP_CONSTANT = 3.15;
-    const LG_HR_FB_RATE = 0.119;
+    const { c: FIP_CONSTANT, hrfb: LG_HR_FB_RATE } = fipConstsFor(rawPitches);
     if (ip > 0) {
       const fipVal = (13 * boxStats.home_runs + 3 * (boxStats.walks + boxStats.hit_batsmen) - 2 * boxStats.strikeouts) / ip + FIP_CONSTANT;
       fipDisplay = fipVal.toFixed(2);
@@ -2881,7 +2889,7 @@ const SummaryStatsBar = ({ rawPitches, hand, C, eraOverride, ipOverride, boxStat
         else if (p.bb_type === "ground_ball") gbCount += 1;
         else if (p.bb_type === "popup") puCount += 1;
       }
-      const expectedHR = fbCount * LG_HR_FB_RATE;
+      const expectedHR = (fbCount + puCount) * LG_HR_FB_RATE;
       const xfipVal = (13 * expectedHR + 3 * (boxStats.walks + boxStats.hit_batsmen) - 2 * boxStats.strikeouts) / ip + FIP_CONSTANT;
       xfipDisplay = xfipVal.toFixed(2);
       // SIERA with 2026 run-environment constant
@@ -5894,7 +5902,7 @@ const HittersPage = ({ C, isMobile }) => {
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, COUNT_RE, EVENT_LW };
+const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, COUNT_RE, EVENT_LW };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");

@@ -9,7 +9,6 @@ import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { OV_RVBASE } from "./overviewRvBase.js";
 
-const FIP_CONSTANT = 3.15, LG_HR_FB_RATE = 0.119;   // same constants as SummaryStatsBar
 const FB_CODES = ["FF", "SI", "FC", "FA"];
 // MLB team IDs by the abbreviation the search endpoint returns (plus common alternates), for mlbstatic logos
 const TEAM_IDS = { AZ: 109, ARI: 109, ATL: 144, BAL: 110, BOS: 111, CHC: 112, CWS: 145, CHW: 145, CIN: 113, CLE: 114, COL: 115, DET: 116, HOU: 117, KC: 118, KCR: 118,
@@ -205,7 +204,7 @@ function Slider({ label, dot, pct, value, unit, title }) {
 }
 
 // ─── Season line: mirrors SummaryStatsBar (box-score truth for all-hands when available, pitch-derived splits) ───
-function seasonLine(raw, box, eraOnly, computeSummaryStats) {
+function seasonLine(raw, box, eraOnly, computeSummaryStats, fipConstsFor) {
   if (!raw || raw.length === 0) return null;
   const all = computeSummaryStats(raw, "all"); if (!all) return null;
   const num = (s) => { const v = parseFloat(s); return isNaN(v) ? null : v; };
@@ -216,8 +215,9 @@ function seasonLine(raw, box, eraOnly, computeSummaryStats) {
     out.k = (box.strikeouts / bf) * 100; out.bb = (box.walks / bf) * 100;
     const ip = box.outs / 3;
     if (ip > 0) {
+      const { c: FIP_CONSTANT, hrfb: LG_HR_FB_RATE } = fipConstsFor(raw);
       out.fip = ((13 * box.home_runs + 3 * (box.walks + box.hit_batsmen) - 2 * box.strikeouts) / ip + FIP_CONSTANT).toFixed(2);
-      let fb = 0; for (const p of raw) if (p.is_in_play && p.bb_type === "fly_ball") fb++;
+      let fb = 0; for (const p of raw) if (p.is_in_play && (p.bb_type === "fly_ball" || p.bb_type === "popup")) fb++;
       out.xfip = ((13 * fb * LG_HR_FB_RATE + 3 * (box.walks + box.hit_batsmen) - 2 * box.strikeouts) / ip + FIP_CONSTANT).toFixed(2);
     }
   }
@@ -654,7 +654,7 @@ function StatCard({ hand, cur, line, box, year, computeSummaryStats, side: h, se
 
 // ─── Page ───
 export default function OverviewPage({ C, helpers }) {
-  const { normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount } = helpers;
+  const { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount } = helpers;
   const [q, setQ] = useState(""), [results, setResults] = useState([]), [open, setOpen] = useState(false);
   const [pitcher, setPitcher] = useState(null), [info, setInfo] = useState(null);
   const [year, setYear] = useState("2026");
@@ -738,7 +738,7 @@ export default function OverviewPage({ C, helpers }) {
     return () => { alive = false; };
   }, [reg25, pitcher]);
 
-  const line = useMemo(() => seasonLine(cur, year === "2026" ? box26 : box25, year !== "2026", computeSummaryStats), [cur, year, box26, box25, computeSummaryStats]);
+  const line = useMemo(() => seasonLine(cur, year === "2026" ? box26 : box25, year !== "2026", computeSummaryStats, fipConstsFor), [cur, year, box26, box25, computeSummaryStats]);
   const mix = useMemo(() => (cur ? buildMix(cur) : null), [cur]);
   const fb = useMemo(() => (mix ? primaryFastball(mix.valid) : null), [mix]);
   const hand = useMemo(() => {
