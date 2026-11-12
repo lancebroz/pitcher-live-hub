@@ -805,18 +805,7 @@ export default function OverviewPage({ C, helpers }) {
   }, [mix, srow, year]);
 
   const vars = { "--bg": C.bg, "--surface": C.surface, "--surfaceAlt": C.surfaceAlt, "--border": C.border, "--borderLight": C.borderLight, "--text": C.text, "--muted": C.textMuted, "--dim": C.textDim, "--accent": C.accent };
-  const f1 = (x) => (x == null ? "—" : x.toFixed(1));
-  const kbb = (o) => (o && o.k != null && o.bb != null ? R(R(o.k) - R(o.bb)) : null);
   const base = OV_STAT_BASE[year]?.[hand], hp = `${hand}HP`;
-  const rate = (lab, key, a, l, r) => (
-    <div className="ov-grp">
-      <div className="ov-st big" {...tone(key, a, base?.all?.[key], `${year} ${hp}`)}><div className="k">{lab}</div><div className="v">{f1(a)}<small>%</small></div></div>
-      <div className="ov-sp">
-        <div {...tone(key, l, base?.L?.[key], `${year} ${hp} vs LHH`)}><span>vs L</span><b>{f1(l)}</b></div>
-        <div {...tone(key, r, base?.R?.[key], `${year} ${hp} vs RHH`)}><span>vs R</span><b>{f1(r)}</b></div>
-      </div>
-    </div>
-  );
   const busy = year === "2026" ? loading26 : loading25;
   const cmd = pitcher ? OV_COMMAND[year]?.[pitcher.id] || null : null;
 
@@ -853,9 +842,6 @@ export default function OverviewPage({ C, helpers }) {
                 </div>
               </div>
             )}
-            {rate("K%", "k", line.k, line.L.k, line.R.k)}
-            {rate("BB%", "bb", line.bb, line.L.bb, line.R.bb)}
-            {rate("K-BB%", "kbb", kbb(line), kbb(line.L), kbb(line.R))}
             <div className="ov-grp run">
               {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
                 <div key={k} className="ov-st" {...(key ? tone(key, v, b, lab) : {})}><div className="k">{k}</div><div className="v">{v}</div></div>
