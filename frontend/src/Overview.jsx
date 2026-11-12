@@ -681,9 +681,9 @@ function arsenalStats(pitches, h, line, box, year, computeSummaryStats) {
   if (!pitches || !line) return null;
   const f = pitches.filter(p => (h === "all" || p.batter_hand === h) && p.pitch_name && p.pitch_name.trim() !== "" && p.pitch_name.toLowerCase() !== "nan");
   if (!f.length) return null;
-  let sw = 0, wh = 0, st = 0, ozs = 0, ozt = 0, izw = 0, izs = 0, ba = 0, bbe = 0;
+  let sw = 0, wh = 0, st = 0, cs = 0, iz = 0, ozs = 0, ozt = 0, izw = 0, izs = 0, ba = 0, bbe = 0;
   for (const p of f) {   // same definitions as computeMetrics
-    if (p.is_whiff) wh++; if (p.is_swing) sw++; if (p.is_swing || p.is_called_strike) st++;
+    if (p.is_whiff) wh++; if (p.is_swing) sw++; if (p.is_swing || p.is_called_strike) st++; if (p.is_called_strike) cs++; if (p.is_in_zone) iz++;
     if (!p.is_in_zone) { ozt++; if (p.is_swing) ozs++; } else if (p.is_swing) { izs++; if (p.is_whiff) izw++; }
     if (p.is_in_play && !p.is_bunt) { bbe++; if (p.is_barrel) ba++; }
   }
@@ -700,10 +700,10 @@ function arsenalStats(pitches, h, line, box, year, computeSummaryStats) {
     if (outs > 0) hr9 = 27 * hr / outs;
   }
   return { k: src?.k, bb: src?.bb, kbb: src && src.k != null && src.bb != null ? R(R(src.k) - R(src.bb)) : null, era: h === "all" ? parseFloat(line.era) : null,
-    barrel: pc(ba, bbe), hr9, swstr: pc(wh, c), strike: pc(st, c), chase: pc(ozs, ozt), izwhiff: pc(izw, izs) };
+    barrel: pc(ba, bbe), hr9, swstr: pc(wh, c), cstr: pc(cs, c), strike: pc(st, c), zone: pc(iz, c), chase: pc(ozs, ozt), izwhiff: pc(izw, izs) };
 }
 const ARSENAL_ROWS = [["k", "K %"], ["bb", "BB %", true], ["kbb", "K-BB %"], ["barrel", "Barrel %", true], ["hr9", "HR/9", true, 2],
-  ["swstr", "SwStr %"], ["strike", "Strike %"], ["chase", "Chase %"], ["izwhiff", "In-Zone Whiff %"]];
+  ["swstr", "SwStr %"], ["cstr", "Called Strike %"], ["strike", "Strike %"], ["zone", "Zone %"], ["chase", "Chase %"], ["izwhiff", "In-Zone Whiff %"]];
 function StatCard({ hand, cur, line, box, year, computeSummaryStats, side: h, setSide: setH }) {
   const vals = useMemo(() => arsenalStats(cur, h, line, box, year, computeSummaryStats), [cur, h, line, box, year, computeSummaryStats]);
   const pool = OV_POOLS[year]?.[hand]?.stats?.[h], era = OV_STAT_BASE[year]?.era;
