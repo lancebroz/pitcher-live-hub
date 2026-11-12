@@ -39,6 +39,11 @@ against the league average for the same pitcher hand, batter side and pitch type
      movement, release point, extension, arm angle and spin). A pitcher is flagged when 40%+ of his pitches
      are flagged pitch types. 24 of 797 pitchers in 2026 (16 of the 423 with 600+ pitches).
    - Small sample: fewer than 200 pitches in the season. 163 of 797 in 2026.
+   - Results vs grades (header tile, word only): actual run value minus what the Pitching model expected
+     for the same pitches, regressed for sample size (half weight at about 1,400 pitches), then bucketed at
+     4 and 8 points: well above / above / in line / below / well below. 2026: 29 / 93 / 516 / 118 / 41.
+     The gap is partly skill: it correlates 0.31 year to year (0.42 among starters) and its true spread
+     among pitchers is about 9 points, the same size as Stuff+.
    - Why it matters: for typical shapes, the grade with and without the pitcher's own history differs by
      about 2 points; for the most unusual 2% of pitch types it differs by about 7.
 

@@ -43,7 +43,7 @@ const CSS = `
 .ov-logo{width:30px;height:30px;flex:none;object-fit:contain}
 .ov-who h1{font-size:20px;margin:0;line-height:1.1;display:inline;font-weight:700}
 .ov-who .nm span{font-size:12px;color:var(--muted);margin-left:8px}
-.ov-stats{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:stretch;flex:1}
+.ov-stats{display:flex;gap:10px 10px;flex-wrap:wrap;align-items:stretch;flex:1}
 .ov-grp{display:flex;gap:6px;align-items:stretch}
 .ov-grp.run{margin-left:auto}
 .ov-st{background:var(--surfaceAlt);border:1px solid var(--border);border-radius:8px;padding:6px 12px 7px;min-width:66px}
@@ -51,7 +51,7 @@ const CSS = `
 .ov-st .v{font-size:20px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums}
 .ov-st.big .v{font-size:26px}.ov-st .v small{font-size:12px;color:var(--muted);margin-left:1px}
 .ov-sp{display:flex;flex-direction:column;gap:4px}
-.ov-sp div{flex:1;display:flex;align-items:center;gap:7px;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 8px;min-width:78px}
+.ov-sp div{flex:1;display:flex;align-items:center;gap:7px;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 7px;min-width:70px}
 .ov-sp span{font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);font-weight:700}
 .ov-sp b{font-size:12.5px;font-variant-numeric:tabular-nums}
 .ov-years{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px;align-self:flex-start}
@@ -111,6 +111,8 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-ccell{border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:36px;background-color:var(--surfaceAlt);color:var(--text);line-height:1.1}
 .ov-ccell b{font-size:14.5px;font-variant-numeric:tabular-nums}.ov-ccell small{font-size:9.5px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
 .ov-ccell.z{color:var(--dim)}
+.ov-res{cursor:help;display:flex;flex-direction:column;justify-content:center}.ov-grp.run .ov-st{padding-left:9px;padding-right:9px;min-width:58px}
+.ov-res{padding-left:9px;padding-right:9px;min-width:0}.ov-res .v{font-size:15px;white-space:nowrap}
 .ov-flags{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
 .ov-flag{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#b45309;background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.45);border-radius:5px;padding:2px 6px;cursor:help;margin-left:0!important}
 .ov-flag svg{width:9px;height:10px;flex:none}
@@ -396,6 +398,14 @@ const FLAG_TEXT = {
   u: ["Unique shape", "Few other pitchers throw anything close to his shape and release. The model grades him only from other pitchers, so his Stuff+ is a guess from distant comparisons and may be well off."],
   s: ["Small sample", "Fewer than 200 pitches this season. Location+ and Pitching+ are still pulled most of the way toward average."],
 };
+// Results vs grades: actual run value against what Pitching+ expected for the same pitches, regressed for sample size.
+const RESULT_LEVELS = { 2: ["Well above", "rgba(34,197,94,.36)"], 1: ["Above", "rgba(34,197,94,.16)"], 0: ["In line", null], "-1": ["Below", "rgba(239,68,68,.16)"], "-2": ["Well below", "rgba(239,68,68,.36)"] };
+function resultsTile(gr) {
+  const [lvl, gap, res] = gr.r, [word, col] = RESULT_LEVELS[lvl];
+  const tip = `Actual results grade out at ${res} against a Pitching+ of ${gr.a[2]} over ${gr.a[3].toLocaleString()} pitches. Adjusted for sample size, that is about ${gap > 0 ? "+" : ""}${gap} points ${gap >= 0 ? "better" : "worse"} than his grades expect.`
+    + (gr.f?.includes("u") && lvl > 0 ? " He carries the unique-shape flag, so part of this gap may be the model underrating his stuff." : "");
+  return <div className="ov-st ov-res" title={tip} style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}><div className="k">Results</div><div className="v">{word}</div></div>;
+}
 const GRADE_ROWS = [["s", 0, "Stuff+"], ["l", 1, "Location+"], ["p", 2, "Pitching+"]];
 function gradeTone(v, ref, label, n) {
   if (v == null || !ref || !ref[1]) return {};
@@ -857,6 +867,7 @@ export default function OverviewPage({ C, helpers }) {
                 </div>
               </div>
             ))}
+            {gr?.r && resultsTile(gr)}
             <div className="ov-grp run">
               {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
                 <div key={k} className="ov-st" {...(key ? tone(key, v, b, lab) : {})}><div className="k">{k}</div><div className="v">{v}</div></div>
