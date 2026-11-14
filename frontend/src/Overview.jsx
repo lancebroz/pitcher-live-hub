@@ -8,6 +8,7 @@ import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { OV_RVBASE } from "./overviewRvBase.js";
+import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
@@ -110,6 +111,7 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-mcell{border-radius:5px;display:flex;align-items:center;justify-content:center;min-height:40px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text);background:var(--surfaceAlt)}
 .ov-mcell small{font-size:9.5px;font-weight:600;opacity:.75;margin-left:1px}
 .ov-mcell.z{color:var(--dim);font-weight:500}
+.ov-vcell{font-size:13px;letter-spacing:-.2px}
 .ov-mcell.hi{box-shadow:inset 0 0 0 2px #22c55e}.ov-mcell.lo{box-shadow:inset 0 0 0 2px #ef4444}
 .ov-ccell{border-radius:5px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:36px;background-color:var(--surfaceAlt);color:var(--text);line-height:1.1}
 .ov-ccell b{font-size:14.5px;font-variant-numeric:tabular-nums}.ov-ccell small{font-size:9.5px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
@@ -397,6 +399,62 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
   );
 }
 
+// ─── Value: run value per 100 pitches by pitch type, batter side and count (FanGraphs pitch-value construction). ───
+// Each pitch is worth the change in run expectancy it causes; xRV values balls in play by exit velocity and launch
+// angle instead of the result. Shown from the pitcher's side (+ = runs saved). Colour is vs the league for the same
+// pitch type, pitcher hand, batter side and count bucket, after regressing the gap for sample size.
+function ValueCard({ mix, year, hand, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
+  const [mode, setMode] = useState("a");   // a = run value, x = expected run value
+  const agg = useMemo(() => {
+    if (!mix) return null;
+    const A = {};
+    for (const p of mix.valid) {
+      const h = p.batter_hand === "L" ? "L" : "R", bk = p.strikes === 2 ? "two" : p.strikes != null && p.strikes < 2 ? "pre" : null;
+      const a = pitchRunValue(p, false), x = pitchRunValue(p, true);
+      for (const k of bk ? ["all", bk] : ["all"]) {
+        const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, 0]);
+        c[0] -= a; c[1] -= x; c[2]++;
+      }
+    }
+    return A;
+  }, [mix, pitchRunValue]);
+  const mi = mode === "a" ? 0 : 1, lgAll = OV_VALUE_REF[year]?.[hand] || {};
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Value</div>
+        <div className="ov-tg3">{[["a", "RV"], ["x", "xRV"]].map(([k, l]) => <button key={k} aria-pressed={mode === k} onClick={() => setMode(k)} title={k === "a" ? "Run value from actual results" : "Expected run value: balls in play valued by exit velocity and launch angle"}>{l}</button>)}</div>
+      </div>
+      {!mix || !agg ? <div className="ov-note">No {year} MLB pitches.</div> : (
+        <div className="ov-mix">
+          <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
+            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
+          </div>
+          {[["R", "vs RHH"], ["L", "vs LHH"]].map(([h, lab]) => (
+            <div key={h} style={{ display: "contents" }}>
+              <div className="ov-msec">{lab}</div>
+              {[["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]].map(([rk, rl]) => (
+                <div key={rk} className={`ov-mrow${rk === "all" ? " ov-all" : ""}`} style={{ "--n": mix.types.length }}>
+                  <div className="ov-mlab">{rl}</div>
+                  {mix.types.map(t => {
+                    const c = agg[`${t.type}|${h}|${rk}`];
+                    if (!c || c[2] < 15) return <div key={t.type} className="ov-mcell z" title={c ? `${t.name} ${lab} · ${rl}: only ${c[2]} pitches` : undefined}>—</div>;
+                    const n = c[2], v = 100 * c[mi] / n, ref = lgAll[t.type]?.[h]?.[rk]?.[mi], K = OV_VALUE_K[mode][rk];
+                    const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+                    const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
+                    return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
+                      title={`${t.name} ${lab} · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${hand}HP ${PITCH_ABBREV[t.name] || t.type}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."} Color accounts for sample size.`}>{sg(v)}</div>;
+                  })}
+                </div>
+              ))}
+            </div>
+          ))}
+          <div className="ov-cnote">Runs saved per 100 pitches · + is good for the pitcher<br />{mode === "a" ? "RV: actual results" : "xRV: contact valued by exit velocity and launch angle"} · color is vs the league, adjusted for sample</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Grades: Stuff+ / Location+ / Pitching+ (tools/pitch-grades). Cell = [Stuff+, Location+, Pitching+, pitches]. ───
 // 100 = league-average pitch that season, 10 points = 0.45 runs per 100 pitches on all three, so the grades are comparable.
 // Colour is vs the league for that exact subset: same pitcher hand, batter side and (in the container) pitch type.
@@ -630,22 +688,6 @@ function SpinCard({ hand, mix, year, spin, getPitchColor }) {
   );
 }
 
-// Run value of one pitch from the batter's side (+ = good for the hitter). Balls in play are scored by
-// expected damage from exit velocity and launch angle (xwOBAcon → runs on the EVENT_LW scale), not the
-// actual result; everything else by the change in count run expectancy, or the K / BB / HBP weight.
-function pitchRunValue(p, { xwobaconLookup, COUNT_RE, EVENT_LW }) {
-  const b = Math.max(0, Math.min(3, Number(p.balls) || 0)), s = Math.max(0, Math.min(2, Number(p.strikes) || 0));
-  const re = (bb, ss) => COUNT_RE[`${bb}-${ss}`] ?? 0, cur = re(b, s);
-  if (p.is_in_play) {
-    const x = xwobaconLookup(p.launch_speed, p.launch_angle), ev = (p.events || "").toLowerCase().trim();
-    return (x != null ? -0.264 + 0.827 * x : (EVENT_LW[ev] ?? -0.264)) - cur;
-  }
-  if (p.is_ball) return (b === 3 ? EVENT_LW.walk : re(b + 1, s)) - cur;
-  if (p.is_whiff || p.is_called_strike) return (s === 2 ? EVENT_LW.strikeout : re(b, s + 1)) - cur;
-  if (p.is_swing) return s >= 2 ? 0 : re(b, s + 1) - cur;                                   // foul
-  if ((p.events || "").toLowerCase().trim() === "hit_by_pitch") return EVENT_LW.hit_by_pitch - cur;
-  return 0;
-}
 // League-average run value for that pitch type, pitcher hand, batter side and location (mirrored from
 // the opposite-handed table when a matchup is too rare to have its own).
 function leagueRunValue(p, hand) {
@@ -686,7 +728,7 @@ function HeatCard({ mix, year, hand, side, setSide, rvHelpers, getPitchColor, PI
     return { success: base, frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
   }, [mix, cur, count, side, pitchMatchesCount]);
   // Success = runs saved per pitch vs. the league average for that pitch type at that spot (+ = good for him)
-  const successFn = useMemo(() => (p) => leagueRunValue(p, hand) - pitchRunValue(p, rvHelpers), [hand, rvHelpers]);
+  const successFn = useMemo(() => (p) => leagueRunValue(p, hand) - rvHelpers.pitchRunValue(p, true), [hand, rvHelpers]);
   const [mode, label] = HEAT_SLIDES[slide], step = (d) => setSlide(i => (i + d + HEAT_SLIDES.length) % HEAT_SLIDES.length);
   return (
     <div className="ov-card">
@@ -974,6 +1016,7 @@ export default function OverviewPage({ C, helpers }) {
         </div>
         <div className="ov-row ov-row3">
           <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
     </div>

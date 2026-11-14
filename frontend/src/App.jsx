@@ -1894,49 +1894,69 @@ const SortableTable = ({ data, columns, title, C, showHandToggle, handFilter, se
   );
 };
 
-// ─── Context-neutral pitch run value from count states ───
-// Run expectancy by count (runs above average PA, from Tom Tango's linear weights)
-const COUNT_RE = {
-  "0-0": 0.000, "1-0": 0.032, "0-1": -0.037, "2-0": 0.080, "1-1": -0.012,
-  "0-2": -0.086, "3-0": 0.149, "2-1": 0.024, "1-2": -0.055, "3-1": 0.101,
-  "2-2": -0.026, "3-2": 0.040,
+// ─── Context-neutral pitch run value (FanGraphs "pitch value" construction) ───
+// Each pitch is worth the change in run expectancy it causes: count to count, or count to the plate-appearance result.
+// Nothing about runners or outs is used. Per season:
+//   lg / scale / w  FanGraphs "Guts!" wOBA constants; an event is worth (weight - lg) / scale runs vs an average PA,
+//                   and every out (strikeouts, double plays, sacrifices, reached on error) is worth -lg / scale.
+//   re              run value of each count: the average result of plate appearances that pass through it, minus 0-0,
+//                   measured on that season's pitches.
+//   xoff            offset for the expected version so league expected contact equals league actual contact.
+const RV_SEASON = {
+  2025: { lg: 0.313, scale: 1.232, w: { walk: 0.691, hit_by_pitch: 0.722, single: 0.882, double: 1.252, triple: 1.584, home_run: 2.037 }, xoff: -0.0138,
+    re: {"0-0": 0.0, "1-0": 0.0322, "0-1": -0.038, "2-0": 0.0905, "1-1": -0.0179, "0-2": -0.0911, "3-0": 0.191, "2-1": 0.0216, "1-2": -0.0751, "3-1": 0.1137, "2-2": -0.0393, "3-2": 0.0485} },
+  2026: { lg: 0.316, scale: 1.238, w: { walk: 0.698, hit_by_pitch: 0.729, single: 0.89, double: 1.261, triple: 1.596, home_run: 2.049 }, xoff: -0.0012,
+    re: {"0-0": 0.0, "1-0": 0.0344, "0-1": -0.0388, "2-0": 0.094, "1-1": -0.0169, "0-2": -0.0943, "3-0": 0.1977, "2-1": 0.0265, "1-2": -0.0755, "3-1": 0.116, "2-2": -0.0356, "3-2": 0.0491} },
 };
-// PA outcome linear weights (~4.3 R/G environment, 2024-2025)
-const EVENT_LW = {
-  strikeout: -0.279, strikeout_double_play: -0.279, walk: 0.306, intent_walk: 0.175,
-  hit_by_pitch: 0.352, single: 0.464, double: 0.762, triple: 1.051, home_run: 1.396,
-  field_out: -0.264, flyout: -0.264, groundout: -0.264, lineout: -0.264, pop_out: -0.264,
-  force_out: -0.264, forceout: -0.264, sac_fly: -0.098, sac_bunt: -0.147,
-  fielders_choice: -0.243, fielders_choice_out: -0.264, field_error: 0.464,
-  catcher_interf: 0.306, double_play: -0.494, grounded_into_double_play: -0.494,
-  sac_fly_double_play: -0.494, sac_bunt_double_play: -0.494, triple_play: -0.594,
-};
-const computePitchRunValue = (p) => {
-  const b = parseInt(p.balls) || 0, s = parseInt(p.strikes) || 0;
-  const countKey = `${b}-${s}`;
-  const currentRE = COUNT_RE[countKey] ?? 0;
-  const ev = (p.events || "").toLowerCase().trim();
-  // Skip baserunning events (they don't end the PA)
-  const isBaserunning = ev.includes("caught_stealing") || ev.includes("pickoff");
-  // PA-ending event: RV = event weight - current count RE
-  if (ev && !isBaserunning) {
-    const lw = EVENT_LW[ev];
-    if (lw != null) return lw - currentRE;
-    if (ev.includes("out") || ev.includes("play")) return -0.264 - currentRE;
-    return 0;
+const RV_OUT_EVENTS = ["strikeout", "strikeout_double_play", "field_out", "flyout", "groundout", "lineout", "pop_out", "force_out", "forceout",
+  "sac_fly", "sac_bunt", "fielders_choice", "fielders_choice_out", "field_error", "double_play", "grounded_into_double_play",
+  "sac_fly_double_play", "sac_bunt_double_play", "triple_play"];
+const RV_BY_YEAR = Object.fromEntries(Object.entries(RV_SEASON).map(([y, c]) => {
+  const OUT = -c.lg / c.scale, lw = {};
+  RV_OUT_EVENTS.forEach(e => { lw[e] = OUT; });
+  Object.entries(c.w).forEach(([e, w]) => { lw[e] = (w - c.lg) / c.scale; });
+  lw.catcher_interf = lw.walk; lw.intent_walk = 0;
+  return [y, { COUNT_RE: c.re, EVENT_LW: lw, OUT, xRuns: (xwobacon) => (xwobacon - c.lg) / c.scale + c.xoff }];
+}));
+const rvConstsFor = (d) => RV_BY_YEAR[typeof d === "number" ? d : parseInt(String(d || "").slice(0, 4), 10)] || RV_BY_YEAR[2026];
+// Run value of one normalized pitch from the batter's side (+ = good for the hitter). `expected` values balls in
+// play by exit velocity and launch angle instead of the actual result. Works from the pitch's own flags, because
+// parquet rows carry the plate-appearance result on every pitch of the PA, not only the last one.
+const pitchRunValue = (p, expected) => {
+  const K = rvConstsFor(p.game_date);
+  const b = Math.max(0, Math.min(3, Number(p.balls) || 0)), s = Math.max(0, Math.min(2, Number(p.strikes) || 0));
+  const re = (bb, ss) => K.COUNT_RE[`${bb}-${ss}`] ?? 0, cur = re(b, s);
+  if (p.is_in_play) {
+    let v = K.EVENT_LW[(p.events || "").toLowerCase().trim()] ?? K.OUT;
+    if (expected) { const x = _xwobaconLookup(p.launch_speed, p.launch_angle); if (x != null) v = K.xRuns(x); }
+    return v - cur;
   }
-  // Non-terminal pitch: RV = new count RE - current count RE
-  const desc = (p.description || "").toLowerCase();
-  if (desc.includes("ball") && !desc.includes("foul")) {
-    const newKey = `${Math.min(b + 1, 3)}-${s}`;
-    return (COUNT_RE[newKey] ?? 0) - currentRE;
-  }
-  if (desc.includes("foul") && s >= 2) return 0; // foul with 2 strikes = no change
-  if (desc.includes("strike") || desc.includes("foul")) {
-    const newKey = `${b}-${Math.min(s + 1, 2)}`;
-    return (COUNT_RE[newKey] ?? 0) - currentRE;
-  }
+  if (p.description === "hit_by_pitch") return K.EVENT_LW.hit_by_pitch - cur;
+  if (p.is_ball) return (b === 3 ? K.EVENT_LW.walk : re(b + 1, s)) - cur;
+  if (p.is_whiff || p.is_called_strike) return (s === 2 ? K.EVENT_LW.strikeout : re(b, s + 1)) - cur;
+  if (p.is_swing) return s >= 2 ? 0 : re(b, s + 1) - cur;   // foul
   return 0;
+};
+// The parquet feed backs the pre-pitch count out of the post-pitch count and files every two-strike foul as a
+// one-strike pitch (about 7% of pitches). Rebuild the strike count from the pitch sequence inside each plate
+// appearance and correct those fouls; a partial sequence can only undercount, so this never over-corrects.
+const repairTwoStrikeFouls = (pitches) => {
+  const pas = new Map();
+  for (const p of pitches) {
+    if (!p.game_pk || p.at_bat_number == null || p.pitch_number == null) continue;
+    const k = `${p.game_pk}|${p.at_bat_number}`; let g = pas.get(k); if (!g) { g = []; pas.set(k, g); } g.push(p);
+  }
+  for (const g of pas.values()) {
+    if (g.length < 3) continue;
+    g.sort((a, b) => a.pitch_number - b.pitch_number);
+    let st = 0;
+    for (const p of g) {
+      const foul = p.description === "foul";
+      if (foul && st >= 2 && p.strikes === 1) { p.strikes = 2; p.count = `${p.balls ?? 0}-2`; if (p._rv_computed) p.delta_run_exp = pitchRunValue(p, false); }
+      if (p.is_whiff || p.is_called_strike || (foul && st < 2)) st++;
+    }
+  }
+  return pitches;
 };
 
 // ─── Normalize API pitch data into internal format ───
@@ -2028,7 +2048,7 @@ const normalizeLivePitch = (p) => {
     ? (PN_TO_PT_LOOKUP[_rawPn] || _rawPn.slice(0, 2).toUpperCase())
     : _rawPt;
 
-  return {
+  const out = {
     pitch_number: p.pitch_number,
     pitch_type: _derivedPt,
     pitch_name: (_rawPn || _rawPt || "").replace("Four-Seam", "4-Seam"),
@@ -2113,13 +2133,16 @@ const normalizeLivePitch = (p) => {
     estimated_woba_using_speedangle: p.estimated_woba_using_speedangle || null,
     estimated_ba_using_speedangle: p.estimated_ba_using_speedangle || null,
     woba_value: p.woba_value || null,
-    delta_run_exp: p.delta_run_exp != null ? p.delta_run_exp : computePitchRunValue(p),
+    delta_run_exp: p.delta_run_exp != null ? p.delta_run_exp : null,   // filled below from the normalized pitch when the feed has none
+    _rv_computed: p.delta_run_exp == null,
     game_date: p.game_date || "",
     game_pk: p.game_pk || 0,
     play_id: p.play_id || "",  // MLB per-pitch UUID → research.mlb.com deep link
     at_bat_number: p.at_bat_number || null,
     events: p.events || "",
   };
+  if (out.delta_run_exp == null) out.delta_run_exp = pitchRunValue(out, false);
+  return out;
 };
 
 const normAndFilter = (raw) => {
@@ -2136,12 +2159,12 @@ const normAndFilter = (raw) => {
   });
   // Dedup by game_pk + at_bat_number + pitch_number (catches Savant CSV dupes & merge overlaps)
   const seen = new Set();
-  return normalized.filter(p => {
+  return repairTwoStrikeFouls(normalized.filter(p => {
     const key = `${p.game_pk || ""}-${p.at_bat_number || ""}-${p.pitch_number || ""}-${p.pitch_type}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  });
+  }));
 };
 
 // ─── Compute Historical Summary Stats from pitch-level data ───
@@ -5902,7 +5925,7 @@ const HittersPage = ({ C, isMobile }) => {
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, COUNT_RE, EVENT_LW };
+const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, pitchRunValue };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
