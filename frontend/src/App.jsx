@@ -2298,10 +2298,10 @@ const HistoricalSummaryBox = ({ pitchData, activePitcher, pitcherHand, C }) => {
 };
 
 // ─── Date Picker with Pitched Date Highlights ───
-const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onAfterSelect }) => {
+const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onAfterSelect, align, compact, placeholder, initial }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const parsed = value ? new Date(value + "T12:00:00") : new Date();
+  const parsed = value ? new Date(value + "T12:00:00") : initial ? new Date(initial + "T12:00:00") : new Date();
   const [viewYear, setViewYear] = useState(parsed.getFullYear());
   const [viewMonth, setViewMonth] = useState(parsed.getMonth());
 
@@ -2312,12 +2312,16 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onA
   }, []);
 
   useEffect(() => {
-    if (value) {
-      const d = new Date(value + "T12:00:00");
+    const at = value || initial;   // with no date picked yet, open on the month the caller points at
+    if (at) {
+      const d = new Date(at + "T12:00:00");
       setViewYear(d.getFullYear());
       setViewMonth(d.getMonth());
     }
-  }, [value]);
+  }, [value, initial]);
+  // Compact pickers (Overview header) sit near the right edge and on phones: keep the calendar on screen.
+  const narrow = compact && typeof window !== "undefined" && window.innerWidth < 520;
+  const btnRect = open && narrow && ref.current ? ref.current.getBoundingClientRect() : null;
 
   // Expose open method via ref for auto-jump
   const openPicker = () => setOpen(true);
@@ -2390,32 +2394,33 @@ const DatePickerWithHighlights = ({ value, onChange, pitchedDates, C, label, onA
     );
   };
 
-  const displayVal = value || "Select date";
+  const displayVal = value ? (compact ? `${monthNames[parseInt(value.slice(5, 7), 10) - 1]} ${parseInt(value.slice(8, 10), 10)}` : value) : (placeholder || "Select date");
   const month2 = viewMonth + 1 > 11 ? 0 : viewMonth + 1;
   const year2 = viewMonth + 1 > 11 ? viewYear + 1 : viewYear;
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
-      <button onClick={() => setOpen(!open)} data-picker-open={openPicker} style={{
-        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "10px 14px",
-        color: C.text, fontSize: "13px", fontFamily: "inherit", cursor: "pointer", minWidth: "130px",
-        textAlign: "left", display: "flex", alignItems: "center", gap: "8px",
+      <button onClick={() => setOpen(!open)} data-picker-open={openPicker} aria-label={label ? `${label} date` : undefined} style={{
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: "6px", padding: compact ? "5px 8px" : "10px 14px",
+        color: value ? C.text : C.textDim, fontSize: compact ? "11.5px" : "13px", fontWeight: compact ? 600 : undefined, fontFamily: "inherit", cursor: "pointer", minWidth: compact ? "50px" : "130px",
+        textAlign: compact ? "center" : "left", display: "flex", alignItems: "center", justifyContent: compact ? "center" : undefined, gap: "8px", whiteSpace: "nowrap",
       }}>
         <span>{displayVal}</span>
-        <span style={{ fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>▼</span>
+        {!compact && <span style={{ fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>▼</span>}
       </button>
       {open && (
         <div style={{
-          position: "absolute", top: "100%", left: 0, zIndex: 300, marginTop: "4px",
-          background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
-          boxShadow: "0 12px 40px rgba(0,0,0,0.25)", padding: "12px", width: "440px",
+          ...(narrow ? { position: "fixed", top: `${(btnRect ? btnRect.bottom : 0) + 4}px`, left: "8px", right: "8px", width: "auto", maxHeight: "70vh", overflowY: "auto" }
+            : { position: "absolute", top: "100%", ...(align === "right" ? { right: 0 } : { left: 0 }), marginTop: "4px", width: "440px" }),
+          zIndex: 300, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "8px",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)", padding: "12px",
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
             <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>‹</button>
             <span style={{ fontSize: "12px", fontWeight: 700, color: C.text }}>{monthNames[viewMonth]} – {monthNames[month2]} {year2}</span>
             <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: C.accent, fontWeight: 700, padding: "2px 6px", fontFamily: "inherit" }}>›</button>
           </div>
-          <div style={{ display: "flex", gap: "16px" }}>
+          <div style={{ display: "flex", gap: "16px", flexWrap: narrow ? "wrap" : "nowrap" }}>
             {renderMonth(viewYear, viewMonth, 0)}
             {renderMonth(year2, month2, 1)}
           </div>
@@ -5934,7 +5939,7 @@ const HittersPage = ({ C, isMobile }) => {
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, pitchRunValue };
+const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, pitchRunValue, DatePickerWithHighlights };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");

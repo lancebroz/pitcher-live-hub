@@ -59,6 +59,13 @@ const CSS = `
 .ov-sp div{flex:1;display:flex;align-items:center;gap:7px;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 7px;min-width:70px}
 .ov-sp span{font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);font-weight:700}
 .ov-sp b{font-size:12.5px;font-variant-numeric:tabular-nums}
+.ov-ctl{display:flex;flex-direction:column;align-items:flex-end;gap:6px;align-self:flex-start}
+.ov-range{display:flex;align-items:center;gap:4px;color:var(--dim);font-size:12px}
+.ov-rx{background:transparent;border:1px solid var(--border);color:var(--dim);border-radius:6px;width:20px;height:25px;font-size:14px;line-height:1;cursor:pointer;padding:0}
+.ov-rx:hover{color:var(--text)}
+.ov-seas{position:relative;opacity:.55}
+.ov-seas::after{content:attr(data-seas);position:absolute;left:0;right:0;bottom:-11px;text-align:center;font-size:8px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);white-space:nowrap;pointer-events:none}
+.ov-stag{font-size:9px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);border:1px solid var(--border);border-radius:5px;padding:2px 6px;margin-left:8px}
 .ov-years{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px;align-self:flex-start}
 .ov-years button{background:transparent;border:0;color:var(--dim);font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer}
 .ov-years button[aria-pressed=true]{background:var(--accent);color:#fff}
@@ -181,7 +188,7 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-tg3 button{background:transparent;border:0;color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer}
 .ov-tg3 button[aria-pressed=true]{background:var(--surfaceAlt);color:var(--text)}
 .ov-spin{align-self:stretch;justify-content:space-between}
-@media (max-width:820px){.ov-grp.run{margin-left:0}.ov-years{order:-1;margin-left:auto}.ov-who{order:-2}}
+@media (max-width:820px){.ov-grp.run{margin-left:0}.ov-ctl{order:-1;margin-left:auto}.ov-who{order:-2}}
 `;
 
 // Colour vs. the league average for that exact subset (season → pitcher hand → batter side), using the
@@ -408,7 +415,7 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 const SV_LOADERS = { "2025": () => import("./overviewValueSv2025.js"), "2026": () => import("./overviewValueSv2026.js") };
 const SV_CACHE = {};
 const SV_KEYS = ["nv", "nx", "lv", "lx"];
-function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
+function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
   const [mode, setMode] = useState("a");   // a = run value, x = expected run value
   const [ctx, setCtx] = useState("n");     // n = context-neutral, l = leveraged by base/out situation
   const [sv, setSv] = useState(SV_CACHE[year]);   // undefined = loading, null = no file for this season
@@ -419,7 +426,7 @@ function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, P
     load().then(m => { SV_CACHE[year] = m.default || null; if (live) setSv(SV_CACHE[year]); }).catch(() => { if (live) setSv(null); });
     return () => { live = false; };
   }, [year]);
-  const mine = sv ? sv[String(pitcherId)] : null;
+  const mine = sv && !ranged ? sv[String(pitcherId)] : null;   // the season file holds full-season sums only
   // No season file (a season in progress): use the live pitches when nearly all of them carry base/out state.
   const liveSv = useMemo(() => {
     if (mine || !mix || !mix.valid.length) return false;
@@ -537,11 +544,11 @@ function gradeStory(mk, mlab, v, ref, n, who, about) {
     : `About ${Math.abs(runs).toFixed(1)} runs per 100 pitches ${runs > 0 ? "better" : "worse"} than the average ${who} (${ref[0]}).`;
   return `${mlab} ${v}: ${word} for a ${who}, ${ord(pct)} percentile.\n${worth}${about ? `\n${GRADE_ABOUT[mk]}` : ""}${n != null ? `\n${n.toLocaleString()} pitches.` : ""}`;
 }
-function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV }) {
+function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV, seasonOnly }) {
   const lg = OV_GRADES_LG[year]?.[hand] || {}, SK = ["a", "L", "R"], types = mix ? mix.types.filter(t => gr?.t?.[t.type]) : [];
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Grades</div></div>
+      <div className="ov-head"><div className="ov-ct">Grades</div>{seasonOnly && <span className="ov-stag" title="Model grades are computed for the full season; the date range does not apply to them.">Full season</span>}</div>
       {!gr?.a || !types.length ? <div className="ov-note">No {year} pitch grades for this pitcher.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
@@ -856,10 +863,13 @@ function StatCard({ hand, cur, line, box, year, computeSummaryStats, side: h, se
 
 // ─── Page ───
 export default function OverviewPage({ C, helpers }) {
-  const { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount } = helpers;
+  const { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, DatePickerWithHighlights } = helpers;
   const [q, setQ] = useState(""), [results, setResults] = useState([]), [open, setOpen] = useState(false);
   const [pitcher, setPitcher] = useState(null), [info, setInfo] = useState(null);
-  const [year, setYear] = useState("2026");
+  const [year, setYearRaw] = useState("2026");
+  // Optional date range inside the season ("" = open end). Cleared when the pitcher or the season changes.
+  const [range, setRange] = useState({ s: "", e: "" }), [boxR, setBoxR] = useState(null), endRef = useRef(null);
+  const setYear = (y) => { setRange({ s: "", e: "" }); setYearRaw(y); };
   const [d26, setD26] = useState(null), [d25, setD25] = useState(null);
   const [loading26, setLoading26] = useState(false), [loading25, setLoading25] = useState(false);
   const [box26, setBox26] = useState(null), [box25, setBox25] = useState(null);
@@ -902,7 +912,7 @@ export default function OverviewPage({ C, helpers }) {
     OV_LAST_PITCHER = p;
     const seq = ++seqRef.current;
     setPitcher(p); setQ(p.name); setOpen(false); setResults([]);
-    setD26(null); setD25(null); setBox26(null); setBox25(null); setInfo(null); setErr(""); setYear("2026");
+    setD26(null); setD25(null); setBox26(null); setBox25(null); setInfo(null); setErr(""); setYear("2026");   // setYear also clears the date range
     setLoading26(true);
     getPitcherInfo(p.id).then(r => { if (seq === seqRef.current && r && !r.error) setInfo(r); }).catch(() => {});
     try {
@@ -952,7 +962,20 @@ export default function OverviewPage({ C, helpers }) {
   // Full season = regular season only (postseason is anything after Sep 28), as on the Compare tab.
   const reg26 = useMemo(() => (d26 ? d26.filter(p => !isPostseasonDate(p.game_date)) : null), [d26, isPostseasonDate]);
   const reg25 = useMemo(() => (d25 ? d25.filter(p => !isPostseasonDate(p.game_date)) : null), [d25, isPostseasonDate]);
-  const cur = year === "2026" ? reg26 : reg25;
+  const season = year === "2026" ? reg26 : reg25;
+  // Date range: everything computed from pitches follows it; model grades, arm angle and spin efficiency are season values.
+  const ranged = !!(range.s || range.e);
+  const cur = useMemo(() => (season && ranged ? season.filter(p => p.game_date && (!range.s || p.game_date >= range.s) && (!range.e || p.game_date <= range.e)) : season), [season, ranged, range]);
+  const pitchedDates = useMemo(() => new Set((season || []).map(p => p.game_date).filter(Boolean)), [season]);
+  const seasonSpan = useMemo(() => { const d = [...pitchedDates].sort(); return d.length ? [d[0], d[d.length - 1]] : ["", ""]; }, [pitchedDates]);
+  // ERA for a date range: official box-score lines of the games inside it.
+  useEffect(() => {
+    setBoxR(null);
+    if (!ranged || !cur || !pitcher) return undefined;
+    const pks = Array.from(new Set(cur.map(p => p.game_pk).filter(Boolean))).slice(0, 200); if (!pks.length) return undefined;
+    let alive = true; getPitcherEra(pitcher.id, pks, "games").then(r => { if (alive) setBoxR(r || null); }).catch(() => {});
+    return () => { alive = false; };
+  }, [ranged, cur, pitcher]);
 
   // Official ERA / IP / box totals: season API for 2026 (as Compare does); box scores for 2025 (ERA only).
   useEffect(() => {
@@ -968,7 +991,7 @@ export default function OverviewPage({ C, helpers }) {
     return () => { alive = false; };
   }, [reg25, pitcher]);
 
-  const line = useMemo(() => seasonLine(cur, year === "2026" ? box26 : box25, year !== "2026", computeSummaryStats, fipConstsFor), [cur, year, box26, box25, computeSummaryStats]);
+  const line = useMemo(() => seasonLine(cur, ranged ? boxR : year === "2026" ? box26 : box25, ranged || year !== "2026", computeSummaryStats, fipConstsFor), [cur, year, box26, box25, boxR, ranged, computeSummaryStats]);
   const mix = useMemo(() => (cur ? buildMix(cur) : null), [cur]);
   const fb = useMemo(() => (mix ? primaryFastball(mix.valid) : null), [mix]);
   const hand = useMemo(() => {
@@ -1018,12 +1041,12 @@ export default function OverviewPage({ C, helpers }) {
         <div className="ov-stats">
           {!pitcher && <div className="ov-note" style={{ padding: "8px 0", textAlign: "left" }}>Search a pitcher to load his season line, release model, pitch mix and movement.</div>}
           {pitcher && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
-          {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || `No ${year} MLB data for this pitcher.`}</div>}
+          {pitcher && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{err || (ranged ? "No pitches in this date range." : `No ${year} MLB data for this pitcher.`)}</div>}
           {pitcher && !busy && line && (<>
             {gr?.a && GRADE_ROWS.map(([mk, mi, mlab]) => {
               const L = OV_GRADES_LG[year]?.[hand]?.all || {}, who = hand === "L" ? "left-hander" : "right-hander";
               return (
-                <div key={mk} className="ov-grp">
+                <div key={mk} className={`ov-grp${ranged ? " ov-seas" : ""}`} data-seas={ranged ? "Full season" : undefined}>
                   <div className="ov-st big" {...gradeTone(gr.a[mi], L.a?.[mk], "", gr.a[3])} title={gradeStory(mk, mlab, gr.a[mi], L.a?.[mk], gr.a[3], who, true)}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
                   <div className="ov-sp">
                     <div {...gradeTone(gr.L?.[mi], L.L?.[mk], "", gr.L?.[3])} title={gr.L ? gradeStory(mk, `${mlab} vs LHH`, gr.L[mi], L.L?.[mk], gr.L[3], `${who} facing lefties`) : undefined}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
@@ -1032,7 +1055,7 @@ export default function OverviewPage({ C, helpers }) {
                 </div>
               );
             })}
-            {gr?.r && resultsTile(gr)}
+            {gr?.r && (ranged ? <div className="ov-seas" data-seas="Full season">{resultsTile(gr)}</div> : resultsTile(gr))}
             <div className="ov-grp run">
               {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
                 <div key={k} className="ov-st" {...(key ? tone(key, v, b, lab) : {})}><div className="k">{k}</div><div className="v">{v}</div></div>
@@ -1041,8 +1064,19 @@ export default function OverviewPage({ C, helpers }) {
           </>)}
         </div>
         {pitcher && (
-          <div className="ov-years">
-            {["2026", "2025"].map(y => <button key={y} aria-pressed={year === y} onClick={() => setYear(y)}>{y}</button>)}
+          <div className="ov-ctl">
+            <div className="ov-years">
+              {["2026", "2025"].map(y => <button key={y} aria-pressed={year === y} onClick={() => setYear(y)}>{y}</button>)}
+            </div>
+            {season && season.length > 0 && (
+              <div className="ov-range">
+                <DatePickerWithHighlights value={range.s} onChange={v => setRange(r => ({ s: v, e: r.e && r.e < v ? "" : r.e }))} pitchedDates={pitchedDates} C={C} label="Start" placeholder="Start" initial={seasonSpan[0]} compact align="right"
+                  onAfterSelect={() => { const b = endRef.current && endRef.current.querySelector("button"); if (b && !range.e) b.click(); }} />
+                <span>–</span>
+                <div ref={endRef}><DatePickerWithHighlights value={range.e} onChange={v => setRange(r => ({ s: r.s && r.s > v ? "" : r.s, e: v }))} pitchedDates={pitchedDates} C={C} label="End" placeholder="End" initial={seasonSpan[1]} compact align="right" /></div>
+                {ranged && <button className="ov-rx" onClick={() => setRange({ s: "", e: "" })} aria-label="Clear date range">×</button>}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1055,11 +1089,11 @@ export default function OverviewPage({ C, helpers }) {
         <div className="ov-row ov-row2">
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />
           <HeatCard side={side} setSide={setSide} mix={busy ? null : mix} year={year} hand={hand} rvHelpers={helpers} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} GaussianHeatmapCanvas={GaussianHeatmapCanvas} pitchMatchesCount={pitchMatchesCount} />
-          <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
+          <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={ranged ? null : year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
         </div>
         <div className="ov-row ov-row3">
-          <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitcherId={pitcher.id} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} seasonOnly={ranged} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitcherId={pitcher.id} ranged={ranged} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
     </div>
