@@ -90,6 +90,84 @@ VAA_BASELINE = {
     "SC": (-9.8750, 1.5500), "EP": (-13.2500, 1.7000), "KN": (-9.7500, 1.5000),
 }
 
+# ─── Run value (context-neutral, FanGraphs-style) ───
+# Season linear weights (FanGraphs guts) and count values, centered on the league so the average pitch is 0.
+# Mirrors pitchRunValue / repairTwoStrikeFouls in frontend/src/App.jsx: keep the two in sync.
+_RV_SEASON = {
+    2025: {"lg": 0.313, "scale": 1.232,
+           "w": {"walk": 0.691, "hit_by_pitch": 0.722, "single": 0.882, "double": 1.252, "triple": 1.584, "home_run": 2.037},
+           "re": {"0-0": 0.0, "1-0": 0.0322, "0-1": -0.038, "2-0": 0.0905, "1-1": -0.0179, "0-2": -0.0911, "3-0": 0.191,
+                  "2-1": 0.0216, "1-2": -0.0751, "3-1": 0.1137, "2-2": -0.0393, "3-2": 0.0485}},
+    2026: {"lg": 0.316, "scale": 1.238,
+           "w": {"walk": 0.698, "hit_by_pitch": 0.729, "single": 0.89, "double": 1.261, "triple": 1.596, "home_run": 2.049},
+           "re": {"0-0": 0.0, "1-0": 0.0344, "0-1": -0.0388, "2-0": 0.094, "1-1": -0.0169, "0-2": -0.0943, "3-0": 0.1977,
+                  "2-1": 0.0265, "1-2": -0.0755, "3-1": 0.116, "2-2": -0.0356, "3-2": 0.0491}},
+}
+
+
+def _pitch_run_values(df):
+    """Run value of every pitch from the batter's side (negative = good for the pitcher).
+
+    The plate-appearance result is credited only to the pitch that ended it: the parquet rows carry the
+    PA's `events` on every pitch, so the outcome is read from the pitch call, not from `events`.
+    Two-strike fouls, which the feed files as one-strike pitches, are put back at two strikes.
+    Needs the whole plate appearance, so call it before any batter-hand or pitch-type filter.
+    """
+    import numpy as np
+    import pandas as pd
+
+    n = len(df)
+    if n == 0:
+        return pd.Series([], dtype=float, index=df.index)
+    cd = df["call_description"].fillna("").astype(str).str.lower().str.replace("_", " ", regex=False)
+    ev = df["events"].fillna("").astype(str).str.lower().str.strip()
+    tip = cd.str.contains("foul tip", regex=False)
+    ip = df["is_in_play"].fillna(False).astype(bool) | cd.str.contains("in play", regex=False) | cd.str.contains("into play", regex=False)
+    whiff = tip | (cd.str.contains("swinging", regex=False) & cd.str.contains("strike", regex=False)) | cd.str.contains("missed bunt", regex=False)
+    called = cd.str.contains("called", regex=False) & cd.str.contains("strike", regex=False)
+    foul = cd.str.contains("foul", regex=False) & ~tip
+    hbp = cd.str.contains("hit by pitch", regex=False) & ~whiff & ~called & ~foul & ~ip
+    ball = cd.str.contains("ball", regex=False) & ~hbp & ~whiff & ~called & ~foul & ~ip
+    b = pd.to_numeric(df["balls"], errors="coerce").fillna(0).clip(0, 3).astype(int)
+    s = pd.to_numeric(df["strikes"], errors="coerce").fillna(0).clip(0, 2).astype(int)
+
+    # Strikes thrown earlier in the plate appearance (a foul can only take the count to two).
+    adv = (whiff | called | foul).astype(int)
+    pn = pd.to_numeric(df["pitch_number"], errors="coerce") if "pitch_number" in df.columns else pd.Series(np.nan, index=df.index)
+    order = pd.DataFrame({"g": pd.to_numeric(df["game_pk"], errors="coerce").fillna(0),
+                          "ab": pd.to_numeric(df["at_bat_number"], errors="coerce"),
+                          "pn": pn, "adv": adv, "pos": np.arange(n)}, index=df.index)
+    known = order["ab"].notna() & (order["g"] != 0) & order["pn"].notna()
+    o = order[known].drop_duplicates(["g", "ab", "pn"]).sort_values(["g", "ab", "pn"], kind="stable")
+    o["prior"] = o.groupby(["g", "ab"])["adv"].cumsum() - o["adv"]
+    prior = order.merge(o[["g", "ab", "pn", "prior"]], on=["g", "ab", "pn"], how="left")["prior"].fillna(0).to_numpy()
+    fix = foul.to_numpy() & (s.to_numpy() == 1) & (prior >= 2)
+    s = s.where(~fix, 2)
+
+    year = pd.to_datetime(df["game_date"], errors="coerce").dt.year.fillna(2026).astype(int) if "game_date" in df.columns else pd.Series(2026, index=df.index)
+    out = pd.Series(0.0, index=df.index)
+    for y in year.unique():
+        k = _RV_SEASON.get(int(y), _RV_SEASON[2026])
+        m = (year == y).to_numpy()
+        OUT = -k["lg"] / k["scale"]
+        lw = {e: (w - k["lg"]) / k["scale"] for e, w in k["w"].items()}
+        lw["catcher_interf"] = lw["walk"]
+        lw["intent_walk"] = 0.0
+        re = lambda bb, ss: (bb.astype(str) + "-" + ss.astype(str)).map(k["re"]).fillna(0.0).to_numpy()
+        bb, ss = b[m], s[m]
+        cur = re(bb, ss)
+        nb = re((bb + 1).clip(upper=3), ss)
+        ns = re(bb, (ss + 1).clip(upper=2))
+        in_play = ev[m].map(lw).fillna(OUT).to_numpy() - cur
+        rest = np.where(hbp[m], lw["hit_by_pitch"] - cur,
+               np.where(ball[m], np.where(bb == 3, lw["walk"], nb) - cur,
+               np.where((whiff | called)[m], np.where(ss == 2, OUT, ns) - cur,
+               np.where(foul[m], np.where(ss >= 2, 0.0, ns - cur), 0.0))))
+        out[m] = np.where(ip[m], in_play, rest)
+    return out
+
+
+
 def _compute_avaa(vaa, plate_z, pitch_type):
     """Location-adjusted VAA for a single pitch. Returns None if inputs are missing
     or the pitch type has no baseline."""
@@ -2426,6 +2504,15 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
             fetched_files = 1  # one combined DF
             failed_files = []
             print(f"[Leaderboard] Using shared cache: {len(combined)} rows")
+            # A few games are stored twice in the monthly parquets (same play in two files). Count each pitch once,
+            # the same rule the pitcher pages apply, so Leaderboard totals match the other tabs.
+            _keys = [c for c in ("game_pk", "at_bat_number", "pitch_number") if c in combined.columns]
+            if len(_keys) == 3:
+                _known = combined[_keys].notna().all(axis=1) & (combined["game_pk"] != 0)
+                _dupe = _known & combined.duplicated(subset=_keys, keep="first")
+                if _dupe.any():
+                    print(f"[Leaderboard] Dropping {int(_dupe.sum())} duplicate pitch rows")
+                    combined = combined[~_dupe]
 
             # Build records with same column names rest of the function expects
             def _safef(v):
@@ -2500,10 +2587,14 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     "game_pk": int(row.get("game_pk", 0)) if not pd.isna(row.get("game_pk")) else 0,
                     "game_date": str(row.get("game_date", "") or ""),
                     "at_bat_number": _safef(row.get("at_bat_number")),
+                    "pitch_number": _safef(row.get("pitch_number")),
                     "inning": _safef(row.get("inning")),
                 })
 
             all_df = pd.DataFrame(records)
+            if len(all_df):
+                # Run value needs whole plate appearances, so it is computed once here, before any filter.
+                all_df["_rv"] = _pitch_run_values(all_df)
             set_cache(raw_key, all_df)
             set_cache("leaderboard_updated", ct_now.strftime("%Y-%m-%d %I:%M %p CT"))
             set_cache("leaderboard_fetch_stats", {
@@ -2582,50 +2673,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
     df["_is_bunt"] = traj.str.startswith("bunt")
     df["_is_fb"] = traj == "fly_ball"
 
-    # ── Run Value computation (context-neutral, count-based) ──
-    COUNT_RE = {
-        "0-0": 0.0, "1-0": 0.032, "0-1": -0.037, "2-0": 0.080, "1-1": -0.012,
-        "0-2": -0.086, "3-0": 0.149, "2-1": 0.024, "1-2": -0.055, "3-1": 0.101,
-        "2-2": -0.026, "3-2": 0.040,
-    }
-    EVENT_LW = {
-        "strikeout": -0.279, "strikeout_double_play": -0.279, "walk": 0.306, "intent_walk": 0.175,
-        "hit_by_pitch": 0.352, "single": 0.464, "double": 0.762, "triple": 1.051, "home_run": 1.396,
-        "field_out": -0.264, "flyout": -0.264, "groundout": -0.264, "lineout": -0.264, "pop_out": -0.264,
-        "force_out": -0.264, "forceout": -0.264, "sac_fly": -0.098, "sac_bunt": -0.147,
-        "fielders_choice": -0.243, "fielders_choice_out": -0.264, "field_error": 0.464,
-        "catcher_interf": 0.306, "double_play": -0.494, "grounded_into_double_play": -0.494,
-        "sac_fly_double_play": -0.494, "sac_bunt_double_play": -0.494, "triple_play": -0.594,
-    }
-    def _compute_rv(row):
-        try:
-            b = int(row.get("balls", 0)) if pd.notna(row.get("balls")) else 0
-            s = int(row.get("strikes", 0)) if pd.notna(row.get("strikes")) else 0
-            ck = f"{b}-{s}"
-            cur_re = COUNT_RE.get(ck, 0)
-            ev = str(row.get("events", "")).lower().strip()
-            # Skip baserunning events (don't end the PA)
-            is_baserunning = "caught_stealing" in ev or "pickoff" in ev
-            if ev and ev != "nan" and not is_baserunning:
-                lw = EVENT_LW.get(ev)
-                if lw is not None:
-                    return lw - cur_re
-                if "out" in ev:
-                    return -0.264 - cur_re
-                return 0
-            cd = str(row.get("call_description", "")).lower()
-            if "ball" in cd and "foul" not in cd:
-                nk = f"{min(b+1,3)}-{s}"
-                return COUNT_RE.get(nk, 0) - cur_re
-            if "foul" in cd and s >= 2:
-                return 0
-            if "strike" in cd or "foul" in cd:
-                nk = f"{b}-{min(s+1,2)}"
-                return COUNT_RE.get(nk, 0) - cur_re
-            return 0
-        except Exception:
-            return 0
-    df["_rv"] = df.apply(_compute_rv, axis=1)
+    # Run value is attached to every pitch when the frame is built (see _pitch_run_values).
+    if "_rv" not in df.columns:
+        df["_rv"] = _pitch_run_values(df)
 
     # ── Step 4: Group and aggregate ──
     grouped = df.groupby("pitcher_id")
