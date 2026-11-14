@@ -7,7 +7,7 @@ import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcher
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
-import { OV_RVBASE } from "./overviewRvBase.js";
+import { leagueRunValue } from "./successValue.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
@@ -738,18 +738,6 @@ function SpinCard({ hand, mix, year, spin, getPitchColor }) {
   );
 }
 
-// League-average run value for that pitch type, pitcher hand, batter side and location (mirrored from
-// the opposite-handed table when a matchup is too rare to have its own).
-function leagueRunValue(p, hand) {
-  const T = OV_RVBASE, cell = (key, x) => {
-    const t = T.t[key]; if (!t) return null;
-    const xi = Math.max(0, Math.min(T.nx - 1, Math.floor((x - T.x0) / T.d))), zi = Math.max(0, Math.min(T.nz - 1, Math.floor((p.plate_z - T.z0) / T.d)));
-    return t[zi * T.nx + xi] / 1000;
-  };
-  const bh = p.batter_hand === "L" ? "L" : "R", flip = (h) => (h === "L" ? "R" : "L");
-  return cell(`${p.pitch_type}|${hand}|${bh}`, p.plate_x) ?? cell(`${p.pitch_type}|${flip(hand)}|${flip(bh)}`, -p.plate_x) ?? 0;
-}
-
 function SideToggle({ side, setSide }) {
   return <div className="ov-tg3">{[["all", "All"], ["L", "vs LHH"], ["R", "vs RHH"]].map(([k, l]) => <button key={k} aria-pressed={side === k} onClick={() => setSide(k)}>{l}</button>)}</div>;
 }
@@ -764,7 +752,7 @@ function HeatTile({ label, pitches, mode, Canvas, weightFn, side }) {
   return (
     <div className="tile">
       <div className="hd">{label}<span>{pitches.length.toLocaleString()}</span></div>
-      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand={side || "all"} granular weightFn={weightFn || null} />}</div>
+      <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand={side || "all"} weightFn={weightFn || null} />}</div>
     </div>
   );
 }

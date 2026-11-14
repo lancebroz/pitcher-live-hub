@@ -4,6 +4,7 @@ import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatc
 import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
 import { savantRunValue } from "./rvSavant.js";
+import { leagueRunValue } from "./successValue.js";
 
 // Overview tab is code-split so its 3D library only downloads when the tab is opened.
 const OverviewPage = lazy(() => import("./Overview.jsx"));
@@ -1122,7 +1123,7 @@ const approxXwoba = (ev, la) => {
   return 0.1;
 };
 
-const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = false, weightFn = null }) => {
+const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, weightFn = null }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1139,12 +1140,12 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
 
     if (!pitches.length) return;
 
-    // Granular: finer grid (300x300 vs 200x200) + tighter Gaussian (smaller sigma).
-    // This produces sharper, more localized hot spots vs the smoother default view.
-    const gridW = granular ? 300 : 200;
-    const gridH = granular ? 300 : 200;
+    // One smoothing everywhere (the former "Gaussian - Granular" setting): fine grid, tight Gaussian,
+    // sharper and more localized hot spots. The smoother 200x200 variant is gone.
+    const gridW = 300;
+    const gridH = 300;
     const grid = new Float32Array(gridW * gridH);
-    const sigma = granular ? (mode === "damage" ? 0.20 : mode === "success" ? 0.24 : 0.17) : (mode === "damage" ? 0.35 : 0.30);
+    const sigma = mode === "damage" ? 0.20 : mode === "success" ? 0.24 : 0.17;
     const bw2 = sigma * sigma;
     // "success" mode (Overview tab): weightFn returns a signed value per pitch (+ = good for the
     // pitcher). `grid` holds the kernel-weighted sum of those values and `den` the kernel-weighted
@@ -1262,7 +1263,7 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, granular = 
     ctx.lineTo(pcx + phw * 0.88, pby - 6); ctx.lineTo(pcx, pby - 12); ctx.lineTo(pcx - phw * 0.88, pby - 6);
     ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fill();
     ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1.5; ctx.stroke();
-  }, [pitches, width, height, mode, hand, granular, weightFn]);
+  }, [pitches, width, height, mode, hand, weightFn]);
   return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", borderRadius: "4px" }} />;
 };
 
@@ -3850,8 +3851,6 @@ const ComparePage = ({ C, isMobile, teamLogos }) => {
                   params.set("right_mode", rightCfg.mode);
                   if (rightCfg.start) { params.set("right_start", rightCfg.start); params.set("right_end", rightCfg.end); }
 
-                  params.set("style", "gaussian_granular");
-
                   // Open new tab to the same site with the params attached.
                   // Use an anchor-click rather than window.open() — browsers treat this
                   // as a genuine user-initiated navigation, so it's far less likely to be
@@ -3988,8 +3987,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   // Count-situation filter — shared across single view AND both compare columns, so both
   // time periods always reflect the same count context (mirrors the Compare tool).
   const [countFilter, setCountFilter] = useState("all");
-  const [hmMode, setHmMode] = useState("frequency"); // "frequency" | "whiffs" | "damage"
-  const [hmStyle, setHmStyle] = useState("gaussian"); // "gaussian" | "gaussian_granular"
+  const [hmMode, setHmMode] = useState("success"); // "success" | "frequency" | "whiffs" | "damage"
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -4022,7 +4020,6 @@ const HeatmapsPage = ({ C, isMobile }) => {
   //   left_start, left_end - YYYY-MM-DD (only when left_mode = "2026range")
   //   right_mode - "2026" | "2025" | "2026range"
   //   right_start, right_end - YYYY-MM-DD (only when right_mode = "2026range")
-  //   style - "gaussian" | "gaussian_granular" (defaults to gaussian_granular when launched from Compare)
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -4036,7 +4033,6 @@ const HeatmapsPage = ({ C, isMobile }) => {
     const rMode = params.get("right_mode");
     const rStart = params.get("right_start");
     const rEnd = params.get("right_end");
-    const style = params.get("style");
 
     // Apply each setting if present. Open compare view and load the pitcher.
     if (lMode) setLeftMode(lMode);
@@ -4045,7 +4041,6 @@ const HeatmapsPage = ({ C, isMobile }) => {
     if (rMode) setRightMode(rMode);
     if (rStart) setRightStart(rStart);
     if (rEnd) setRightEnd(rEnd);
-    if (style === "gaussian" || style === "gaussian_granular") setHmStyle(style);
 
     setCompareMode(true);
     setPitcher({ id: parseInt(pid, 10), name, throws });
@@ -4265,7 +4260,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
         pitches,
       }))
       .sort((a, b) => orderIndex(a.code) - orderIndex(b.code));
-  }, [pitchData, hand, countFilter, year, startDate, endDate, hmMode, hmStyle]);
+  }, [pitchData, hand, countFilter, year, startDate, endDate, hmMode]);
 
   const totalPitchCount = filteredGroups ? filteredGroups.reduce((s, g) => s + g.pitches.length, 0) : 0;
 
@@ -4445,25 +4440,12 @@ const HeatmapsPage = ({ C, isMobile }) => {
 
           {/* Mode toggle - shared */}
           <div style={{ display: "flex", gap: "4px" }}>
-            {[{ k: "frequency", l: "Frequency" }, { k: "whiffs", l: "Whiffs" }, { k: "damage", l: "Damage" }].map(t => (
+            {[{ k: "success", l: "Success" }, { k: "frequency", l: "Frequency" }, { k: "whiffs", l: "Whiffs" }, { k: "damage", l: "Damage" }].map(t => (
               <button key={t.k} onClick={() => setHmMode(t.k)} style={{
                 background: hmMode === t.k ? C.accentGlow : "transparent",
                 border: `1px solid ${hmMode === t.k ? C.accent : C.border}`,
                 borderRadius: "4px", padding: "6px 14px",
                 color: hmMode === t.k ? C.accent : C.textDim,
-                fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              }}>{t.l}</button>
-            ))}
-          </div>
-
-          {/* Style toggle - shared */}
-          <div style={{ display: "flex", gap: "4px" }}>
-            {[{ k: "gaussian", l: "Gaussian" }, { k: "gaussian_granular", l: "Gaussian - Granular" }].map(t => (
-              <button key={t.k} onClick={() => setHmStyle(t.k)} style={{
-                background: hmStyle === t.k ? C.accentGlow : "transparent",
-                border: `1px solid ${hmStyle === t.k ? C.accent : C.border}`,
-                borderRadius: "4px", padding: "6px 14px",
-                color: hmStyle === t.k ? C.accent : C.textDim,
                 fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
               }}>{t.l}</button>
             ))}
@@ -4563,7 +4545,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {!compareLoading && compareGroups && compareGroups.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
               {compareGroups.map(row => (
-                <CompareRow key={row.name} row={row} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} isMobile={isMobile} />
+                <CompareRow key={row.name} row={row} C={C} hmMode={hmMode} hand={hand} throws={pitcher?.throws} isMobile={isMobile} />
               ))}
             </div>
           )}
@@ -4575,17 +4557,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {/* Legend (shared) */}
           {compareGroups && compareGroups.length > 0 && (
             <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
-                {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density" : "Expected Damage (xwOBA)"}
-              </span>
-              <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
-              <div style={{
-                width: "180px", height: "10px", borderRadius: "3px",
-                background: (hmMode === "damage" || hmMode === "whiffs")
-                  ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
-                  : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
-              }} />
-              <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+              <HeatmapLegend hmMode={hmMode} C={C} />
             </div>
           )}
         </div>
@@ -4605,7 +4577,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {filteredGroups && filteredGroups.length > 0 && (
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
               {filteredGroups.map(g => (
-                <HeatmapTile key={g.name} group={g} C={C} hmStyle={hmStyle} hmMode={hmMode} hand={hand} />
+                <HeatmapTile key={g.name} group={g} C={C} hmMode={hmMode} hand={hand} throws={pitcher?.throws} />
               ))}
             </div>
           )}
@@ -4613,18 +4585,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {/* Legend */}
           {filteredGroups && filteredGroups.length > 0 && (
             <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
-                {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density"
-                  : "Expected Damage (xwOBA)"}
-              </span>
-              <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
-              <div style={{
-                width: "180px", height: "10px", borderRadius: "3px",
-                background: (hmMode === "damage" || hmMode === "whiffs")
-                  ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
-                  : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
-              }} />
-              <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+              <HeatmapLegend hmMode={hmMode} C={C} />
             </div>
           )}
         </>
@@ -4633,7 +4594,36 @@ const HeatmapsPage = ({ C, isMobile }) => {
   );
 };
 
-const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
+// Success map: runs saved per pitch vs. the league average for that pitch type, pitcher hand, batter side
+// and location (+ = good for the pitcher). Same definition as the Overview tab's Location card.
+// The pitcher's hand comes from the pitch row, or from the selected pitcher when the row does not carry it.
+const mkSuccessWeight = (fallback) => (p) => leagueRunValue(p, p.p_throws === "L" || p.p_throws === "R" ? p.p_throws : fallback) - pitchRunValue(p, true);
+const SUCCESS_WEIGHT = { R: mkSuccessWeight("R"), L: mkSuccessWeight("L") };
+
+const HeatmapLegend = ({ hmMode, C }) => (hmMode === "success" ? (
+  <>
+    <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Success vs league at that spot</span>
+    <span style={{ fontSize: "10px", color: C.textDim }}>Worse</span>
+    <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #ef4444, #0a0a12, #22c55e)" }} />
+    <span style={{ fontSize: "10px", color: C.textDim }}>Better</span>
+  </>
+) : (
+  <>
+    <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>
+      {hmMode === "frequency" ? "Pitch Frequency" : hmMode === "whiffs" ? "Swing-and-Miss Density" : "Expected Damage (xwOBA)"}
+    </span>
+    <span style={{ fontSize: "10px", color: C.textDim }}>Low</span>
+    <div style={{
+      width: "180px", height: "10px", borderRadius: "3px",
+      background: (hmMode === "damage" || hmMode === "whiffs")
+        ? "linear-gradient(to right, #0a0a12, #0050c8, #ffffff, #ff6644, #ff0000)"
+        : "linear-gradient(to right, #0a0a12, #0050ff, #00c8ff, #00ff66, #ffff00, #ff4400)",
+    }} />
+    <span style={{ fontSize: "10px", color: C.textDim }}>High</span>
+  </>
+));
+
+const HeatmapTile = ({ group, C, hmMode, hand, throws }) => {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ w: 220, h: 220 });
   useEffect(() => {
@@ -4645,22 +4635,17 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
-  const isGaussian = hmStyle === "gaussian" || hmStyle === "gaussian_granular";
-  const isGranular = hmStyle === "gaussian_granular";
   return (
-    <div style={{ background: isGaussian ? "#0a0a12" : C.surface, border: `1px solid ${isGaussian ? "#222" : C.border}`, borderRadius: "8px", padding: "12px" }}>
+    <div style={{ background: "#0a0a12", border: "1px solid #222", borderRadius: "8px", padding: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: group.color }} />
-          <span style={{ fontSize: "12px", fontWeight: 700, color: isGaussian ? "#e0e0e0" : C.text }}>{group.name}</span>
+          <span style={{ fontSize: "12px", fontWeight: 700, color: "#e0e0e0" }}>{group.name}</span>
         </div>
-        <span style={{ fontSize: "10px", color: isGaussian ? "#888" : C.textDim, fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
+        <span style={{ fontSize: "10px", color: "#888", fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
       </div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
-        {isGaussian
-          ? <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} granular={isGranular} />
-          : <HeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} C={C} />
-        }
+        <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[throws === "L" ? "L" : "R"] : null} />
       </div>
     </div>
   );
@@ -4669,7 +4654,7 @@ const HeatmapTile = ({ group, C, hmStyle, hmMode, hand }) => {
 // ─── CompareRow: a single row in the side-by-side comparison view ───
 // Layout: [left tile] [pitch type name + color dot] [right tile]
 // Each tile is rendered with the same Gaussian canvas the single-view uses.
-const CompareRow = ({ row, C, hmStyle, hmMode, hand, isMobile }) => {
+const CompareRow = ({ row, C, hmMode, hand, throws, isMobile }) => {
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const [leftSize, setLeftSize] = useState({ w: 220, h: 220 });
@@ -4695,14 +4680,12 @@ const CompareRow = ({ row, C, hmStyle, hmMode, hand, isMobile }) => {
     return () => ro.disconnect();
   }, []);
 
-  const isGranular = hmStyle === "gaussian_granular";
-
   const renderTile = (pitches, containerRef, size) => (
     <div style={{ background: "#0a0a12", border: "1px solid #222", borderRadius: "8px", padding: "12px" }}>
       <div style={{ fontSize: "10px", color: "#888", marginBottom: "6px", textAlign: "right" }}>{pitches.length} pitches</div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
         {pitches.length > 0
-          ? <GaussianHeatmapCanvas pitches={pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} granular={isGranular} />
+          ? <GaussianHeatmapCanvas pitches={pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[throws === "L" ? "L" : "R"] : null} />
           : <div style={{ width: "100%", height: "100%", background: "#0a0a12", display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: "11px" }}>No data</div>
         }
       </div>
@@ -5395,7 +5378,7 @@ function noteColor(category) {
 // by xSLG (expected total bases from the XSLGCON EV×LA grid); whiffs mode is whiff
 // density, matching the pitcher tool. Low-opacity clickable dots open plays on
 // research.mlb.com: barrels only on damage maps, every whiff on whiff maps.
-const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R", granular = true }) => {
+const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R" }) => {
   const [hoverDot, setHoverDot] = useState(null);
   const shown = useMemo(() => {
     const out = [];
@@ -5418,7 +5401,7 @@ const BatterZoneHeat = ({ pitches, mode, C, w = 210, h = 250, bats = "R", granul
   const hand = bats === "L" || bats === "R" ? bats : "all"; // switch hitters show both silhouettes
   return (
     <div style={{ position: "relative", width: "100%", aspectRatio: `${w} / ${h}` }}>
-      <GaussianHeatmapCanvas pitches={shown} width={w * 2} height={h * 2} mode={mode} hand={hand} granular={granular} weightFn={weightFn} />
+      <GaussianHeatmapCanvas pitches={shown} width={w * 2} height={h * 2} mode={mode} hand={hand} weightFn={weightFn} />
       {shown.map((p, i) => {
         if (!p.game_pk || !p.play_id) return null;
         if (mode === "damage" && !p.is_barrel) return null; // damage dots: barrels only (heat still uses all BBE)
