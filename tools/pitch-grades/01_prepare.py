@@ -30,6 +30,19 @@ EVENT_RUNS={"strikeout":-0.27,"strikeout_double_play":-0.27,"walk":0.32,"intent_
 BIP={"single","double","triple","home_run","field_out","force_out","grounded_into_double_play","double_play","fielders_choice","fielders_choice_out","sac_fly","sac_bunt","field_error"}
 df=df.drop_duplicates(['game_pk','at_bat_number','pitch_number']).sort_values(['game_pk','at_bat_number','pitch_number']).reset_index(drop=True)
 df['events']=df.events.where(df.events.fillna('')!='',None)
+# Rebuild the pre-pitch count from the sequence of calls in each plate appearance. The source parquets back the count
+# out of the feed's post-pitch count and file every two-strike foul as a one-strike pitch (about 7% of pitches).
+_cd=df.call_description.fillna('').str.lower()
+_isb=_cd.isin(['ball','blocked_ball','pitchout','intent_ball','automatic_ball']).values; _stk=_cd.isin(['called_strike','swinging_strike','swinging_strike_blocked','foul_tip','missed_bunt','automatic_strike']).values; _foul=_cd.isin(['foul','foul_bunt']).values
+_key=df.game_pk.values.astype(np.int64)*1000+df.at_bat_number.fillna(-1).values.astype(np.int64); _b=np.zeros(len(df),int); _s=np.zeros(len(df),int); cb=cs=0; prev=None
+for i in range(len(df)):
+    if _key[i]!=prev: cb=cs=0; prev=_key[i]
+    _b[i]=min(cb,3); _s[i]=min(cs,2)
+    if _isb[i]: cb+=1
+    elif _stk[i]: cs+=1
+    elif _foul[i] and cs<2: cs+=1
+print('counts rebuilt; differed from the recorded count on',round(100*float(((_b!=df.balls.fillna(-1).values)|(_s!=df.strikes.fillna(-1).values)).mean()),2),'% of pitches')
+df['balls']=_b; df['strikes']=_s; df['count']=pd.Series(_b,index=df.index).astype(str)+'-'+pd.Series(_s,index=df.index).astype(str)
 tr=df.season<=2025
 bip=(df.is_in_play==True)&df.events.isin(BIP)&df.launch_speed.notna()&df.launch_angle.notna()
 m=lgb.train(dict(objective='regression',learning_rate=0.05,num_leaves=31,min_child_samples=200,verbose=-1,num_threads=2),

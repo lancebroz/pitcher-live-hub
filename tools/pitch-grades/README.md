@@ -23,6 +23,9 @@ against the league average for the same pitcher hand, batter side and pitch type
    and launch angle, same construction as stuff-plus-repo) and builds features. LHP are mirrored so one
    model serves both hands (pitcher hand and same-side/opposite-side batter are inputs). Pooling tested
    better than v3's separate RHP and LHP models (next-season correlation 0.400 vs 0.392).
+   The pre-pitch count is rebuilt from the sequence of calls in each plate appearance: the source parquets
+   file every two-strike foul as a one-strike pitch (about 7% of pitches), which let the count leak the
+   outcome (a recorded two-strike pitch was never a foul).
 2. `02_train_and_grade.py`
    - Location model: run value from location + count + pitch type + hands. Pitcher-held-out.
    - Stuff model: trained on run value with the location model's prediction subtracted, so it cannot be
