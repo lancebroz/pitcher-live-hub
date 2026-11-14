@@ -9,6 +9,7 @@ import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { OV_RVBASE } from "./overviewRvBase.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
+import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
@@ -403,28 +404,62 @@ function MixCard({ mix, year, getPitchColor, PITCH_ABBREV }) {
 // Each pitch is worth the change in run expectancy it causes; xRV values balls in play by exit velocity and launch
 // angle instead of the result. Shown from the pitcher's side (+ = runs saved). Colour is vs the league for the same
 // pitch type, pitcher hand, batter side and count bucket, after regressing the gap for sample size.
-function ValueCard({ mix, year, hand, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
+// Savant-style run value sums (context-neutral and leveraged), one lazily loaded file per completed season.
+const SV_LOADERS = { "2025": () => import("./overviewValueSv2025.js"), "2026": () => import("./overviewValueSv2026.js") };
+const SV_CACHE = {};
+const SV_KEYS = ["nv", "nx", "lv", "lx"];
+function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
   const [mode, setMode] = useState("a");   // a = run value, x = expected run value
+  const [ctx, setCtx] = useState("n");     // n = context-neutral, l = leveraged by base/out situation
+  const [sv, setSv] = useState(SV_CACHE[year]);   // undefined = loading, null = no file for this season
+  useEffect(() => {
+    if (SV_CACHE[year] !== undefined) { setSv(SV_CACHE[year]); return undefined; }
+    const load = SV_LOADERS[year]; if (!load) { SV_CACHE[year] = null; setSv(null); return undefined; }
+    let live = true; setSv(undefined);
+    load().then(m => { SV_CACHE[year] = m.default || null; if (live) setSv(SV_CACHE[year]); }).catch(() => { if (live) setSv(null); });
+    return () => { live = false; };
+  }, [year]);
+  const mine = sv ? sv[String(pitcherId)] : null;
+  // Savant-style values when the season file has this pitcher; otherwise the live, linear-weights value (neutral only).
   const agg = useMemo(() => {
-    if (!mix) return null;
+    if (!mix || sv === undefined) return null;
     const A = {};
+    if (mine) {
+      for (const t of Object.keys(mine)) {
+        const a = mine[t];
+        [["R", "pre"], ["R", "two"], ["L", "pre"], ["L", "two"]].forEach(([h, bk], i) => {
+          const n = a[i * 5]; if (!n) return;
+          for (const k of ["all", bk]) {
+            const c = A[`${t}|${h}|${k}`] || (A[`${t}|${h}|${k}`] = [0, 0, 0, 0, 0]);
+            for (let j = 0; j < 4; j++) c[j] += a[i * 5 + 1 + j] / 100; c[4] += n;
+          }
+        });
+      }
+      return A;
+    }
     for (const p of mix.valid) {
       const h = p.batter_hand === "L" ? "L" : "R", bk = p.strikes === 2 ? "two" : p.strikes != null && p.strikes < 2 ? "pre" : null;
       const a = pitchRunValue(p, false), x = pitchRunValue(p, true);
       for (const k of bk ? ["all", bk] : ["all"]) {
-        const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, 0]);
-        c[0] -= a; c[1] -= x; c[2]++;
+        const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, null, null, 0]);
+        c[0] -= a; c[1] -= x; c[4]++;
       }
     }
     return A;
-  }, [mix, pitchRunValue]);
-  const mi = mode === "a" ? 0 : 1, lgAll = OV_VALUE_REF[year]?.[hand] || {};
+  }, [mix, sv, mine, pitchRunValue]);
+  const lev = ctx === "l" && !!mine, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1);
+  const lgAll = (mine ? OV_SV_REF : OV_VALUE_REF)[year]?.[hand] || {};
+  const what = `${lev ? "Leveraged: weighted by the base/out situation." : mine ? "Context-neutral: base/out situation ignored." : "Context-neutral."} ${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."}`;
+  const tg = (cur, set, opts) => <div className="ov-tg3" style={{ marginLeft: 0 }}>{opts.map(([k, l, tip, off]) => <button key={k} aria-pressed={cur === k} disabled={off} style={off ? { opacity: 0.4, cursor: "default" } : undefined} onClick={() => set(k)} title={tip}>{l}</button>)}</div>;
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Value</div>
-        <div className="ov-tg3">{[["a", "RV"], ["x", "xRV"]].map(([k, l]) => <button key={k} aria-pressed={mode === k} onClick={() => setMode(k)} title={k === "a" ? "Run value from actual results" : "Expected run value: balls in play valued by exit velocity and launch angle"}>{l}</button>)}</div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", mine || sv === undefined ? "Leveraged: plays count for more with runners on and fewer outs to give" : "Leveraged needs base/out data, which this season's feed does not carry yet", sv !== undefined && !mine]])}
+          {tg(mode, setMode, [["a", "RV", "Run value from actual results"], ["x", "xRV", "Expected run value: balls in play valued by exit velocity and launch angle"]])}
+        </div>
       </div>
-      {!mix || !agg ? <div className="ov-note">No {year} MLB pitches.</div> : (
+      {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : !agg ? <div className="ov-note">Loading…</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
             {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={t.name}>{PITCH_ABBREV[t.name] || t.type}</div>)}
@@ -437,18 +472,18 @@ function ValueCard({ mix, year, hand, pitchRunValue, getPitchColor, PITCH_ABBREV
                   <div className="ov-mlab">{rl}</div>
                   {mix.types.map(t => {
                     const c = agg[`${t.type}|${h}|${rk}`];
-                    if (!c || c[2] < 15) return <div key={t.type} className="ov-mcell z" title={c ? `${t.name} ${lab} · ${rl}: only ${c[2]} pitches` : undefined}>—</div>;
-                    const n = c[2], v = 100 * c[mi] / n, ref = lgAll[t.type]?.[h]?.[rk]?.[mi], K = OV_VALUE_K[mode][rk];
+                    if (!c || c[4] < 15) return <div key={t.type} className="ov-mcell z" title={c ? `${t.name} ${lab} · ${rl}: only ${c[4]} pitches` : undefined}>—</div>;
+                    const n = c[4], v = 100 * c[mi] / n, ref = lgAll[t.type]?.[h]?.[rk]?.[mi], K = mine ? OV_SV_K[SV_KEYS[mi]][rk] : OV_VALUE_K[mode][rk];
                     const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
                     const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
                     return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
-                      title={`${t.name} ${lab} · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${hand}HP ${PITCH_ABBREV[t.name] || t.type}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."} Color accounts for sample size.`}>{sg(v)}</div>;
+                      title={`${t.name} ${lab} · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${hand}HP ${PITCH_ABBREV[t.name] || t.type}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${what} Color accounts for sample size.`}>{sg(v)}</div>;
                   })}
                 </div>
               ))}
             </div>
           ))}
-          <div className="ov-cnote">Runs saved per 100 pitches · + is good for the pitcher<br />{mode === "a" ? "RV: actual results" : "xRV: contact valued by exit velocity and launch angle"} · color is vs the league, adjusted for sample</div>
+          <div className="ov-cnote">Runs saved per 100 pitches · + is good for the pitcher<br />{lev ? "Leveraged by base/out" : "Context-neutral"} · {mode === "a" ? "actual results" : "contact valued by exit velocity and launch angle"} · color is vs the league, adjusted for sample</div>
         </div>
       )}
     </div>
@@ -1016,7 +1051,7 @@ export default function OverviewPage({ C, helpers }) {
         </div>
         <div className="ov-row ov-row3">
           <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitcherId={pitcher.id} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
     </div>
