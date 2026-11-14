@@ -3,6 +3,7 @@ import * as recharts from "recharts";
 import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatcast, getStatcastSampled, getCachedSeason, getTeamLogos, getSeasonData, getStartersToday, getPitcherEra, getLeaderboard, getReport, searchBatters, getBatterCachedSeason } from "./api.js";
 import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
+import { savantRunValue } from "./rvSavant.js";
 
 // Overview tab is code-split so its 3D library only downloads when the tab is opened.
 const OverviewPage = lazy(() => import("./Overview.jsx"));
@@ -1952,7 +1953,7 @@ const repairTwoStrikeFouls = (pitches) => {
     let st = 0;
     for (const p of g) {
       const foul = p.description === "foul";
-      if (foul && st >= 2 && p.strikes === 1) { p.strikes = 2; p.count = `${p.balls ?? 0}-2`; if (p._rv_computed) p.delta_run_exp = pitchRunValue(p, false); }
+      if (foul && st >= 2 && p.strikes === 1) { p.strikes = 2; p.count = `${p.balls ?? 0}-2`; if (p._rv_computed) { p._sv = savantRunValue(p, null); p.delta_run_exp = p._sv ? p._sv.nv : pitchRunValue(p, false); } }
       if (p.is_whiff || p.is_called_strike || (foul && st < 2)) st++;
     }
   }
@@ -2140,8 +2141,16 @@ const normalizeLivePitch = (p) => {
     play_id: p.play_id || "",  // MLB per-pitch UUID → research.mlb.com deep link
     at_bat_number: p.at_bat_number || null,
     events: p.events || "",
+    // Base/out state before the pitch (null when the source does not carry it). Savant CSV names outs `outs_when_up`.
+    outs: p.outs != null && p.outs !== "" ? Number(p.outs) : (p.outs_when_up != null && p.outs_when_up !== "" ? Number(p.outs_when_up) : null),
+    on_1b: p.on_1b == null ? null : !!p.on_1b,
+    on_2b: p.on_2b == null ? null : !!p.on_2b,
+    on_3b: p.on_3b == null ? null : !!p.on_3b,
   };
-  if (out.delta_run_exp == null) out.delta_run_exp = pitchRunValue(out, false);
+  // Savant-style run value (neutral / leveraged, actual / expected) when base/out is known; Savant's own
+  // per-pitch value is kept as the neutral value on rows that came from Savant.
+  out._sv = savantRunValue(out, p.delta_run_exp != null ? p.delta_run_exp : null);
+  if (out.delta_run_exp == null) out.delta_run_exp = out._sv ? out._sv.nv : pitchRunValue(out, false);
   return out;
 };
 

@@ -40,11 +40,32 @@ Inputs: Statcast pitch-level files with `delta_run_exp`, `on_1b/2b/3b`, `outs_wh
 public Hugging Face dataset `elcax1/mlb-statcast`, which mirrors Savant's CSV), plus a Savant pitch arsenal
 export per season for the park fit.
 
-The live feed (mlb-pitcher-data parquets) has no runners-on or run-scoring fields, so this cannot be
-computed for a season in progress. The Value container then falls back to construction 2 and the
-Leveraged toggle is disabled.
+### Per pitch, for a season in progress
 
-## 2. Linear weights (Success heatmap, Leaderboard RV, Tracker / Compare, Value fallback)
+`frontend/src/rvSavant.js` (and `_pitch_run_values` in `backend/main.py`) compute the same values pitch by
+pitch from the base/out state the feed now carries (`on_1b`, `on_2b`, `on_3b`, `outs`; mlb-pitcher-data
+fetches since 2026-11):
+
+    leveraged = E[outcome][bo] - R[bo][count]        pitch that ends the plate appearance
+              = R[bo][next count] - R[bo][count]     any other pitch
+    neutral   = leveraged * k[bo]
+
+Savant prices 12 outcomes: single, double, triple, home run, walk, hit by pitch, strikeout, ground-ball out,
+air out, reached (error / fielder's choice / catcher's interference), bunt, and a truncated plate appearance.
+An out is priced by its trajectory, not by what the defense did with it: a double-play grounder and a
+routine grounder with a man on first are worth the same. `fit_live.py` fits `R` and `E` per season;
+`gen_rvsavant_js.py` writes the frontend module and `backend/rv_savant_tables.json`.
+
+Check on the app's own 2026 pitches (feed event names and trajectory, Statcast base/out): the neutral value
+equals Statcast's `delta_run_exp` on 99.9% of 712,249 pitches; pitcher x pitch-type sums differ by 0.09
+runs on average. Seasons after the last fitted one use the latest table. No park term is applied per
+pitch (it needs Savant's published totals to fit), so a season in progress, the Tracker / Compare run
+values and the Leaderboard RV are Savant's per-pitch values without the park adjustment.
+
+The Value container uses the season file when there is one and the per-pitch values otherwise; pitches
+without base/out state fall back to construction 2.
+
+## 2. Linear weights (Success heatmap; fallback wherever a pitch has no base/out state)
 
 FanGraphs-style: one value per event from season wOBA weights, count values centered on the league, no
 base/out state. `pitchRunValue` in `frontend/src/App.jsx` and `_pitch_run_values` in `backend/main.py`;

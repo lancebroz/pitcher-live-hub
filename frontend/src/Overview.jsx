@@ -420,6 +420,12 @@ function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, P
     return () => { live = false; };
   }, [year]);
   const mine = sv ? sv[String(pitcherId)] : null;
+  // No season file (a season in progress): use the live pitches when nearly all of them carry base/out state.
+  const liveSv = useMemo(() => {
+    if (mine || !mix || !mix.valid.length) return false;
+    let n = 0; for (const p of mix.valid) if (p._sv) n++;
+    return n >= 0.98 * mix.valid.length;
+  }, [mine, mix]);
   // Savant-style values when the season file has this pitcher; otherwise the live, linear-weights value (neutral only).
   const agg = useMemo(() => {
     if (!mix || sv === undefined) return null;
@@ -439,23 +445,25 @@ function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, P
     }
     for (const p of mix.valid) {
       const h = p.batter_hand === "L" ? "L" : "R", bk = p.strikes === 2 ? "two" : p.strikes != null && p.strikes < 2 ? "pre" : null;
-      const a = pitchRunValue(p, false), x = pitchRunValue(p, true);
+      // live pitches: Savant-style from the pitch's base/out state when the feed has it, linear weights otherwise
+      const q = liveSv ? p._sv : null, a = q ? q.nv : pitchRunValue(p, false), x = q ? q.nx : pitchRunValue(p, true);
       for (const k of bk ? ["all", bk] : ["all"]) {
-        const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, null, null, 0]);
-        c[0] -= a; c[1] -= x; c[4]++;
+        const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, 0, 0, 0]);
+        c[0] -= a; c[1] -= x; c[2] -= q ? q.lv : a; c[3] -= q ? q.lx : x; c[4]++;
       }
     }
     return A;
-  }, [mix, sv, mine, pitchRunValue]);
-  const lev = ctx === "l" && !!mine, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1);
-  const lgAll = (mine ? OV_SV_REF : OV_VALUE_REF)[year]?.[hand] || {};
-  const what = `${lev ? "Leveraged: weighted by the base/out situation." : mine ? "Context-neutral: base/out situation ignored." : "Context-neutral."} ${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."}`;
+  }, [mix, sv, mine, liveSv, pitchRunValue]);
+  const savant = !!mine || liveSv, lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1);
+  const svRef = OV_SV_REF[year] || OV_SV_REF[Object.keys(OV_SV_REF).sort().pop()];   // a season in progress borrows the latest full season's reference
+  const lgAll = (savant ? svRef : OV_VALUE_REF[year])?.[hand] || {};
+  const what = `${lev ? "Leveraged: weighted by the base/out situation." : savant ? "Context-neutral: base/out situation ignored." : "Context-neutral."} ${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."}`;
   const tg = (cur, set, opts) => <div className="ov-tg3" style={{ marginLeft: 0 }}>{opts.map(([k, l, tip, off]) => <button key={k} aria-pressed={cur === k} disabled={off} style={off ? { opacity: 0.4, cursor: "default" } : undefined} onClick={() => set(k)} title={tip}>{l}</button>)}</div>;
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Value</div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", mine || sv === undefined ? "Leveraged: plays count for more with runners on and fewer outs to give" : "Leveraged needs base/out data, which this season's feed does not carry yet", sv !== undefined && !mine]])}
+          {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", savant || sv === undefined ? "Leveraged: plays count for more in bigger base/out situations" : "Leveraged needs base/out data, which these pitches do not carry", sv !== undefined && !savant]])}
           {tg(mode, setMode, [["a", "RV", "Run value from actual results"], ["x", "xRV", "Expected run value: balls in play valued by exit velocity and launch angle"]])}
         </div>
       </div>
@@ -473,7 +481,7 @@ function ValueCard({ mix, year, hand, pitcherId, pitchRunValue, getPitchColor, P
                   {mix.types.map(t => {
                     const c = agg[`${t.type}|${h}|${rk}`];
                     if (!c || c[4] < 15) return <div key={t.type} className="ov-mcell z" title={c ? `${t.name} ${lab} · ${rl}: only ${c[4]} pitches` : undefined}>—</div>;
-                    const n = c[4], v = 100 * c[mi] / n, ref = lgAll[t.type]?.[h]?.[rk]?.[mi], K = mine ? OV_SV_K[SV_KEYS[mi]][rk] : OV_VALUE_K[mode][rk];
+                    const n = c[4], v = 100 * c[mi] / n, ref = lgAll[t.type]?.[h]?.[rk]?.[mi], K = savant ? OV_SV_K[SV_KEYS[mi]][rk] : OV_VALUE_K[mode][rk];
                     const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
                     const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
                     return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}

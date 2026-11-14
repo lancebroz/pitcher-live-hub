@@ -29,6 +29,7 @@ hasx=B.launch_speed.notna()&B.launch_angle.notna(); Bx=B[hasx].copy()
 Bx['evb']=(np.floor(Bx.launch_speed.clip(40,115)/5+0.5)*5).astype(int); Bx['lab']=(np.floor(Bx.launch_angle.clip(-60,80)/10+0.5)*10).astype(int)
 P=pd.crosstab([Bx.evb,Bx.lab],Bx.cls); tot=P.sum(axis=1); prior=P.sum()/P.sum().sum(); P=(P.add(prior*5,axis=1)).div(tot+5,axis=0)       # light shrink for thin cells
 print('cells',len(P),'BIP',len(Bx),'share with EV/LA',round(hasx.mean(),3))
+json.dump({'Dc':{c:[round(float(v),4) for v in Dc.loc[c].to_numpy()] for c in ('1B','2B','3B','HR')},'P':{f'{int(e)}|{int(l)}':[round(float(P.loc[(e,l),c]),4) for c in ('1B','2B','3B','HR')] for e,l in P.index}},open('/home/claude/rv/live_x_tables.json','w'))
 def xterm(r):
     ip=r.ip.to_numpy(); has=(ip&r.launch_speed.notna().to_numpy()&r.launch_angle.notna().to_numpy())
     evb=(np.floor(r.launch_speed.clip(40,115)/5+0.5)*5); lab=(np.floor(r.launch_angle.clip(-60,80)/10+0.5)*10)

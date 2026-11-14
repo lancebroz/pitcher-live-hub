@@ -105,6 +105,85 @@ _RV_SEASON = {
 }
 
 
+_SV_TABLES = None
+
+
+def _sv_tables():
+    """Savant-style run value tables by season (see tools/run-value): k[bo], R[bo][count], E[outcome][bo]."""
+    global _SV_TABLES
+    if _SV_TABLES is None:
+        try:
+            import json as _json
+            import os as _os
+            with open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "rv_savant_tables.json")) as f:
+                _SV_TABLES = _json.load(f)
+        except Exception as e:
+            print(f"[run value] Savant tables unavailable, using linear weights only: {e}")
+            _SV_TABLES = {}
+    return _SV_TABLES
+
+
+_FEED_BASES = ("1B", "2B", "3B")
+
+
+def _feed_pitch_states(all_plays):
+    """Situation before every play event of an MLB live feed.
+
+    Returns {(atBatIndex, event index): {"balls", "strikes", "outs", "on_1b", "on_2b", "on_3b"}}.
+    Same tracking as mlb-pitcher-data/src/fetch_pitches.py: the count is carried through every play
+    event, runners through the feed's runner movements, pinch runners and the extra-inning placed runner.
+    """
+    states = {}
+    prev_half, carried = None, {}
+    for play in all_plays or []:
+        try:
+            about = play.get("about") or {}
+            matchup = play.get("matchup") or {}
+            this_half = (about.get("inning"), about.get("halfInning"))
+            pos = dict(carried) if this_half == prev_half else {}
+            prev_half = this_half
+            carried = {}
+            for field, base in (("postOnFirst", "1B"), ("postOnSecond", "2B"), ("postOnThird", "3B")):
+                rid = (matchup.get(field) or {}).get("id")
+                if rid is not None:
+                    carried[rid] = base
+            moves = {}
+            for r in play.get("runners") or []:
+                mv = r.get("movement") or {}
+                det = r.get("details") or {}
+                moves.setdefault(det.get("playIndex"), []).append(
+                    ((det.get("runner") or {}).get("id"), mv.get("start"), mv.get("end"), bool(mv.get("isOut"))))
+            balls, strikes = 0, 0
+            for ev_index, event in enumerate(play.get("playEvents") or []):
+                count = event.get("count") or {}
+                occupied = set(pos.values())
+                states[(play.get("atBatIndex"), ev_index)] = {
+                    "balls": balls, "strikes": strikes, "outs": count.get("outs"),
+                    "on_1b": "1B" in occupied, "on_2b": "2B" in occupied, "on_3b": "3B" in occupied,
+                }
+                for rid, start, end, is_out in moves.get(event.get("index", ev_index), []):
+                    key = rid
+                    if key not in pos and start in _FEED_BASES:
+                        key = next((k for k, b in pos.items() if b == start), rid)
+                    pos.pop(key, None)
+                    if not is_out and end in _FEED_BASES:
+                        pos[rid if rid is not None else key] = end
+                if not event.get("isPitch", False):
+                    ev_base = event.get("base")
+                    ev_base = {1: "1B", 2: "2B", 3: "3B"}.get(ev_base, ev_base if ev_base in _FEED_BASES else None)
+                    ev_player = (event.get("player") or {}).get("id")
+                    replaced = (event.get("replacedPlayer") or {}).get("id")
+                    if (event.get("details") or {}).get("eventType") == "runner_placed" and ev_base and ev_player is not None:
+                        pos[ev_player] = ev_base
+                    elif replaced is not None and replaced in pos and ev_player is not None:
+                        pos[ev_player] = pos.pop(replaced)
+                if count.get("balls") is not None and count.get("strikes") is not None:
+                    balls, strikes = min(int(count["balls"]), 3), min(int(count["strikes"]), 2)
+        except Exception as e:
+            print(f"[feed states] play skipped: {e}")
+    return states
+
+
 def _pitch_run_values(df):
     """Run value of every pitch from the batter's side (negative = good for the pitcher).
 
@@ -164,6 +243,45 @@ def _pitch_run_values(df):
                np.where((whiff | called)[m], np.where(ss == 2, OUT, ns) - cur,
                np.where(foul[m], np.where(ss >= 2, 0.0, ns - cur), 0.0))))
         out[m] = np.where(ip[m], in_play, rest)
+
+    # Savant-style context-neutral value wherever the pitch carries its base/out state (pitches fetched since
+    # 2026-11); the linear-weights value above stays for the rest. Mirrors savantRunValue in frontend/src/rvSavant.js.
+    tables = _sv_tables()
+    if tables and all(c in df.columns for c in ("on_1b", "on_2b", "on_3b", "outs")):
+        outs_n = pd.to_numeric(df["outs"], errors="coerce")
+        has_bo = (df["on_1b"].notna() & df["on_2b"].notna() & df["on_3b"].notna() & outs_n.notna()).to_numpy()
+        if has_bo.any():
+            onb = [df[c].where(df[c].notna(), False).astype(bool).to_numpy().astype(int) for c in ("on_1b", "on_2b", "on_3b")]
+            bo = (onb[0] + 2 * onb[1] + 4 * onb[2]) * 3 + outs_n.fillna(0).clip(0, 2).astype(int).to_numpy()
+            traj = df["trajectory"].fillna("").astype(str).to_numpy() if "trajectory" in df.columns else np.full(n, "", dtype=object)
+            evn, ipn, bn, sn = ev.to_numpy(), ip.to_numpy(), b.to_numpy(), s.to_numpy()
+            balln, strk, fouln = ball.to_numpy(), (whiff | called).to_numpy(), foul.to_numpy()
+            cls = np.full(n, "", dtype=object)
+            cls[ipn] = np.where(np.char.startswith(traj[ipn].astype(str), "bunt"), "bunt",
+                       np.where(np.isin(evn[ipn], ["single", "double", "triple", "home_run"]), evn[ipn],
+                       np.where(np.isin(evn[ipn], ["field_error", "fielders_choice", "catcher_interf"]), "reach",
+                       np.where(traj[ipn] == "ground_ball", "out_ground", "out_air"))))
+            cls[hbp.to_numpy()] = "hit_by_pitch"
+            cls[balln & (bn == 3)] = "walk"
+            cls[(strk & (sn == 2)) | (cd.str.contains("foul bunt", regex=False).to_numpy() & (sn == 2) & ~ipn)] = "strikeout"
+            c0 = bn * 3 + sn
+            c1 = np.where(balln, np.minimum(bn + 1, 3) * 3 + sn, np.where(strk | fouln, bn * 3 + np.minimum(sn + 1, 2), c0))
+            seasons = sorted(int(y) for y in tables.keys())
+            sv = np.zeros(n)
+            for y in year.unique():
+                t = tables[str(min(max(int(y), seasons[0]), seasons[-1]))]
+                m = (year == y).to_numpy()
+                R, kk = np.array(t["R"]), np.array(t["k"])
+                v = R[bo[m], c1[m]] - R[bo[m], c0[m]]
+                cm = cls[m]
+                for c in set(cm) - {""}:
+                    e = np.array(t["E"].get(c, t["E"]["out_air"]))
+                    if c == "bunt":
+                        e = np.where(e == 0, np.array(t["E"]["out_ground"]), e)
+                    sel = cm == c
+                    v[sel] = e[bo[m][sel]] - R[bo[m][sel], c0[m][sel]]
+                sv[m] = v * kk[bo[m]]
+            out = out.where(~has_bo, pd.Series(sv, index=df.index))
     return out
 
 
@@ -384,7 +502,8 @@ async def get_batter_cached_season(batter_id: int):
             "plate_x", "plate_z", "zone", "sz_top", "sz_bottom",
             "call_description", "is_in_play", "is_strike", "is_ball", "events",
             "launch_speed", "launch_angle", "trajectory", "hit_x", "hit_y",
-            "balls", "strikes", "batter_hand", "stand", "pitcher_hand", "pitcher_name"]
+            "balls", "strikes", "outs", "on_1b", "on_2b", "on_3b",
+            "batter_hand", "stand", "pitcher_hand", "pitcher_name"]
     cols = [c for c in keep if c in sub.columns]
     out = sub[cols].copy()
     # Conveniences the frontend normalizer expects
@@ -842,6 +961,11 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "at_bat_number": safe_float("at_bat_number"),
             "events": row.get("events", ""),
             "delta_run_exp": safe_float("delta_run_exp"),
+            # Base/out state before the pitch (Savant stores the runner's id, blank when the base is empty)
+            "outs": safe_float("outs_when_up"),
+            "on_1b": bool(str(row.get("on_1b") or "").strip()) if "on_1b" in row else None,
+            "on_2b": bool(str(row.get("on_2b") or "").strip()) if "on_2b" in row else None,
+            "on_3b": bool(str(row.get("on_3b") or "").strip()) if "on_3b" in row else None,
             "bat_speed": safe_float("bat_speed"),
             "swing_length": safe_float("swing_length"),
         })
@@ -1177,6 +1301,12 @@ async def get_cached_season(pitcher_id: int):
             return [False] * len(pitcher_df)
         return [bool(v) for v in pitcher_df[name].fillna(False).values]
 
+    def col_opt_bool(name):
+        # True / False, or None when the column or the value is missing (older fetches)
+        if name not in pitcher_df.columns:
+            return [None] * len(pitcher_df)
+        return [None if (v is None or (isinstance(v, float) and v != v)) else bool(v) for v in pitcher_df[name].values]
+
     def col_int(name, default=0):
         if name not in pitcher_df.columns:
             return [default] * len(pitcher_df)
@@ -1246,6 +1376,8 @@ async def get_cached_season(pitcher_id: int):
     game_pks = col_int("game_pk")
     innings = col_float("inning")
     at_bats = col_float("at_bat_number")
+    outs_col = col_float("outs")
+    on_1b_col, on_2b_col, on_3b_col = col_opt_bool("on_1b"), col_opt_bool("on_2b"), col_opt_bool("on_3b")
 
     n = len(pitcher_df)
     pitches = []
@@ -1309,6 +1441,10 @@ async def get_cached_season(pitcher_id: int):
             "play_id": play_ids[i],
             "inning": innings[i],
             "at_bat_number": at_bats[i],
+            "outs": outs_col[i],
+            "on_1b": on_1b_col[i],
+            "on_2b": on_2b_col[i],
+            "on_3b": on_3b_col[i],
             "delta_run_exp": None,
         })
 
@@ -1654,6 +1790,8 @@ async def _get_season_data_impl(pitcher_id: int):
 
                 all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
                 game_date_str = feed.get("gameData", {}).get("datetime", {}).get("officialDate", today_str)
+                # Count and base/out state before each pitch (the feed's own count is post-pitch)
+                feed_states = _feed_pitch_states(all_plays)
 
                 for play in all_plays:
                         matchup = play.get("matchup", {})
@@ -1669,9 +1807,10 @@ async def _get_season_data_impl(pitcher_id: int):
                         play_event_type = play_result.get("eventType", "")
 
                         play_pitches = []
-                        for event in play.get("playEvents", []):
+                        for ev_index, event in enumerate(play.get("playEvents", [])):
                             if not event.get("isPitch", True):
                                 continue
+                            state = feed_states.get((play.get("atBatIndex"), ev_index)) or {}
 
                             pitch_data = event.get("pitchData", {})
                             details = event.get("details", {})
@@ -1742,8 +1881,12 @@ async def _get_season_data_impl(pitcher_id: int):
                                 "batter_hand": batter_side,
                                 "stand": batter_side,
                                 "p_throws": pitch_hand,
-                                "balls": str(count_obj.get("balls", 0)),
-                                "strikes": str(count_obj.get("strikes", 0)),
+                                "balls": str(state["balls"] if "balls" in state else count_obj.get("balls", 0)),
+                                "strikes": str(state["strikes"] if "strikes" in state else count_obj.get("strikes", 0)),
+                                "outs": state.get("outs"),
+                                "on_1b": state.get("on_1b"),
+                                "on_2b": state.get("on_2b"),
+                                "on_3b": state.get("on_3b"),
                                 "game_date": game_date_str,
                                 "game_pk": gpk,
                                 "play_id": event.get("playId", "") or "",
@@ -2515,6 +2658,12 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     combined = combined[~_dupe]
 
             # Build records with same column names rest of the function expects
+            def _optb(v):
+                # True / False, or None when the parquet row has no value (older fetches)
+                if v is None or (isinstance(v, float) and v != v):
+                    return None
+                return bool(v)
+
             def _safef(v):
                 try:
                     if v is None or str(v) in ("", "nan", "NaN", "None"):
@@ -2588,6 +2737,10 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     "game_date": str(row.get("game_date", "") or ""),
                     "at_bat_number": _safef(row.get("at_bat_number")),
                     "pitch_number": _safef(row.get("pitch_number")),
+                    "outs": _safef(row.get("outs")),
+                    "on_1b": _optb(row.get("on_1b")),
+                    "on_2b": _optb(row.get("on_2b")),
+                    "on_3b": _optb(row.get("on_3b")),
                     "inning": _safef(row.get("inning")),
                 })
 
