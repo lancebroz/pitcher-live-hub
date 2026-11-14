@@ -8,6 +8,8 @@ import { leagueRunValue } from "./successValue.js";
 
 // Overview tab is code-split so its 3D library only downloads when the tab is opened.
 const OverviewPage = lazy(() => import("./Overview.jsx"));
+// The Hitters tab borrows the Overview's containers (same chunk, same styles).
+const HitterCards = lazy(() => import("./Overview.jsx").then(m => ({ default: m.HitterCards })));
 
 const {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -5522,7 +5524,7 @@ const isPostseasonDate = (d) => {
 const POSTSEASON_GOLD = "#d4af37";
 
 // Season date bounds for the Hitters range picker defaults
-const SEASON_START = "2026-03-26";
+const SEASON_START = "2026-03-25"; // Opening Day 2026
 const todayLocalISO = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local tz
 
 // ─── Hitter stat tile color coding ───
@@ -5593,6 +5595,9 @@ const hitterCellColor = (statKey, rawValue) => {
   const pct = Math.round(_normCdf(goodness) * 100);
   return { bg, tip: `League avg ${avgStr} · ${pct}th pctile` };
 };
+
+// Stable helpers handed to the hitter containers (stat definitions live here; the cards live in Overview.jsx).
+const HITTER_CARD_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_AB_CONTACT_OUTS, endsPaAsK: _endsPaAsK, getPitchColor, PITCH_ABBREV, pitchRunValue };
 
 const HittersPage = ({ C, isMobile }) => {
   const [q, setQ] = useState("");
@@ -5827,6 +5832,12 @@ const HittersPage = ({ C, isMobile }) => {
               <input type="date" value={dEnd} onChange={e => setDEnd(e.target.value)} style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: "6px", padding: "5px 8px", fontFamily: "inherit", fontSize: "11px" }} />
             </div>
           </div>
+
+          {pitches.length > 0 && (
+            <Suspense fallback={<div style={{ color: C.textDim, fontSize: "12px", padding: "16px 0" }}>Loading…</div>}>
+              <HitterCards C={C} pitches={pitches} h={HITTER_CARD_HELPERS} />
+            </Suspense>
+          )}
 
           {rolling.length > 1 && (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px",
