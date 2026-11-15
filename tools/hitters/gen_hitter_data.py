@@ -11,7 +11,7 @@ def pool(o,minpa):
     q=o[o.pa>=minpa]; P={'n':int(len(q))}
     for k in KEYS: P[k]=qs(q[k].where(q.bbe>=25) if k in('ev','maxev','barrel','hardhit','hhla','gb','fb') else q[k],k)
     return P
-POOLS={};REF={};KK={};USE={}
+POOLS={};REF={};KK={};USE={};LINE={}
 for y in (2025,2026):
     d=pd.read_parquet(f'/home/claude/hit/h{str(y)[2:]}x.parquet'); d=d[d.stand.isin(['L','R'])&d.pitcher_hand.isin(['L','R'])].copy()
     P={'all':pool(hlib.agg(d,['batter_id']),100),'split':{}}          # "All" ranks against every hitter, whatever side he bats from
@@ -50,6 +50,13 @@ for y in (2025,2026):
             sw=np.average(g['var'],weights=g['size']-1); sb=max(np.average(g.dev**2,weights=g['size'])-sw*np.average(1/g['size'],weights=g['size']),1e-9); K[m][bk]=[round(100*float(np.sqrt(sb)),2),int(round(sw/sb))]
     KK[str(y)]=K; print('   value K',json.dumps(K))
     d[['batter_id','stand','pitcher_hand','pitch_type','bk','nv','nx','lv','lx']].to_parquet(f'/home/claude/hit/h{str(y)[2:]}_value.parquet')
+# header line pools (AVG / OBP / SLG / HR per 100 PA / K % / BB %): hitters with 100+ PA, from Statcast rows for both seasons,
+# which carry the intentional walks the feed misses, so they line up with the official line the header shows
+for y,(a,b) in {2025:('2025-03-27','2025-09-28'),2026:('2026-03-25','2026-09-28')}.items():
+    t=hlib.load_savant(y,a,b); g=t.groupby('batter_id').agg(pa=('pa','sum'),ab=('ab','sum'),h=('hit','sum'),tb=('tb','sum'),bb=('bbk','sum'),hbp=('hbp','sum'),sf=('sf','sum'),k=('k','sum')); g['hr']=t[t.ip&(t.ev=='home_run')].groupby('batter_id').size().reindex(g.index).fillna(0)
+    g=g[g.pa>=100]; o=pd.DataFrame({'avg':g.h/g.ab,'obp':(g.h+g.bb+g.hbp)/(g.ab+g.bb+g.hbp+g.sf),'slg':g.tb/g.ab,'hr':100*g.hr/g.pa,'k':100*g.k/g.pa,'bb':100*g.bb/g.pa}).astype(float)
+    LINE[str(y)]={'n':int(len(o)),**{c:[round(float(v),4 if c in('avg','obp','slg') else 2) for v in np.quantile(o[c],np.linspace(0,1,21))] for c in o.columns}}
+    print(y,'line pool',len(o),'| medians',{c:LINE[str(y)][c][10] for c in o.columns})
 # first-load pool: 2026 hitters with 300+ PA
 d=pd.read_parquet('/home/claude/hit/h26x.parquet'); pa=d.groupby('batter_id').pa.sum(); ids=pa[pa>=300].index
 sh=d[d.batter_id.isin(ids)].groupby('batter_id').stand.apply(lambda s:(s=='L').mean()); nm=d[d.batter_id.isin(ids)].groupby('batter_id').batter_name.agg(lambda s:s.mode().iat[0]); tm=d[d.batter_id.isin(ids)].sort_values('game_date').groupby('batter_id').bat_team.last()
@@ -71,7 +78,9 @@ export const HIT_VALUE_K = %s;
 // Pitch usage against hitters, by season. HIT_USAGE_REF[year][batter side][pitcher hand][all|pre|two][pitch type] =
 // [league share of pitches (%%), spread of true hitter-to-hitter differences in that share (points)].
 export const HIT_USAGE_REF = %s;
+// Header line pools, by season: 21 quantiles among hitters with 100+ PA for avg, obp, slg, hr (home runs per 100 PA), k and bb (%% of PA).
+export const HIT_LINE_POOLS = %s;
 // Hitters with 300+ PA in 2026, for the random first load: [id, name, team, bats].
 export const HIT_RANDOM_POOL = %s;
-""" % (json.dumps(XB['G'],separators=(',',':')),XB['lg'],json.dumps(POOLS,separators=(',',':')),json.dumps(REF,separators=(',',':')),json.dumps(KK,separators=(',',':')),json.dumps(USE,separators=(',',':')),json.dumps(RP,separators=(',',':'),ensure_ascii=False))
+""" % (json.dumps(XB['G'],separators=(',',':')),XB['lg'],json.dumps(POOLS,separators=(',',':')),json.dumps(REF,separators=(',',':')),json.dumps(KK,separators=(',',':')),json.dumps(USE,separators=(',',':')),json.dumps(LINE,separators=(',',':')),json.dumps(RP,separators=(',',':'),ensure_ascii=False))
 open('/home/claude/pitcher-live-hub/frontend/src/hitterData.js','w').write(js); print(len(js),'bytes')

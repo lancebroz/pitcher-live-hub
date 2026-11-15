@@ -8,7 +8,7 @@ import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { leagueRunValue } from "./successValue.js";
-import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_USAGE_REF, HIT_RANDOM_POOL } from "./hitterData.js";
+import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_USAGE_REF, HIT_LINE_POOLS, HIT_RANDOM_POOL } from "./hitterData.js";
 import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
@@ -1154,6 +1154,9 @@ function HitterResultsCard({ pitches, h, year, side, setSide }) {
 // Value: against one pitcher hand, how he is pitched (usage by pitch type) and what he does with it (run value by
 // pitch type), each split overall / before two strikes / two strikes.
 const HV_KEYS = ["nv", "nx", "lv", "lx"], HV_ROWS = [["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]];
+// Columns run in Baseball Savant's pitch order (fastballs, offspeed, curveballs, sliders, knuckleball).
+const SAVANT_ORDER = ["FF", "SI", "FC", "CH", "FS", "FO", "SC", "CU", "KC", "CS", "SL", "ST", "SV", "KN"];
+const HV_MIN_N = 25, HV_MIN_SHARE = 0.02, HV_MAX_COLS = 8;   // a pitch type shows once he has seen 25 of them and they are 2% of what that hand threw him
 function HitterValueCard({ pitches, h, year }) {
   const [ph, setPh] = useState("R"), [mode, setMode] = useState("a"), [ctx, setCtx] = useState("n");
   const { getPitchColor, PITCH_ABBREV, pitchRunValue } = h;
@@ -1171,7 +1174,9 @@ function HitterValueCard({ pitches, h, year }) {
         c[0] += a; c[1] += x; c[2] += q ? q.lv : a; c[3] += q ? q.lx : x; c[4]++; tot[k]++;
       }
     }
-    const types = Object.keys(cnt).filter(t => cnt[t] >= 15).sort((a, b) => cnt[b] - cnt[a]).slice(0, 8).map(t => ({ type: t, name: names[t], n: cnt[t] }));
+    const ord = (t) => { const i = SAVANT_ORDER.indexOf(t); return i < 0 ? SAVANT_ORDER.length : i; };
+    const types = Object.keys(cnt).filter(t => cnt[t] >= HV_MIN_N && cnt[t] >= HV_MIN_SHARE * sub.length).sort((a, b) => cnt[b] - cnt[a]).slice(0, HV_MAX_COLS)
+      .sort((a, b) => ord(a) - ord(b) || cnt[b] - cnt[a]).map(t => ({ type: t, name: names[t], n: cnt[t] }));
     return { types, A, tot };
   }, [sub, savant, pitchRunValue]);
   const st = useMemo(() => (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R"), [sub]);
@@ -1187,7 +1192,7 @@ function HitterValueCard({ pitches, h, year }) {
       {!types.length ? <div className="ov-note">Not enough pitches vs {ph}HP in this range.</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": types.length }}><span className="ov-vsec">Usage</span>
-            {types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={`${t.name}: ${t.n.toLocaleString()} seen vs ${ph}HP`}>{PITCH_ABBREV[t.name] || t.type}<small>{t.n.toLocaleString()}</small></div>)}
+            {types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={`${t.name}: ${t.n.toLocaleString()} seen vs ${ph}HP`}>{PITCH_ABBREV[t.name] || t.type}</div>)}
           </div>
           {HV_ROWS.map(([rk, rl]) => (
             <div key={rk} className={`ov-mrow${rk === "all" ? " ov-all" : ""}`} style={{ "--n": types.length }}>
@@ -1234,8 +1239,8 @@ function HitterValueCard({ pitches, h, year }) {
 // Location: the pitcher Overview's heatmaps from the hitter's side, by pitch group. Success = runs per pitch above what
 // the league's hitters do against that pitch type from that pitcher hand at that spot (+ = good for him).
 const HIT_GROUPS = [["fb", "Fastballs", "FF", new Set(["FF", "SI", "FC", "FA", "FT"]), "Four-seamers, sinkers, cutters"],
-  ["os", "Offspeed", "CH", new Set(["CH", "FS", "FO", "SC"]), "Changeups, splitters, forkballs, screwballs"],
-  ["br", "Breaking", "SL", new Set(["SL", "ST", "SV", "CU", "KC", "CS"]), "Sliders, sweepers, slurves, curveballs"]];
+  ["br", "Breaking", "SL", new Set(["SL", "ST", "SV", "CU", "KC", "CS"]), "Sliders, sweepers, slurves, curveballs"],
+  ["os", "Offspeed", "CH", new Set(["CH", "FS", "FO", "SC"]), "Changeups, splitters, forkballs, screwballs"]];
 function HitterLocationCard({ pitches, h, side, setSide }) {
   const { GaussianHeatmapCanvas, pitchMatchesCount, pitchRunValue, getPitchColor } = h;
   const [grp, setGrp] = useState("fb"), [count, setCount] = useState("all"), [slide, setSlide] = useState(0);
@@ -1353,18 +1358,22 @@ export function HittersPage({ C, helpers }) {
   }, [lineKey, season]);
   const derived = useMemo(() => hitterLine(cur, helpers), [cur, helpers]);
   const line = official && official.key === lineKey ? official.line : derived;
-  // K % and BB % (walks include intentional ones, as FanGraphs counts them) come from the same line as the slash stats;
-  // each tile's tooltip ranks the number against every hitter that season.
-  const rates = useMemo(() => {
+  // Header tiles: AVG / OBP / SLG / HR from the line, K % and BB % from the same line (walks include intentional ones, as
+  // FanGraphs counts them). Each is coloured by its percentile among every hitter with 100+ PA that season: green above
+  // average, red below, plain in the middle third. HR is ranked as home runs per PA so a partial season compares fairly.
+  const tiles = useMemo(() => {
     if (!line || !line.pa) return [];
-    const src = line.so != null && line.bb != null ? line : derived && derived.pa ? derived : null; if (!src) return [];
-    const pool = HIT_POOLS[year]?.all;
-    return [["K%", "k", src.so, true], ["BB%", "bb", src.bb, false]].map(([lab, key, n, lowGood]) => {
-      const v = 100 * n / src.pa, pct = src.pa >= 10 ? pctFromQ(pool?.[key], v, lowGood) : null;
-      return [lab, v.toFixed(1), `${n} in ${src.pa.toLocaleString()} PA${pct != null ? `\n${ordinal(pct)} percentile among all ${pool.n} hitters with 100+ PA in ${year}${lowGood ? " (fewer strikeouts ranks higher)" : ""}` : ""}`];
+    const src = line.so != null && line.bb != null ? line : derived && derived.pa ? derived : null, pool = HIT_LINE_POOLS[year];
+    const rows = [["AVG", fmt3(line.avg), "avg", line.avg], ["OBP", fmt3(line.obp), "obp", line.obp], ["SLG", fmt3(line.slg), "slg", line.slg], ["HR", line.hr, "hr", 100 * line.hr / line.pa, "", "per PA"]];
+    if (src) rows.push(["K%", (100 * src.so / src.pa).toFixed(1), "k", 100 * src.so / src.pa, "%", `${src.so} in ${src.pa.toLocaleString()} PA`, true], ["BB%", (100 * src.bb / src.pa).toFixed(1), "bb", 100 * src.bb / src.pa, "%", `${src.bb} in ${src.pa.toLocaleString()} PA`]);
+    return rows.map(([lab, shown, key, v, unit, note, lowGood]) => {
+      const pct = line.pa >= 30 ? pctFromQ(pool?.[key], v, lowGood) : null;
+      const mag = pct == null ? 0 : Math.max(0, Math.min(1, (Math.abs(pct - 50) - 16) / 33)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+      const col = pct == null || Math.abs(pct - 50) < 16 ? null : pct > 50 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+      const rank = pct != null ? `${ordinal(pct)} percentile${key === "hr" ? " in home runs per PA" : ""} among all ${pool.n} hitters with 100+ PA in ${year}${lowGood ? " (fewer strikeouts ranks higher)" : ""}` : line.pa < 30 ? "Too few PA to rank" : "";
+      return { lab, shown, unit, col, tip: [key !== "hr" && note, rank].filter(Boolean).join("\n") };
     });
   }, [line, derived, year]);
-
   const bats = useMemo(() => (batter?.bats === "L" || batter?.bats === "R" || batter?.bats === "S" ? batter.bats : season && season.length ? standOf(season) : ""), [batter, season]);
   const busy = !!loading[year] || (!!batter && !data[year]);
   const lineTip = line ? `${line.pa.toLocaleString()} PA${ranged ? " in this date range" : ` · ${year} regular season`}\n${line.source === "mlb" ? "Official MLB line" : HIT_SEASON[year] ? "From Statcast pitch data" : "From pitch data: an intentional walk issued without a pitch is not counted"}` : undefined;
@@ -1395,11 +1404,10 @@ export function HittersPage({ C, helpers }) {
           {batter && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{ranged ? "No plate appearances in this date range." : `No ${year} MLB data for this hitter.`}</div>}
           {batter && !busy && line && (
             <div className="ov-grp">
-              {[["AVG", fmt3(line.avg)], ["OBP", fmt3(line.obp)], ["SLG", fmt3(line.slg)], ["HR", line.hr]].map(([k, v]) => (
-                <div key={k} className="ov-st big" title={lineTip}><div className="k">{k}</div><div className="v">{v}</div></div>
-              ))}
-              {rates.map(([k, v, tip]) => (
-                <div key={k} className="ov-st big" title={tip}><div className="k">{k}</div><div className="v">{v}<small>%</small></div></div>
+              {tiles.map(t => (
+                <div key={t.lab} className="ov-st big" title={[t.tip, lineTip].filter(Boolean).join("\n")} style={t.col ? { backgroundImage: `linear-gradient(${t.col},${t.col})` } : undefined}>
+                  <div className="k">{t.lab}</div><div className="v">{t.shown}{t.unit && <small>{t.unit}</small>}</div>
+                </div>
               ))}
             </div>
           )}
