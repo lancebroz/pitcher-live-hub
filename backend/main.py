@@ -849,7 +849,88 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
     The main endpoint for the HISTORICAL view.
     Fetches Statcast CSV data from Baseball Savant.
     """
-    cache_key = f"statcast:{pitcher_id}:{start_date}:{end_date}"
+    return await _savant_pitches("pitcher", pitcher_id, start_date, end_date)
+
+
+@app.get("/api/batter/{batter_id}/statcast")
+async def get_batter_statcast(batter_id: int, start_date: str, end_date: str):
+    """Every pitch a hitter saw in a date range, from Baseball Savant (used for past seasons on the Hitters tab).
+
+    Same row shape as the pitcher endpoint. Savant's bb_type does not mark bunts, so bunts are tagged here
+    ("bunt_ground_ball", ...) the way the current-season feed tags them; the app leaves bunts out of
+    contact-quality stats.
+    """
+    cache_key = f"statcast_bat_tagged:{batter_id}:{start_date}:{end_date}"
+    cached = get_cached(cache_key, 3600)
+    if cached:
+        return cached
+    rows = await _savant_pitches("batter", batter_id, start_date, end_date)
+    out = []
+    for p in rows or []:
+        q = dict(p)
+        if q.get("is_in_play") and q.get("is_bunt_des") and not str(q.get("bb_type") or "").startswith("bunt"):
+            q["bb_type"] = "bunt_" + (q.get("bb_type") or "grounder")
+        out.append(q)
+    set_cache(cache_key, out)
+    return out
+
+
+@app.get("/api/batter/{batter_id}/line")
+async def get_batter_line(batter_id: int, season: int = 2026, start_date: str = "", end_date: str = ""):
+    """Official regular-season batting line (AVG / OBP / SLG / HR / PA) from the MLB Stats API.
+
+    Whole season by default; with start_date and end_date, the line for that date range. Returns {} when
+    the API has nothing, and the app then falls back to the line it derives from pitch data.
+    """
+    ranged = bool(start_date and end_date)
+    cache_key = f"bat_line:{batter_id}:{season}:{start_date}:{end_date}"
+    cached = get_cached(cache_key, 600)
+    if cached is not None:
+        return cached
+    if ranged:
+        url = (f"{MLB_BASE}/api/v1/people/{batter_id}/stats?stats=byDateRange&group=hitting"
+               f"&startDate={start_date}&endDate={end_date}&season={season}&gameType=R")
+    else:
+        url = f"{MLB_BASE}/api/v1/people/{batter_id}/stats?stats=season&group=hitting&season={season}&gameType=R"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, timeout=10)
+        splits = (r.json().get("stats") or [{}])[0].get("splits") or []
+    except Exception as e:
+        print(f"[batter line] {batter_id}: {e}")
+        return {}
+    if not splits:
+        return {}
+
+    def _n(st, k):
+        try:
+            return float(st.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # A traded player gets one split per team; the season call adds a combined row (no team), the date-range
+    # call may not. Use the combined row when there is one, otherwise add the team rows up.
+    combined = [sp for sp in splits if not sp.get("team") or (sp.get("numTeams") or 0) > 1]
+    rows = [combined[0]] if combined else splits
+    keys = ("hits", "atBats", "baseOnBalls", "hitByPitch", "sacFlies", "totalBases", "homeRuns", "plateAppearances")
+    t = {k: sum(_n(sp.get("stat") or {}, k) for sp in rows) for k in keys}
+    if not t["plateAppearances"]:
+        return {}
+    ab, obp_den = t["atBats"], t["atBats"] + t["baseOnBalls"] + t["hitByPitch"] + t["sacFlies"]
+    out = {
+        "avg": t["hits"] / ab if ab else None,
+        "obp": (t["hits"] + t["baseOnBalls"] + t["hitByPitch"]) / obp_den if obp_den else None,
+        "slg": t["totalBases"] / ab if ab else None,
+        "hr": int(t["homeRuns"]), "pa": int(t["plateAppearances"]), "ab": int(ab),
+        "hits": int(t["hits"]), "bb": int(t["baseOnBalls"]), "source": "mlb",
+    }
+    set_cache(cache_key, out)
+    return out
+
+
+async def _savant_pitches(player_type: str, player_id: int, start_date: str, end_date: str):
+    """Statcast pitch rows for one pitcher or one batter over a date range (Baseball Savant CSV search)."""
+    cache_key = f"statcast:{player_id}:{start_date}:{end_date}" if player_type == "pitcher" else f"statcast_bat:{player_id}:{start_date}:{end_date}"
     cached = get_cached(cache_key, 3600)  # cache for 1 hour
     if cached:
         return cached
@@ -869,7 +950,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
         "hfC": "",
         "hfSea": "",
         "hfSit": "",
-        "player_type": "pitcher",
+        "player_type": player_type,
         "hfOuts": "",
         "opponent": "",
         "pitcher_throws": "",
@@ -883,7 +964,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
         "hfOutfield": "",
         "hfRO": "",
         "home_road": "",
-        "pitchers_lookup[]": str(pitcher_id),
+        ("batters_lookup[]" if player_type == "batter" else "pitchers_lookup[]"): str(player_id),
         "hfFlag": "",
         "hfBBT": "",
         "metric_1": "",
@@ -968,6 +1049,7 @@ async def get_statcast(pitcher_id: int, start_date: str, end_date: str):
             "on_3b": bool(str(row.get("on_3b") or "").strip()) if "on_3b" in row else None,
             "bat_speed": safe_float("bat_speed"),
             "swing_length": safe_float("swing_length"),
+            "is_bunt_des": "bunt" in str(row.get("des") or "").lower(),
         })
 
     # Fill in missing pitch_type from pitch_name (Savant sometimes returns blank codes)

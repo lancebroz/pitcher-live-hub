@@ -3,19 +3,20 @@
 // Pitch data comes from the same endpoints and the same normaliser as the Compare tool
 // (passed in through `helpers`), so the numbers reconcile across tabs.
 import { useState, useEffect, useMemo, useRef } from "react";
-import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo } from "./api.js";
+import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo, searchBatters, getBatterCachedSeason, getBatterStatcast, getBatterLine } from "./api.js";
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { leagueRunValue } from "./successValue.js";
-import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K } from "./hitterData.js";
-import { HITTER_RESULT_ROWS, hitterResults } from "./hitterStats.js";
+import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_RANDOM_POOL } from "./hitterData.js";
+import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
 let OV_LAST_PITCHER = null;
+let HIT_LAST_BATTER = null;   // same for the Hitters tab
 
 const FB_CODES = ["FF", "SI", "FC", "FA"];
 // MLB team IDs by the abbreviation the search endpoint returns (plus common alternates), for mlbstatic logos
@@ -1107,16 +1108,16 @@ function standOf(ps) {
   const sh = ps.length ? l / ps.length : 0;
   return sh >= 0.9 ? "L" : sh <= 0.1 ? "R" : "S";
 }
-const STAND_WORD = { L: "left-handed", R: "right-handed", S: "switch" };
 
-// Results: percentile sliders against hitters in the same handedness matchup.
-function HitterResultsCard({ pitches, h }) {
+// Results: percentile sliders. "All" ranks him against every hitter; a pitcher-hand split ranks him against hitters
+// batting from the same side against that hand.
+function HitterResultsCard({ pitches, h, year }) {
   const [side, setSide] = useState("all");   // pitcher hand: all | L | R
   const sub = useMemo(() => (side === "all" ? pitches : pitches.filter(p => p.p_throws === side)), [pitches, side]);
   const vals = useMemo(() => hitterResults(sub, h), [sub, h]);
-  const cls = useMemo(() => standOf(sub), [sub]), st = cls === "S" ? (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R") : cls;
-  const pool = side === "all" ? (HIT_POOLS.all[cls]?.xwoba ? HIT_POOLS.all[cls] : HIT_POOLS.all.A) : HIT_POOLS.split[st]?.[side];
-  const among = !pool ? "" : side === "all" ? `Among ${pool.n} ${pool === HIT_POOLS.all.A ? "" : STAND_WORD[cls] + " "}hitters with 100+ PA` : `Among ${pool.n} hitters batting ${st === "L" ? "left" : "right"} vs ${side}HP (50+ PA)`;
+  const st = useMemo(() => (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R"), [sub]);
+  const pool = side === "all" ? HIT_POOLS[year]?.all : HIT_POOLS[year]?.split?.[st]?.[side];
+  const among = !pool ? "" : side === "all" ? `Among all ${pool.n} hitters with 100+ PA in ${year}` : `Among ${pool.n} hitters batting ${st === "L" ? "left" : "right"} vs ${side}HP in ${year} (50+ PA)`;
   const enough = { pa: vals && vals.pa >= 10, bbe: vals && vals.bbe >= 10, n: vals && vals.n >= 50 };
   return (
     <div className="ov-card">
@@ -1146,7 +1147,7 @@ function HitterResultsCard({ pitches, h }) {
 
 // Value: run value by pitch type seen, split overall / before two strikes / two strikes, against one pitcher hand.
 const HV_KEYS = ["nv", "nx", "lv", "lx"];
-function HitterValueCard({ pitches, h }) {
+function HitterValueCard({ pitches, h, year }) {
   const [ph, setPh] = useState("R"), [mode, setMode] = useState("a"), [ctx, setCtx] = useState("n");
   const { getPitchColor, PITCH_ABBREV, pitchRunValue } = h;
   const sub = useMemo(() => pitches.filter(p => p.p_throws === ph && p.pitch_type), [pitches, ph]);
@@ -1167,7 +1168,7 @@ function HitterValueCard({ pitches, h }) {
     return { types, A };
   }, [sub, savant, pitchRunValue]);
   const st = useMemo(() => (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R"), [sub]);
-  const lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1), lg = HIT_VALUE_REF[st]?.[ph] || {};
+  const lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1), lg = HIT_VALUE_REF[year]?.[st]?.[ph] || {}, KS = HIT_VALUE_K[year] || {};
   const what = `${lev ? "Leveraged: weighted by the base/out situation." : "Context-neutral: base/out situation ignored."} ${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."}`;
   const tg = (cur, set, opts) => <div className="ov-tg3" style={{ marginLeft: 0 }}>{opts.map(([k, l, tip, off]) => <button key={k} aria-pressed={cur === k} disabled={off} style={off ? { opacity: 0.4, cursor: "default" } : undefined} onClick={() => set(k)} title={tip}>{l}</button>)}</div>;
   return (
@@ -1190,7 +1191,7 @@ function HitterValueCard({ pitches, h }) {
               {types.map(t => {
                 const c = A[`${t.type}|${rk}`];
                 if (!c || c[4] < 15) return <div key={t.type} className="ov-mcell z" title={c ? `${t.name} · ${rl}: only ${c[4]} pitches` : undefined}>—</div>;
-                const n = c[4], v = 100 * c[mi] / n, ref = lg[t.type]?.[rk]?.[mi], K = HIT_VALUE_K[HV_KEYS[mi]][rk];
+                const n = c[4], v = 100 * c[mi] / n, ref = lg[t.type]?.[rk]?.[mi], K = KS[HV_KEYS[mi]]?.[rk] || [1, 0];
                 const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
                 const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
                 return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
@@ -1205,16 +1206,135 @@ function HitterValueCard({ pitches, h }) {
   );
 }
 
-export function HitterCards({ C, pitches, h }) {
+const fmt3 = (v) => (v == null || isNaN(v) ? "—" : v.toFixed(3).replace(/^0(?=\.)/, ""));
+const HIT_SEASON = { 2025: ["2025-03-27", "2025-09-28"] };   // past seasons come from Savant by date range
+const BATS_WORD = { L: "LHB", R: "RHB", S: "Switch" };
+
+export function HittersPage({ C, helpers }) {
+  const { normalizeLivePitch, normAndFilter, isPostseasonDate, DatePickerWithHighlights } = helpers;
+  const [q, setQ] = useState(""), [results, setResults] = useState([]), [open, setOpen] = useState(false);
+  const [batter, setBatter] = useState(null), [year, setYearRaw] = useState("2026");
+  const [data, setData] = useState({}), [loading, setLoading] = useState({});   // by season
+  const [range, setRange] = useState({ s: "", e: "" }), [official, setOfficial] = useState(null), endRef = useRef(null);
+  const setYear = (y) => { setRange({ s: "", e: "" }); setYearRaw(y); };
   const [rootRef, tipEl] = useTapTips();
+  const searchRef = useRef(null), seqRef = useRef(0);
+
+  useEffect(() => {
+    if (q.trim().length < 2 || (batter && q === batter.name)) { setResults([]); return undefined; }
+    let alive = true;
+    const t = setTimeout(async () => {
+      try { const r = await searchBatters(q); if (alive) { setResults(r || []); setOpen(true); } } catch { if (alive) setResults([]); }
+    }, 200);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q, batter]);
+  useEffect(() => {
+    const f = (e) => { if (searchRef.current && !searchRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", f); return () => document.removeEventListener("mousedown", f);
+  }, []);
+
+  const loadBatter = (b) => {
+    HIT_LAST_BATTER = b; ++seqRef.current;
+    setBatter(b); setQ(b.name); setOpen(false); setResults([]); setData({}); setLoading({}); setOfficial(null); setYear("2026");   // setYear also clears the date range
+  };
+  // First visit: open on a random 2026 regular (300+ PA). Coming back to the tab restores the last hitter viewed.
+  useEffect(() => {
+    if (HIT_LAST_BATTER) { loadBatter(HIT_LAST_BATTER); return; }
+    if (!HIT_RANDOM_POOL.length) return;
+    const [id, name, team, bats] = HIT_RANDOM_POOL[Math.floor(Math.random() * HIT_RANDOM_POOL.length)];
+    loadBatter({ id, name, team, bats });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A season loads the first time it is opened: this year's from the pitch cache, a past one from Savant.
+  useEffect(() => {
+    if (!batter || data[year] || loading[year]) return;
+    const seq = seqRef.current, y = year, done = (rows) => { if (seq !== seqRef.current) return; setData(d => ({ ...d, [y]: rows })); setLoading(l => ({ ...l, [y]: false })); };
+    setLoading(l => ({ ...l, [y]: true }));
+    const span = HIT_SEASON[y];
+    (span ? getBatterStatcast(batter.id, span[0], span[1]).then(raw => normAndFilter(raw || [])) : getBatterCachedSeason(batter.id).then(raw => (raw || []).map(normalizeLivePitch)))
+      .then(done).catch(() => done([]));
+  }, [batter, year, data, loading, normAndFilter, normalizeLivePitch]);
+
+  // Regular season only (anything after Sep 28 is postseason), as on the pitcher Overview.
+  const season = useMemo(() => (data[year] ? data[year].filter(p => !isPostseasonDate(p.game_date)) : null), [data, year, isPostseasonDate]);
+  const ranged = !!(range.s || range.e);
+  const cur = useMemo(() => (season && ranged ? season.filter(p => p.game_date && (!range.s || p.game_date >= range.s) && (!range.e || p.game_date <= range.e)) : season), [season, ranged, range]);
+  const playedDates = useMemo(() => new Set((season || []).map(p => p.game_date).filter(Boolean)), [season]);
+  const seasonSpan = useMemo(() => { const d = [...playedDates].sort(); return d.length ? [d[0], d[d.length - 1]] : ["", ""]; }, [playedDates]);
+
+  // Official line from MLB (it counts intentional walks that never show up as a pitch); the pitch-derived line fills in until it arrives.
+  const lineKey = batter ? `${batter.id}|${year}|${range.s}|${range.e}` : "";
+  useEffect(() => {
+    if (!batter || !season || !season.length) return undefined;
+    let alive = true; const key = lineKey;
+    getBatterLine(batter.id, year, ranged ? range.s || seasonSpan[0] : "", ranged ? range.e || seasonSpan[1] : "")
+      .then(r => { if (alive && r && r.pa) setOfficial({ key, line: r }); }).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lineKey, season]);
+  const derived = useMemo(() => hitterLine(cur, helpers), [cur, helpers]);
+  const line = official && official.key === lineKey ? official.line : derived;
+
+  const bats = useMemo(() => (batter?.bats === "L" || batter?.bats === "R" || batter?.bats === "S" ? batter.bats : season && season.length ? standOf(season) : ""), [batter, season]);
+  const busy = !!loading[year] || (!!batter && !data[year]);
+  const lineTip = line ? `${line.pa.toLocaleString()} PA${ranged ? " in this date range" : ` · ${year} regular season`}\n${line.source === "mlb" ? "Official MLB line" : HIT_SEASON[year] ? "From Statcast pitch data" : "From pitch data: an intentional walk issued without a pitch is not counted"}` : undefined;
+
   return (
-    <div className="ov" style={{ ...themeVars(C), padding: 0, marginBottom: 16 }} ref={rootRef}>
+    <div className="ov" style={themeVars(C)} ref={rootRef}>
       <style>{CSS}</style>
-      <div className="ov-row ov-hrow">
-        <HitterResultsCard pitches={pitches} h={h} />
-        <HitterValueCard pitches={pitches} h={h} />
-      </div>
       {tipEl}
+      <div className="ov-sum">
+        <div className="ov-who" ref={searchRef}>
+          <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => results.length > 0 && setOpen(true)} placeholder="Search hitter..." aria-label="Search hitter" />
+          {open && results.length > 0 && (
+            <div className="ov-dd">
+              {results.map(r => <div key={r.id} onClick={() => loadBatter(r)}><strong>{r.name}</strong>{r.team && <span>{r.team}</span>}{r.position && <span>{r.position}</span>}</div>)}
+            </div>
+          )}
+          {batter && (
+            <div className="ov-id">
+              <div className="ov-face" role="img" aria-label={batter.name} style={{ backgroundImage: `url(${headshotUrl(batter.id)})` }} />
+              {TEAM_IDS[batter.team] && <img className="ov-logo" src={`https://www.mlbstatic.com/team-logos/${TEAM_IDS[batter.team]}.svg`} alt={batter.team} onError={e => { e.currentTarget.style.display = "none"; }} />}
+              <div className="nm"><h1>{batter.name}</h1><span>{[BATS_WORD[bats], batter.position].filter(Boolean).join(" · ")}</span></div>
+            </div>
+          )}
+        </div>
+        <div className="ov-stats">
+          {!batter && <div className="ov-note" style={{ padding: "8px 0", textAlign: "left" }}>Search a hitter to load his season line, results and run value by pitch type.</div>}
+          {batter && busy && <div className="ov-note" style={{ padding: "8px 0" }}>Loading {year} season…</div>}
+          {batter && !busy && !line && <div className="ov-note" style={{ padding: "8px 0" }}>{ranged ? "No plate appearances in this date range." : `No ${year} MLB data for this hitter.`}</div>}
+          {batter && !busy && line && (
+            <div className="ov-grp">
+              {[["AVG", fmt3(line.avg)], ["OBP", fmt3(line.obp)], ["SLG", fmt3(line.slg)], ["HR", line.hr]].map(([k, v]) => (
+                <div key={k} className="ov-st big" title={lineTip}><div className="k">{k}</div><div className="v">{v}</div></div>
+              ))}
+            </div>
+          )}
+        </div>
+        {batter && (
+          <div className="ov-ctl">
+            <div className="ov-years">
+              {["2026", "2025"].map(y => <button key={y} aria-pressed={year === y} onClick={() => setYear(y)}>{y}</button>)}
+            </div>
+            {season && season.length > 0 && (
+              <div className="ov-range">
+                <DatePickerWithHighlights value={range.s} onChange={v => setRange(r => ({ s: v, e: r.e && r.e < v ? "" : r.e }))} pitchedDates={playedDates} legend="Played" C={C} label="Start" placeholder="Start" initial={seasonSpan[0]} compact align="right"
+                  onAfterSelect={() => { const b = endRef.current && endRef.current.querySelector("button"); if (b && !range.e) b.click(); }} />
+                <span>–</span>
+                <div ref={endRef}><DatePickerWithHighlights value={range.e} onChange={v => setRange(r => ({ s: r.s && r.s > v ? "" : r.s, e: v }))} pitchedDates={playedDates} legend="Played" C={C} label="End" placeholder="End" initial={seasonSpan[1]} compact align="right" /></div>
+                {ranged && <button className="ov-rx" onClick={() => setRange({ s: "", e: "" })} aria-label="Clear date range">×</button>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {batter && !busy && cur && cur.length > 0 && (
+        <div className="ov-row ov-hrow">
+          <HitterResultsCard pitches={cur} h={helpers} year={year} />
+          <HitterValueCard pitches={cur} h={helpers} year={year} />
+        </div>
+      )}
     </div>
   );
 }

@@ -56,6 +56,21 @@ export async function getBatterCachedSeason(batterId) {
   return res.json();
 }
 
+// Every pitch a hitter saw in a date range, from Baseball Savant (past seasons on the Hitters tab).
+export async function getBatterStatcast(batterId, startDate, endDate) {
+  const res = await fetch(`${API_BASE}/api/batter/${batterId}/statcast?start_date=${startDate}&end_date=${endDate}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+// Official regular-season batting line; with both dates, the line for that range. {} when unavailable.
+export async function getBatterLine(batterId, season, startDate = "", endDate = "") {
+  const range = startDate && endDate ? `&start_date=${startDate}&end_date=${endDate}` : "";
+  const res = await fetch(`${API_BASE}/api/batter/${batterId}/line?season=${season}${range}`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
 export async function getGamePitchers(gamePk) {
   const res = await fetch(`${API_BASE}/api/game/${gamePk}/pitchers`);
   if (!res.ok) return [];

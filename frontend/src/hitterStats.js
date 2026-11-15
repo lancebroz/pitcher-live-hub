@@ -59,3 +59,26 @@ export function hitterResults(ps, h) {
     zswing: pc(izs, iz), zcontact: izs > 0 ? 100 * (1 - izw / izs) : null, zmiss: pc(izw, izs),
   };
 }
+
+// Traditional line (AVG / OBP / SLG / HR) from pitch data, same plate-appearance rules as hitterResults.
+// The header prefers the official MLB line; this one is the fallback. It misses intentional walks issued
+// without a pitch in current-season feed data, so its OBP can run slightly low there.
+export function hitterLine(ps, h) {
+  if (!ps || !ps.length) return null;
+  let hits = 0, tb = 0, hr = 0, outs = 0, k = 0, bb = 0, hbp = 0, sf = 0, sh = 0;
+  for (const p of ps) {
+    const ev = p.events; if (!ev) continue;
+    if (ev === "strikeout" || ev === "strikeout_double_play") { if (h.endsPaAsK(p)) k++; continue; }
+    if (ev === "walk" || ev === "intent_walk") { if (p.is_ball && Number(p.balls) === 3) bb++; continue; }
+    if (ev === "hit_by_pitch") { if ((p.call_description || p.description || "").toLowerCase().includes("hit_by_pitch")) hbp++; continue; }
+    if (!p.is_in_play) continue;
+    const t = h.SLG_TB[ev];
+    if (t != null) { hits++; tb += t; if (ev === "home_run") hr++; }
+    else if (ev === "sac_fly" || ev === "sac_fly_double_play") sf++;
+    else if (ev === "sac_bunt") sh++;
+    else if (h.SLG_AB_CONTACT_OUTS.has(ev)) outs++;
+  }
+  const ab = hits + outs + k, pa = ab + bb + hbp + sf + sh, od = ab + bb + hbp + sf;
+  if (!pa) return null;
+  return { avg: ab ? hits / ab : null, obp: od ? (hits + bb + hbp) / od : null, slg: ab ? tb / ab : null, hr, pa, ab, source: "pitches" };
+}
