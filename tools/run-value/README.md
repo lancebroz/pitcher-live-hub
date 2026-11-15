@@ -58,12 +58,26 @@ routine grounder with a man on first are worth the same. `fit_live.py` fits `R` 
 
 Check on the app's own 2026 pitches (feed event names and trajectory, Statcast base/out): the neutral value
 equals Statcast's `delta_run_exp` on 99.9% of 712,249 pitches; pitcher x pitch-type sums differ by 0.09
-runs on average. Seasons after the last fitted one use the latest table. No park term is applied per
-pitch (it needs Savant's published totals to fit), so a season in progress, the Tracker / Compare run
-values and the Leaderboard RV are Savant's per-pitch values without the park adjustment.
+runs on average. Seasons after the last fitted one use the latest table.
 
-The Value container uses the season file when there is one and the per-pitch values otherwise; pitches
-without base/out state fall back to construction 2.
+## One number in every pitcher table
+
+The Overview's Value container, the Compare and Tracker pitch tables and the Leaderboard all show the same
+thing: the per-pitch value from the pitcher's side (+ = runs saved) plus the park term
+(`frontend/src/pitcherValue.js`; the backend mirrors it for the Leaderboard). The park term is stored per season,
+home park and outcome class (`park_table.json`, written into `rvSavant.js` and `backend/rv_park.json`), so it
+can be added pitch by pitch and any date range or filter carries it. It needs Savant's published totals to
+fit, so a season in progress has none until it is fitted.
+
+- Against Savant's published pitcher x pitch-type run value (200+ pitches): per-pitch values with the park
+  term are off by 0.21 runs on average in 2025 and 0.25 in 2026; without it, 0.62 and 0.58.
+- In 2025 the per-pitch sums equal the season file exactly; in 2026 they differ by 0.02 runs per 100 pitches
+  on average (the 0.1% of pitches where the rebuilt value differs from Statcast's).
+- A sample where fewer than 98% of pitches carry base/out state is valued with construction 2 throughout.
+- The season file (`overviewValueSv*.js`) is now only a stand-in for a full season whose pitches arrive
+  without their home park.
+- The expected versions (xRV) come from the per-pitch construction too, which differs a little from the
+  season file's: about 0.06-0.10 runs per 100 pitches per pitch type.
 
 ## 2. Linear weights (Success heatmap; fallback wherever a pitch has no base/out state)
 

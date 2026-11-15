@@ -108,6 +108,24 @@ _RV_SEASON = {
 _SV_TABLES = None
 
 
+_SV_PARK = None
+
+
+def _sv_park():
+    """Run value park term by season / home park / outcome class (see tools/run-value). Pitcher view, runs per pitch."""
+    global _SV_PARK
+    if _SV_PARK is None:
+        try:
+            import json as _json
+            import os as _os
+            with open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "rv_park.json")) as f:
+                _SV_PARK = _json.load(f)
+        except Exception as e:
+            print(f"[run value] park table unavailable: {e}")
+            _SV_PARK = {}
+    return _SV_PARK
+
+
 def _sv_tables():
     """Savant-style run value tables by season (see tools/run-value): k[bo], R[bo][count], E[outcome][bo]."""
     global _SV_TABLES
@@ -184,8 +202,11 @@ def _feed_pitch_states(all_plays):
     return states
 
 
-def _pitch_run_values(df):
+def _pitch_run_values(df, park=False):
     """Run value of every pitch from the batter's side (negative = good for the pitcher).
+
+    park=True adds the park term for completed seasons (the Leaderboard). The per-pitch values sent to the app
+    stay without it: the app adds the term itself (rvSavant.js), and adding it twice would double it.
 
     The plate-appearance result is credited only to the pitch that ended it: the parquet rows carry the
     PA's `events` on every pitch, so the outcome is read from the pitch call, not from `events`.
@@ -281,6 +302,18 @@ def _pitch_run_values(df):
                     sel = cm == c
                     v[sel] = e[bo[m][sel]] - R[bo[m][sel], c0[m][sel]]
                 sv[m] = v * kk[bo[m]]
+            # Park term (completed seasons only): Savant's published run values carry one, its per-pitch values do
+            # not. Stored from the pitcher's side, so it comes off the batter-side value. Mirrors rvSavant.js.
+            park_tbl = _sv_park() if park else None
+            if park_tbl and "home_team" in df.columns:
+                home = df["home_team"].fillna("").astype(str).to_numpy()
+                pcl = np.full(n, "n", dtype=object)
+                pcl[ipn] = np.where(evn[ipn] == "home_run", "HR", np.where(np.isin(evn[ipn], ["single", "double", "triple"]), "H", "O"))
+                pcl[(cls == "strikeout") & ~ipn] = "K"
+                pcl[(((cls == "walk") & (evn != "intent_walk")) | (cls == "hit_by_pitch")) & ~ipn] = "BB"
+                yrs = year.to_numpy()
+                pk = np.array([(park_tbl.get(str(int(y)), {}).get(h, {}) or {}).get(c, 0.0) for y, h, c in zip(yrs, home, pcl)])
+                sv = sv - pk
             out = out.where(~has_bo, pd.Series(sv, index=df.index))
     return out
 
@@ -502,7 +535,7 @@ async def get_batter_cached_season(batter_id: int):
             "plate_x", "plate_z", "zone", "sz_top", "sz_bottom",
             "call_description", "is_in_play", "is_strike", "is_ball", "events",
             "launch_speed", "launch_angle", "trajectory", "hit_x", "hit_y",
-            "balls", "strikes", "outs", "on_1b", "on_2b", "on_3b",
+            "balls", "strikes", "outs", "on_1b", "on_2b", "on_3b", "home_team",
             "batter_hand", "stand", "pitcher_hand", "pitcher_name"]
     cols = [c for c in keep if c in sub.columns]
     out = sub[cols].copy()
@@ -1082,6 +1115,7 @@ async def _savant_pitches(player_type: str, player_id: int, start_date: str, end
             "swing_length": safe_float("swing_length"),
             "is_bunt_des": "bunt" in str(row.get("des") or "").lower(),
             "arm_angle": safe_float("arm_angle"),   # Statcast's measured arm angle for this pitch (degrees)
+            "home_team": (str(row.get("home_team") or "").strip() or None),   # home park, for the run value park term
         })
         if player_type == "batter":
             # Zone heights for Process+ on the Hitters tab. Left off pitcher rows so the pitcher pages keep
@@ -1497,6 +1531,7 @@ async def get_cached_season(pitcher_id: int):
     at_bats = col_float("at_bat_number")
     outs_col = col_float("outs")
     on_1b_col, on_2b_col, on_3b_col = col_opt_bool("on_1b"), col_opt_bool("on_2b"), col_opt_bool("on_3b")
+    home_col = col_str("home_team")   # home park, for the run value park term
 
     n = len(pitcher_df)
     pitches = []
@@ -1564,6 +1599,7 @@ async def get_cached_season(pitcher_id: int):
             "on_1b": on_1b_col[i],
             "on_2b": on_2b_col[i],
             "on_3b": on_3b_col[i],
+            "home_team": home_col[i] or None,
             "delta_run_exp": None,
         })
 
@@ -2860,13 +2896,14 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                     "on_1b": _optb(row.get("on_1b")),
                     "on_2b": _optb(row.get("on_2b")),
                     "on_3b": _optb(row.get("on_3b")),
+                    "home_team": str(row.get("home_team", "") or ""),
                     "inning": _safef(row.get("inning")),
                 })
 
             all_df = pd.DataFrame(records)
             if len(all_df):
                 # Run value needs whole plate appearances, so it is computed once here, before any filter.
-                all_df["_rv"] = _pitch_run_values(all_df)
+                all_df["_rv"] = _pitch_run_values(all_df, park=True)
             set_cache(raw_key, all_df)
             set_cache("leaderboard_updated", ct_now.strftime("%Y-%m-%d %I:%M %p CT"))
             set_cache("leaderboard_fetch_stats", {
@@ -2947,7 +2984,7 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
 
     # Run value is attached to every pitch when the frame is built (see _pitch_run_values).
     if "_rv" not in df.columns:
-        df["_rv"] = _pitch_run_values(df)
+        df["_rv"] = _pitch_run_values(df, park=True)
 
     # ── Step 4: Group and aggregate ──
     grouped = df.groupby("pitcher_id")
@@ -3005,8 +3042,9 @@ async def _leaderboard_impl(batter_hand: str, pitch_type: str):
                 "gb_rate": round(gb / bip * 100, 1) if bip > 0 else None,
                 "fb_rate": round(fb / bip * 100, 1) if bip > 0 else None,
                 "barrel_rate": round(barrels / bbe * 100, 1) if bbe > 0 else None,
-                "run_value": round(float(g["_rv"].sum()), 1),
-                "rv_100": round(float(g["_rv"].mean()) * 100, 1) if n > 0 else None,
+                # from the pitcher's side (+ = runs saved), the same number the Overview and Compare tables show
+                "run_value": round(-float(g["_rv"].sum()), 1),
+                "rv_100": round(-float(g["_rv"].mean()) * 100, 1) if n > 0 else None,
             })
         except Exception as e:
             print(f"Leaderboard: skipping pitcher {pid}: {e}")

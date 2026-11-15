@@ -4,6 +4,7 @@ import { searchPitchers, getLiveGames, getGamePitchers, getGamePitches, getStatc
 import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
 import { savantRunValue } from "./rvSavant.js";
+import { usesSavantValue, pitcherValue } from "./pitcherValue.js";
 import { leagueRunValue } from "./successValue.js";
 
 // Overview tab is code-split so its 3D library only downloads when the tab is opened.
@@ -345,6 +346,10 @@ const computeMetrics = (pitches, hf) => {
   // so they don't show as a blank row in the pitch-type table.
   f = f.filter(p => p.pitch_name && p.pitch_name.trim() !== "" && p.pitch_name.toLowerCase() !== "nan");
   if (!f.length) return null;
+  // Run value: the same per-pitch value the Overview's Value container shows, from the pitcher's side (+ = runs saved).
+  // The Savant-or-linear-weights call is made on the whole sample, before the batter-side filter, as the Overview does.
+  const svMode = usesSavantValue(pitches.filter(p => p.pitch_name && p.pitch_name.trim() !== "" && p.pitch_name.toLowerCase() !== "nan"));
+  const rvOf = (list) => { let t = 0; for (const p of list) t += pitcherValue(p, svMode, pitchRunValue)[0]; return t; };
   const bt = {};
   f.forEach(p => { if (!bt[p.pitch_name]) bt[p.pitch_name] = []; bt[p.pitch_name].push(p); });
   const ptm = Object.entries(bt).map(([n, pts]) => {
@@ -384,8 +389,8 @@ const computeMetrics = (pitches, hf) => {
       xSLG: computeXslg(pts),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-      expRunValue: pts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
-      rv100: (() => { const rvPts = pts.filter(p => p.delta_run_exp != null); const total = rvPts.reduce((a, p) => a + p.delta_run_exp, 0); return rvPts.length > 0 ? ((total / rvPts.length) * 100).toFixed(1) : "—"; })(),
+      expRunValue: rvOf(pts).toFixed(1),
+      rv100: pts.length > 0 ? (rvOf(pts) / pts.length * 100).toFixed(1) : "—",
       rawPitches: pts,
       avgRelHNum: avgNum(pts.map(p => p.release_pos_z)),
       avgRelSNum: avgNum(pts.map(p => p.release_pos_x)),
@@ -431,8 +436,8 @@ const computeMetrics = (pitches, hf) => {
     xSLG: computeXslg(allPts),
     xwOBACON: avg3(allPts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
     xwOBA: avg3(allPts.filter(p => p.woba_value != null).map(p => p.woba_value)),
-    expRunValue: allPts.filter(p => p.delta_run_exp != null).map(p => p.delta_run_exp).reduce((a, b) => a + b, 0).toFixed(1),
-    rv100: (() => { const rvPts = allPts.filter(p => p.delta_run_exp != null); const total = rvPts.reduce((a, p) => a + p.delta_run_exp, 0); return rvPts.length > 0 ? ((total / rvPts.length) * 100).toFixed(1) : "—"; })(),
+    expRunValue: rvOf(allPts).toFixed(1),
+    rv100: allPts.length > 0 ? (rvOf(allPts) / allPts.length * 100).toFixed(1) : "—",
     rawPitches: allPts,
   };
 
@@ -2019,8 +2024,12 @@ const normalizeLivePitch = (p) => {
   const desc = (p.description || p.call_description || "").toLowerCase();
   const isFoulTip = desc.includes("foul_tip") || desc.includes("foul tip");
   const isStrike = p.is_strike || desc.includes("strike") || desc.includes("foul");
-  const isSwing = desc.includes("swing") || desc.includes("foul") || desc.includes("in play") || desc.includes("into_play") || desc.includes("missed_bunt");
-  const isWhiff = isFoulTip || (desc.includes("swinging") && desc.includes("strike")) || desc.includes("missed_bunt");
+  // The call arrives in two spellings: feed codes ("hit_by_pitch", "missed_bunt") and the pitcher rows' display text
+  // ("Hit By Pitch", "Missed Bunt"). Both are matched; a hit batter read as a plain ball is worth nothing in run value.
+  const isMissedBunt = desc.includes("missed_bunt") || desc.includes("missed bunt");
+  const isHbp = desc.includes("hit_by_pitch") || desc.includes("hit by pitch");
+  const isSwing = desc.includes("swing") || desc.includes("foul") || desc.includes("in play") || desc.includes("into_play") || isMissedBunt;
+  const isWhiff = isFoulTip || (desc.includes("swinging") && desc.includes("strike")) || isMissedBunt;
   const isCalledStrike = desc.includes("called") && desc.includes("strike");
   const isFoul = !isFoulTip && desc.includes("foul"); // regular fouls only, NOT foul tips
   const isInPlay = p.is_in_play || desc.includes("in play") || desc.includes("into_play");
@@ -2071,13 +2080,13 @@ const normalizeLivePitch = (p) => {
     release_extension: p.release_extension,
     plate_x: p.plate_x,
     plate_z: p.plate_z,
-    description: isWhiff ? "swinging_strike" : isCalledStrike ? "called_strike" : isFoul ? "foul" : isInPlay ? "hit_into_play" : desc.includes("hit_by_pitch") ? "hit_by_pitch" : "ball",
+    description: isWhiff ? "swinging_strike" : isCalledStrike ? "called_strike" : isFoul ? "foul" : isInPlay ? "hit_into_play" : isHbp ? "hit_by_pitch" : "ball",
     is_in_zone: isInZone,
     is_out_zone: isOutZone,
     // Prefer the feed's explicit is_ball; derive from the call code otherwise
     // (walk detection in the Hitters tab needs this on the 4th-ball pitch).
     is_ball: p.is_ball != null ? !!p.is_ball
-      : (!isSwing && !isCalledStrike && !isInPlay && desc.includes("ball") && !desc.includes("hit_by_pitch")),
+      : (!isSwing && !isCalledStrike && !isInPlay && desc.includes("ball") && !isHbp),
     // Pitcher hand — the Hitters tab splits on it; also lets pitcher pages skip
     // the release-side hand inference when the feed states the hand directly.
     p_throws: p.p_throws || p.pitcher_hand || "",
@@ -2155,6 +2164,7 @@ const normalizeLivePitch = (p) => {
     on_3b: p.on_3b == null ? null : !!p.on_3b,
     _savant: p.movement_source === "savant",
     arm_angle: p.arm_angle != null ? Number(p.arm_angle) : null,   // measured arm angle (Savant rows only)
+    home_team: p.home_team || null,   // home park, for the run value park term
     _nodec: desc.includes("bunt") || desc.includes("pitchout"),   // bunt attempts and pitchouts are not swing decisions (Process+)
   };
   // Savant-style run value (neutral / leveraged, actual / expected) when base/out is known; Savant's own
@@ -2479,7 +2489,8 @@ const PERF_COLS = [
   { key: "chaseRate", label: "Chase%" }, { key: "zoneWhiffRate", label: "ZWhiff%" },
   { key: "bipCount", label: "BIP" }, { key: "gbRate", label: "GB%" },
   { key: "fbRate", label: "FB%" }, { key: "barrelRate", label: "Barrel%" },
-  { key: "expRunValue", label: "RV" }, { key: "rv100", label: "RV/100" },
+  { key: "expRunValue", label: "RV", desc: "Run value from the pitcher\u2019s side: + is runs saved. The same per-pitch values as the Overview\u2019s Value container (context-neutral, park-adjusted for completed seasons)." },
+  { key: "rv100", label: "RV/100", desc: "Run value per 100 pitches from the pitcher\u2019s side: + is runs saved. Matches the Overview\u2019s Value container for the same pitches." },
 ];
 
 // ─── Starters Grid (home page) ───
@@ -3014,7 +3025,7 @@ const STAT_GOOD_DIR = {
   strikeRate: 1, zoneRate: 1, cswRate: 1, calledStrikeRate: 1, swStrRate: 1, whiffRate: 1,
   chaseRate: 1, zoneWhiffRate: 1, gbRate: 1, fbRate: -1, barrelRate: -1, ncRate: -1,
   cmdMiss: -1, cmdRate: 1,
-  xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: -1, rv100: -1,
+  xSLG: -1, xwOBACON: -1, xwOBA: -1, expRunValue: 1, rv100: 1,   // run value is from the pitcher's side: + = runs saved
 };
 // Directions reflect conventional pitcher value: more zone/called-strikes/grounders = good
 // (green when above the matched league avg); more fly balls = worse (HR risk). All colored

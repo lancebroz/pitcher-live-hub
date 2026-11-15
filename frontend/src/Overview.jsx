@@ -15,6 +15,7 @@ import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 import { loadGradeCells, gradeRange, GRADE_MIN_PITCHES } from "./gradesRange.js";
 import { armAngleFor } from "./armAngle.js";
+import { usesSavantValue, hasParkTerm, pitcherValue } from "./pitcherValue.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
 let OV_LAST_PITCHER = null;
@@ -450,16 +451,15 @@ function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitch
     load().then(m => { SV_CACHE[year] = m.default || null; if (live) setSv(SV_CACHE[year]); }).catch(() => { if (live) setSv(null); });
     return () => { live = false; };
   }, [year]);
-  const mine = sv && !ranged ? sv[String(pitcherId)] : null;   // the season file holds full-season sums only
-  // No season file (a season in progress): use the live pitches when nearly all of them carry base/out state.
-  const liveSv = useMemo(() => {
-    if (mine || !mix || !mix.valid.length) return false;
-    let n = 0; for (const p of mix.valid) if (p._sv) n++;
-    return n >= 0.98 * mix.valid.length;
-  }, [mine, mix]);
+  // Values come from the pitches themselves (pitcherValue.js), the same path the Compare and Tracker tables use, so the
+  // numbers agree everywhere. The season file is only a stand-in for a full season whose pitches arrived without their
+  // home park (no park term), so the full-season view keeps its park adjustment.
+  const cover = useMemo(() => (mix && mix.valid.length ? { sv: usesSavantValue(mix.valid), park: hasParkTerm(mix.valid) } : { sv: false, park: false }), [mix]);
+  const mine = sv && !ranged && !(cover.sv && cover.park) ? sv[String(pitcherId)] : null;
+  const liveSv = !mine && cover.sv;
   // Savant-style values when the season file has this pitcher; otherwise the live, linear-weights value (neutral only).
   const agg = useMemo(() => {
-    if (!mix || sv === undefined) return null;
+    if (!mix || (sv === undefined && !(cover.sv && cover.park))) return null;   // the season file only matters when it would be used
     const A = {};
     if (mine) {
       for (const t of Object.keys(mine)) {
@@ -476,15 +476,14 @@ function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitch
     }
     for (const p of mix.valid) {
       const h = p.batter_hand === "L" ? "L" : "R", bk = p.strikes === 2 ? "two" : p.strikes != null && p.strikes < 2 ? "pre" : null;
-      // live pitches: Savant-style from the pitch's base/out state when the feed has it, linear weights otherwise
-      const q = liveSv ? p._sv : null, a = q ? q.nv : pitchRunValue(p, false), x = q ? q.nx : pitchRunValue(p, true);
+      const v = pitcherValue(p, liveSv, pitchRunValue);   // [RV, xRV, leveraged RV, leveraged xRV], pitcher's side
       for (const k of bk ? ["all", bk] : ["all"]) {
         const key = `${p.pitch_type}|${h}|${k}`, c = A[key] || (A[key] = [0, 0, 0, 0, 0]);
-        c[0] -= a; c[1] -= x; c[2] -= q ? q.lv : a; c[3] -= q ? q.lx : x; c[4]++;
+        c[0] += v[0]; c[1] += v[1]; c[2] += v[2]; c[3] += v[3]; c[4]++;
       }
     }
     return A;
-  }, [mix, sv, mine, liveSv, pitchRunValue]);
+  }, [mix, sv, mine, liveSv, cover, pitchRunValue]);
   const savant = !!mine || liveSv, lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1);
   const svRef = OV_SV_REF[year] || OV_SV_REF[Object.keys(OV_SV_REF).sort().pop()];   // a season in progress borrows the latest full season's reference
   const lgAll = (savant ? svRef : OV_VALUE_REF[year])?.[hand] || {};

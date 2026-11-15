@@ -1,5 +1,6 @@
 import json
 T=json.load(open('/home/claude/rv/live_tables.json')); X=json.load(open('/home/claude/rv/live_x_tables.json'))
+PK=json.load(open('/home/claude/rv/park_final.json'))     # park term by season / home park / outcome class, and the constants that re-centre the expected versions (park_table.json here)
 for y in T: T[y]['E'].pop('truncated_pa',None)
 js='''// Generated (tools/run-value/gen_rvsavant_js.py). Savant-style run value per pitch, from base/out state, count and outcome.
 // Reproduces Statcast's per-pitch delta_run_exp (context-neutral) on 99.9% of pitches; see tools/run-value/README.md.
@@ -11,11 +12,18 @@ export const SV_T = @@T@@;
 // Expected value of contact: P[ev|la] = share of [1B, 2B, 3B, HR] in that exit-velocity / launch-angle cell;
 // Dc[class][bo] = neutral value of that hit over an out; xoff = per-ball-in-play offset that centres the league.
 export const SV_X = @@X@@;
+// Park: Savant's published run values carry a park adjustment that its per-pitch values do not. SV_PARK.park[season][home park]
+// = runs added to the pitcher's value per pitch by outcome (HR, H = other hit, O = out in play, K, BB = walk or hit batter,
+// n = any other pitch), fitted so pitcher x pitch-type sums match the published totals; x[season] = per-ball-in-play constants
+// that keep the league's expected value equal to its actual value. Only completed seasons have a table.
+export const SV_PARK = @@PK@@;
 const YEARS = Object.keys(SV_T).map(Number).sort((a, b) => a - b);
 const tableFor = (d) => { const y = typeof d === "number" ? d : parseInt(String(d || "").slice(0, 4), 10); const use = !y || y > YEARS[YEARS.length - 1] ? YEARS[YEARS.length - 1] : y < YEARS[0] ? YEARS[0] : y; return [SV_T[use], SV_X.xoff[use] || 0]; };
 const HITS = { single: "1B", double: "2B", triple: "3B", home_run: "HR" }, REACH = { field_error: 1, fielders_choice: 1, catcher_interf: 1 }, XC = ["1B", "2B", "3B", "HR"];
 // Batter-view values { nv, nx, lv, lx } (neutral / leveraged x actual / expected), or null when the pitch has no base/out state.
 // `own` is Statcast's own delta_run_exp when the row came from Savant; it is used as the neutral value as is.
+// pn / px / pl / plx are the same four from the pitcher's side (+ = runs saved) with the park term added: these are the
+// numbers every pitcher table shows (Overview Value, Compare, Tracker). park = whether a park term was available.
 export function savantRunValue(p, own) {
   if (p.on_1b == null || p.on_2b == null || p.on_3b == null || p.outs == null) return null;
   const o = Math.max(0, Math.min(2, Number(p.outs) || 0)), bo = ((p.on_1b ? 1 : 0) + (p.on_2b ? 2 : 0) + (p.on_3b ? 4 : 0)) * 3 + o;
@@ -31,13 +39,20 @@ export function savantRunValue(p, own) {
   let lev;
   if (cls) { let e = T.E[cls][bo]; if (cls === "bunt" && e === 0) e = T.E.out_ground[bo]; lev = e - R[c0]; } else lev = R[c1] - R[c0];
   const nv = own != null ? own : lev * k;
-  let nx = nv;
+  let nx = nv, hasx = false;
   if (p.is_in_play && p.launch_speed != null && p.launch_angle != null) {
     const evb = Math.floor(Math.max(40, Math.min(115, p.launch_speed)) / 5 + 0.5) * 5, lab = Math.floor(Math.max(-60, Math.min(80, p.launch_angle)) / 10 + 0.5) * 10, P = SV_X.P[`${evb}|${lab}`];
-    if (P) { let e = 0; for (let j = 0; j < 4; j++) e += P[j] * SV_X.Dc[XC[j]][bo]; nx = nv + e - (HITS[ev] && cls !== "bunt" ? SV_X.Dc[HITS[ev]][bo] : 0) + xoff; }
+    if (P) { let e = 0; for (let j = 0; j < 4; j++) e += P[j] * SV_X.Dc[XC[j]][bo]; nx = nv + e - (HITS[ev] && cls !== "bunt" ? SV_X.Dc[HITS[ev]][bo] : 0) + xoff; hasx = true; }
   }
-  return { nv, nx, lv: nv / k, lx: nx / k };
+  const yr = String(parseInt(String(p.game_date || "").slice(0, 4), 10)), row = SV_PARK.park[yr] && p.home_team ? SV_PARK.park[yr][p.home_team] : null;
+  let pk = 0, cx = 0, cl = 0;
+  if (row) {
+    const pcl = p.is_in_play ? (ev === "home_run" ? "HR" : HITS[ev] ? "H" : "O") : cls === "strikeout" ? "K" : (cls === "walk" && ev !== "intent_walk") || cls === "hit_by_pitch" ? "BB" : "n";
+    pk = row[pcl] || 0; cx = SV_PARK.x[yr].cx; cl = SV_PARK.x[yr].cl;
+  }
+  return { nv, nx, lv: nv / k, lx: nx / k, pn: pk - nv, px: (hasx ? cx : pk) - nx, pl: pk - nv / k, plx: (hasx ? cl / k : pk) - nx / k, park: !!row };
 }
-'''.replace('@@T@@',json.dumps(T,separators=(',',':'))).replace('@@X@@',json.dumps(X,separators=(',',':')))
+'''.replace('@@T@@',json.dumps(T,separators=(',',':'))).replace('@@X@@',json.dumps(X,separators=(',',':'))).replace('@@PK@@',json.dumps(PK,separators=(',',':')))
 open('/home/claude/pitcher-live-hub/frontend/src/rvSavant.js','w').write(js); print(len(js),'bytes')
 json.dump(T,open('/home/claude/pitcher-live-hub/backend/rv_savant_tables.json','w'),separators=(',',':'))
+json.dump(PK['park'],open('/home/claude/pitcher-live-hub/backend/rv_park.json','w'),separators=(',',':'))
