@@ -1206,6 +1206,7 @@ function HitterValueCard({ pitches, h, year }) {
   );
 }
 
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"}`;
 const fmt3 = (v) => (v == null || isNaN(v) ? "—" : v.toFixed(3).replace(/^0(?=\.)/, ""));
 const HIT_SEASON = { 2025: ["2025-03-27", "2025-09-28"] };   // past seasons come from Savant by date range
 const BATS_WORD = { L: "LHB", R: "RHB", S: "Switch" };
@@ -1275,6 +1276,17 @@ export function HittersPage({ C, helpers }) {
   }, [lineKey, season]);
   const derived = useMemo(() => hitterLine(cur, helpers), [cur, helpers]);
   const line = official && official.key === lineKey ? official.line : derived;
+  // K % and BB % (walks include intentional ones, as FanGraphs counts them) come from the same line as the slash stats;
+  // each tile's tooltip ranks the number against every hitter that season.
+  const rates = useMemo(() => {
+    if (!line || !line.pa) return [];
+    const src = line.so != null && line.bb != null ? line : derived && derived.pa ? derived : null; if (!src) return [];
+    const pool = HIT_POOLS[year]?.all;
+    return [["K%", "k", src.so, true], ["BB%", "bb", src.bb, false]].map(([lab, key, n, lowGood]) => {
+      const v = 100 * n / src.pa, pct = src.pa >= 10 ? pctFromQ(pool?.[key], v, lowGood) : null;
+      return [lab, v.toFixed(1), `${n} in ${src.pa.toLocaleString()} PA${pct != null ? `\n${ordinal(pct)} percentile among all ${pool.n} hitters with 100+ PA in ${year}${lowGood ? " (fewer strikeouts ranks higher)" : ""}` : ""}`];
+    });
+  }, [line, derived, year]);
 
   const bats = useMemo(() => (batter?.bats === "L" || batter?.bats === "R" || batter?.bats === "S" ? batter.bats : season && season.length ? standOf(season) : ""), [batter, season]);
   const busy = !!loading[year] || (!!batter && !data[year]);
@@ -1308,6 +1320,9 @@ export function HittersPage({ C, helpers }) {
             <div className="ov-grp">
               {[["AVG", fmt3(line.avg)], ["OBP", fmt3(line.obp)], ["SLG", fmt3(line.slg)], ["HR", line.hr]].map(([k, v]) => (
                 <div key={k} className="ov-st big" title={lineTip}><div className="k">{k}</div><div className="v">{v}</div></div>
+              ))}
+              {rates.map(([k, v, tip]) => (
+                <div key={k} className="ov-st big" title={tip}><div className="k">{k}</div><div className="v">{v}<small>%</small></div></div>
               ))}
             </div>
           )}

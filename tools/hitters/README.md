@@ -13,7 +13,7 @@ Paths at the top of each script point at a local working directory. Sources: mlb
 the app reads for the current season, `hlib.load`), Statcast rows for 2025 (what the app gets from Savant for a
 past season, `hlib.load_savant`). Regular season only.
 
-## Header (AVG / OBP / SLG / HR)
+## Header (AVG / OBP / SLG / HR / K % / BB %)
 
 The official line from the MLB Stats API (`/api/batter/{id}/line`, season or date range). The pitch-derived line
 (`hitterLine`) shows until it arrives and when the API has nothing. From Statcast rows (2025) the pitch-derived

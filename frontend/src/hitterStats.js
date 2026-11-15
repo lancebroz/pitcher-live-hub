@@ -16,7 +16,7 @@ export const HITTER_RESULT_ROWS = [
   [["xwoba", "xwOBA", 1, 3, "", "pa"], ["xba", "xBA", 1, 3, "", "pa"], ["xslg", "xSLG", 1, 3, "", "pa"],
    ["ev", "Avg Exit Velo", 1, 1, "", "bbe"], ["maxev", "Max Exit Velo", 1, 1, "", "bbe"], ["barrel", "Barrel %", 1, 1, "", "bbe"],
    ["hardhit", "Hard Hit %", 1, 1, "", "bbe"], ["hhla", "Hard Hit LA", 0, 1, "°", "bbe"], ["gb", "GB %", -1, 1, "", "bbe"], ["fb", "FB %", 1, 1, "", "bbe"]],
-  [["k", "K %", -1, 1, "", "pa"], ["bb", "BB %", 1, 1, "", "pa"], ["swing", "Swing %", 0, 1, "", "n"], ["chase", "Chase %", -1, 1, "", "n"],
+  [["swing", "Swing %", 0, 1, "", "n"], ["chase", "Chase %", -1, 1, "", "n"],
    ["contact", "Contact %", 1, 1, "", "n"], ["zswing", "Zone Swing %", 1, 1, "", "n"], ["zcontact", "Zone Contact %", 1, 1, "", "n"], ["zmiss", "Zone Miss %", -1, 1, "", "n"]],
 ];
 
@@ -60,7 +60,7 @@ export function hitterResults(ps, h) {
   };
 }
 
-// Traditional line (AVG / OBP / SLG / HR) from pitch data, same plate-appearance rules as hitterResults.
+// Traditional line (AVG / OBP / SLG / HR, plus strikeouts and walks for K % and BB %) from pitch data, same plate-appearance rules as hitterResults.
 // The header prefers the official MLB line; this one is the fallback. It misses intentional walks issued
 // without a pitch in current-season feed data, so its OBP can run slightly low there.
 export function hitterLine(ps, h) {
@@ -80,5 +80,5 @@ export function hitterLine(ps, h) {
   }
   const ab = hits + outs + k, pa = ab + bb + hbp + sf + sh, od = ab + bb + hbp + sf;
   if (!pa) return null;
-  return { avg: ab ? hits / ab : null, obp: od ? (hits + bb + hbp) / od : null, slg: ab ? tb / ab : null, hr, pa, ab, source: "pitches" };
+  return { avg: ab ? hits / ab : null, obp: od ? (hits + bb + hbp) / od : null, slg: ab ? tb / ab : null, hr, so: k, bb, pa, ab, source: "pitches" };
 }

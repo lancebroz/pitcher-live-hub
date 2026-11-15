@@ -877,13 +877,13 @@ async def get_batter_statcast(batter_id: int, start_date: str, end_date: str):
 
 @app.get("/api/batter/{batter_id}/line")
 async def get_batter_line(batter_id: int, season: int = 2026, start_date: str = "", end_date: str = ""):
-    """Official regular-season batting line (AVG / OBP / SLG / HR / PA) from the MLB Stats API.
+    """Official regular-season batting line (AVG / OBP / SLG / HR / SO / BB / PA) from the MLB Stats API.
 
     Whole season by default; with start_date and end_date, the line for that date range. Returns {} when
     the API has nothing, and the app then falls back to the line it derives from pitch data.
     """
     ranged = bool(start_date and end_date)
-    cache_key = f"bat_line:{batter_id}:{season}:{start_date}:{end_date}"
+    cache_key = f"bat_line2:{batter_id}:{season}:{start_date}:{end_date}"
     cached = get_cached(cache_key, 600)
     if cached is not None:
         return cached
@@ -912,7 +912,7 @@ async def get_batter_line(batter_id: int, season: int = 2026, start_date: str = 
     # call may not. Use the combined row when there is one, otherwise add the team rows up.
     combined = [sp for sp in splits if not sp.get("team") or (sp.get("numTeams") or 0) > 1]
     rows = [combined[0]] if combined else splits
-    keys = ("hits", "atBats", "baseOnBalls", "hitByPitch", "sacFlies", "totalBases", "homeRuns", "plateAppearances")
+    keys = ("hits", "atBats", "baseOnBalls", "hitByPitch", "sacFlies", "totalBases", "homeRuns", "strikeOuts", "plateAppearances")
     t = {k: sum(_n(sp.get("stat") or {}, k) for sp in rows) for k in keys}
     if not t["plateAppearances"]:
         return {}
@@ -922,7 +922,7 @@ async def get_batter_line(batter_id: int, season: int = 2026, start_date: str = 
         "obp": (t["hits"] + t["baseOnBalls"] + t["hitByPitch"]) / obp_den if obp_den else None,
         "slg": t["totalBases"] / ab if ab else None,
         "hr": int(t["homeRuns"]), "pa": int(t["plateAppearances"]), "ab": int(ab),
-        "hits": int(t["hits"]), "bb": int(t["baseOnBalls"]), "source": "mlb",
+        "hits": int(t["hits"]), "bb": int(t["baseOnBalls"]), "so": int(t["strikeOuts"]), "source": "mlb",
     }
     set_cache(cache_key, out)
     return out
