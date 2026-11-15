@@ -3,7 +3,7 @@
 // Pitch data comes from the same endpoints and the same normaliser as the Compare tool
 // (passed in through `helpers`), so the numbers reconcile across tabs.
 import { useState, useEffect, useMemo, useRef } from "react";
-import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo, searchBatters, getBatterCachedSeason, getBatterStatcast, getBatterLine } from "./api.js";
+import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo, getPitcherArmAngle, searchBatters, getBatterCachedSeason, getBatterStatcast, getBatterLine } from "./api.js";
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
@@ -14,6 +14,7 @@ import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 import { loadGradeCells, gradeRange, GRADE_MIN_PITCHES } from "./gradesRange.js";
+import { armAngleFor } from "./armAngle.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
 let OV_LAST_PITCHER = null;
@@ -304,7 +305,13 @@ function primaryFastball(valid) {
 }
 
 // ─── Container 1: 3D release model ───
-function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitchColor, year }) {
+const AA_NOTE = {
+  measured: (a) => `Measured by Statcast on ${a.n.toLocaleString()} pitches in this range.`,
+  mixed: (a) => `Statcast has not posted ${a.estDays} of the ${a.days} games in this range yet: those are estimated from his release point (typically within about 1°).`,
+  estimate: () => "Estimated from his release point: Statcast has not posted these games yet (typically within about 1°).",
+  imputed: () => "Rough estimate from release point and height: no measured arm angle for him yet (typically within about 5°).",
+};
+function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, aaInfo, staticRow, getPitchColor, year }) {
   const stageRef = useRef(null), canvasRef = useRef(null), svgRef = useRef(null), cardRefs = useRef({}), sceneRef = useRef(null);
   const lastId = useRef(null);
   const [view, setViewName] = useState("catcher");
@@ -330,7 +337,7 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
   useEffect(() => { if (sceneRef.current) sceneRef.current.setHot(hot || sticky); }, [hot, sticky, ready]);
 
   const cards = ready ? [
-    { k: "A", name: "Arm angle", val: armAngle, unit: "°", avg: lg.avg.armAngle, dist: lg.dist.armAngle },
+    { k: "A", name: "Arm angle", est: !!aaInfo && aaInfo.estimated > 0, val: armAngle, unit: "°", avg: lg.avg.armAngle, dist: lg.dist.armAngle, note: aaInfo && AA_NOTE[aaInfo.basis] ? AA_NOTE[aaInfo.basis](aaInfo) : undefined },
     { k: "H", name: "Rel. height", val: fb.relZ, unit: "ft", avg: lg.avg.relZ, dist: lg.dist.relZ },
     { k: "S", name: "Rel. side", val: fb.relX, unit: "ft", avg: lg.avg.relX, dist: lg.dist.relX, abs: true },
     { k: "E", name: "Extension", val: fb.ext, unit: "ft", avg: lg.avg.ext, dist: lg.dist.ext },
@@ -350,11 +357,11 @@ function ReleaseCard({ pitcher, hand, heightIn, fb, armAngle, staticRow, getPitc
               const v = c.abs ? Math.abs(c.val) : c.val, a = c.abs ? Math.abs(c.avg) : c.avg, dv = R(v) - R(a), pc = pctile(c.dist, R(v) === R(a) ? a : v);
               return (
                 <button key={c.k} ref={el => { if (el) cardRefs.current[c.k] = el; else delete cardRefs.current[c.k]; }}
-                  className={`ov-co${activeHot === c.k ? " hot" : ""}`} style={{ "--k": COL[c.k] }}
+                  className={`ov-co${activeHot === c.k ? " hot" : ""}`} style={{ "--k": COL[c.k] }} title={c.note} data-basis={c.k === "A" && aaInfo ? aaInfo.basis : undefined}
                   onMouseEnter={() => setHot(c.k)} onMouseLeave={() => setHot(null)} onFocus={() => setHot(c.k)} onBlur={() => setHot(null)}
                   onClick={() => setSticky(s => (s === c.k ? null : c.k))}>
                   <span className="k">{c.name}</span>
-                  <span className="v">{r1(c.val)}<small>{c.unit}</small></span>
+                  <span className="v">{r1(c.val)}<small>{c.unit}</small>{c.est && <small style={{ marginLeft: 4, fontSize: 9, fontWeight: 700, letterSpacing: ".5px", textTransform: "uppercase", opacity: 0.75 }}>est</small>}</span>
                   <span className="bar"><span className="a" /><span className="p" style={{ left: `${pc}%` }} /></span>
                   <span className="pc"><b>{ord(pc)}</b> pct</span>
                   <span className="d"><b>{sgn(dv, c.unit === "°" ? "°" : " ft")}</b> vs avg {r1(c.avg)}{c.unit === "°" ? "°" : ""}</span>
@@ -594,7 +601,7 @@ function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV, seasonOn
 }
 
 // ─── Container 3: pitch movement (same conventions as the Movement Plot) + arm angle + spin efficiency ───
-function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV }) {
+function MoveCard({ C, hand, mix, year, armAngle, armEst, getPitchColor, PITCH_ABBREV }) {
   const cvRef = useRef(null), dotsRef = useRef([]);
   const [showAvg, setShowAvg] = useState(true), [tick, setTick] = useState(0), [hov, setHov] = useState(null);
   // Hovering (or tapping) an average dot shows that pitch's average velocity, movement and spin.
@@ -695,7 +702,7 @@ function MoveCard({ C, hand, mix, year, armAngle, getPitchColor, PITCH_ABBREV })
       </div>
       <div className="ov-mvfoot">
         <div className="ov-mvleg" style={{ flexDirection: "row", alignItems: "center", gap: "12px" }}>
-          <div className="ov-lg">{armAngle != null && <span className="aa"><i />Arm angle</span>}</div>
+          <div className="ov-lg">{armAngle != null && <span className="aa"><i />Arm angle{armEst ? " (est.)" : ""}</span>}</div>
           <button className="ov-avg" aria-pressed={showAvg} onClick={() => setShowAvg(v => !v)}><i />Avg.</button>
         </div>
       </div>
@@ -1015,7 +1022,29 @@ export default function OverviewPage({ C, helpers }) {
   }, [info, pitcher, reg26, cur]);
   const srow = pitcher ? OV_PITCHERS[pitcher.id] : null;
   const aaMap = year === "2026" ? srow?.a : srow?.a25;
-  const armAngle = fb && aaMap ? (aaMap[fb.type] ?? null) : null;
+  // Arm angle: the season number on file for the whole season; under a date range (or with nothing on file) it is
+  // Statcast's measured angle for those days, with a release-point estimate for any game Statcast has not posted yet.
+  const seasonAA = fb && aaMap ? (aaMap[fb.type] ?? null) : null;
+  const hasPitchAA = useMemo(() => !!season && season.some(p => p.arm_angle != null), [season]);   // Savant rows carry it per pitch
+  const aaKey = pitcher ? `${pitcher.id}|${year}` : "", needAaDays = !!pitcher && !!fb && !!season && !hasPitchAA && (ranged || seasonAA == null);
+  const [aaDays, setAaDays] = useState(null);
+  useEffect(() => {
+    // an empty answer (Savant unreachable, or nothing posted yet) is asked for again the next time a range is set
+    if (!needAaDays || (aaDays && aaDays.key === aaKey && !aaDays.empty)) return undefined;
+    let alive = true; const key = aaKey, put = (days) => { if (alive) setAaDays({ key, days, empty: !Object.keys(days).length }); };
+    getPitcherArmAngle(pitcher.id, year).then(r => put((r && r.days) || {})).catch(() => put({}));
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needAaDays, aaKey]);
+  const aaInfo = useMemo(() => {
+    if (!fb || !season) return null;
+    const onFile = seasonAA != null ? { value: seasonAA, basis: "season" } : null;
+    if (!ranged && onFile) return onFile;
+    const table = hasPitchAA ? null : aaDays && aaDays.key === aaKey ? aaDays.days : undefined;
+    if (table === undefined) return onFile;   // by-day measurements still loading
+    return armAngleFor({ pitches: season, type: fb.type, hand, range: ranged ? range : null, days: table, seasonValue: seasonAA, heightIn: info?.height_inches || null }) || onFile;
+  }, [fb, season, seasonAA, ranged, range, hasPitchAA, aaDays, aaKey, hand, info]);
+  const armAngle = aaInfo ? aaInfo.value : null;
   const spin = useMemo(() => {
     if (!mix) return null;
     const codes = mix.types.map(t => t.type), code = codes.includes("FF") ? "FF" : codes.find(c => c === "SI" || c === "FC");
@@ -1110,9 +1139,9 @@ export default function OverviewPage({ C, helpers }) {
       </div>
       {pitcher && reg26 && (<>
         <div className="ov-row">
-          <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={busy ? null : fb} armAngle={armAngle} staticRow={srow} getPitchColor={getPitchColor} year={year} />
+          <ReleaseCard pitcher={pitcher} hand={hand} heightIn={info?.height_inches || null} fb={busy ? null : fb} armAngle={armAngle} aaInfo={aaInfo} staticRow={srow} getPitchColor={getPitchColor} year={year} />
           <MixCard mix={busy ? null : mix} year={year} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
-          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={armAngle} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <MoveCard C={C} hand={hand} mix={busy ? null : mix} year={year} armAngle={armAngle} armEst={!!aaInfo && aaInfo.estimated > 0} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
         <div className="ov-row ov-row2">
           <SpinCard hand={hand} mix={busy ? null : mix} year={year} spin={spin} getPitchColor={getPitchColor} />

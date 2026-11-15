@@ -2154,6 +2154,7 @@ const normalizeLivePitch = (p) => {
     on_2b: p.on_2b == null ? null : !!p.on_2b,
     on_3b: p.on_3b == null ? null : !!p.on_3b,
     _savant: p.movement_source === "savant",
+    arm_angle: p.arm_angle != null ? Number(p.arm_angle) : null,   // measured arm angle (Savant rows only)
     _nodec: desc.includes("bunt") || desc.includes("pitchout"),   // bunt attempts and pitchouts are not swing decisions (Process+)
   };
   // Savant-style run value (neutral / leveraged, actual / expected) when base/out is known; Savant's own

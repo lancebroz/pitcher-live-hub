@@ -928,6 +928,37 @@ async def get_batter_line(batter_id: int, season: int = 2026, start_date: str = 
     return out
 
 
+@app.get("/api/pitcher/{pitcher_id}/arm-angle")
+async def get_pitcher_arm_angle(pitcher_id: int, season: int = 2026):
+    """Statcast's measured arm angle by game day and pitch type for one pitcher's regular season.
+
+    The live feed behind the current-season data has no arm angle, so the Overview asks for this when a date
+    range is set. {"days": {"2026-06-03": {"FF": [pitches, mean arm angle]}}}; a day Statcast has not processed
+    is simply absent, and the app estimates those from release point.
+    """
+    cache_key = f"arm_angle:{pitcher_id}:{season}"
+    cached = get_cached(cache_key, 1800)
+    if cached is not None:
+        return cached
+    try:
+        rows = await _savant_pitches("pitcher", pitcher_id, f"{season}-03-01", f"{season}-11-15")
+    except Exception as e:
+        print(f"[arm angle] {pitcher_id} {season}: {e}")
+        return {"season": season, "days": {}}
+    days = {}
+    for p in rows or []:
+        aa, pt, d = p.get("arm_angle"), p.get("pitch_type"), p.get("game_date")
+        if aa is None or not pt or not d:
+            continue
+        c = days.setdefault(str(d)[:10], {}).setdefault(pt, [0, 0.0])
+        c[0] += 1
+        c[1] += aa
+    out = {"season": season, "days": {d: {pt: [c[0], round(c[1] / c[0], 2)] for pt, c in v.items()} for d, v in days.items()}}
+    if days:
+        set_cache(cache_key, out)
+    return out
+
+
 async def _savant_pitches(player_type: str, player_id: int, start_date: str, end_date: str):
     """Statcast pitch rows for one pitcher or one batter over a date range (Baseball Savant CSV search)."""
     cache_key = f"statcast:{player_id}:{start_date}:{end_date}" if player_type == "pitcher" else f"statcast_bat:{player_id}:{start_date}:{end_date}"
@@ -1050,6 +1081,7 @@ async def _savant_pitches(player_type: str, player_id: int, start_date: str, end
             "bat_speed": safe_float("bat_speed"),
             "swing_length": safe_float("swing_length"),
             "is_bunt_des": "bunt" in str(row.get("des") or "").lower(),
+            "arm_angle": safe_float("arm_angle"),   # Statcast's measured arm angle for this pitch (degrees)
         })
         if player_type == "batter":
             # Zone heights for Process+ on the Hitters tab. Left off pitcher rows so the pitcher pages keep

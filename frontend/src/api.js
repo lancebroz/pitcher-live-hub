@@ -107,6 +107,13 @@ export async function getStatcastSampled(pitcherId, startDate, endDate, sampleSi
   return res.json();
 }
 
+// Statcast's measured arm angle by game day and pitch type for a pitcher-season: { days: { date: { type: [pitches, mean] } } }.
+export async function getPitcherArmAngle(pitcherId, season) {
+  const res = await fetch(`${API_BASE}/api/pitcher/${pitcherId}/arm-angle?season=${season}`);
+  if (!res.ok) return { days: {} };
+  return res.json();
+}
+
 export async function getPitcherEra(pitcherId, gamePks, scope = "season") {
   if (!gamePks || gamePks.length === 0) return { era: null, earned_runs: 0, innings: 0, games: 0 };
   const res = await fetch(
