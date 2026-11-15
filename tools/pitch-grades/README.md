@@ -50,7 +50,20 @@ against the league average for the same pitcher hand, batter side and pitch type
    - Why it matters: for typical shapes, the grade with and without the pitcher's own history differs by
      about 2 points; for the most unusual 2% of pitch types it differs by about 7.
 
-Run: `PITCH_DATA=<parquet folders> STUFF_REPO=<stuff-plus-repo checkout> python 01_prepare.py && python 02_train_and_grade.py && python 03_flags.py`
+4. `04_daily.py` writes the per-game building blocks behind date-range grades
+   (`frontend/src/gradesDaily/`, 16 lazy chunks per season, plus `gradesDailyConst.js`): for every pitcher and
+   game day, pitch counts and summed model values by pitch type and batter side. The Overview applies the
+   season formula to the days in the selected range (`frontend/src/gradesRange.js`), so the whole season
+   reproduces the season grade exactly (checked for all 1,594 pitcher-seasons at the end of the script).
+   - A range needs 25 graded pitches to show a grade (25 of a pitch type, and 25 against a batter side, for those cells).
+   - Small ranges are regressed toward average with the same constants as the season grades: Stuff+ almost not
+     at all (1-3 pitches), Pitching+ at half weight around 45-90 pitches, Location+ at half weight around
+     110-160 pitches. One start of 90 pitches therefore shows about 97% of its own Stuff+, about half of its own
+     Pitching+ and a bit over a third of its own Location+.
+   - Results vs grades uses the same half-weight point as the season (about 1,400 pitches), so it rarely leaves
+     "in line" on a short range.
+
+Run: `PITCH_DATA=<parquet folders> STUFF_REPO=<stuff-plus-repo checkout> python 01_prepare.py && python 02_train_and_grade.py && python 03_flags.py && python 04_daily.py`
 (about 25 minutes on 2 cores). Needs `lightgbm`, `pandas`, `pyarrow`.
 
 ## What changed from stuff-plus-repo v3, and why

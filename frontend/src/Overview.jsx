@@ -13,6 +13,7 @@ import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js"
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
+import { loadGradeCells, gradeRange, GRADE_MIN_PITCHES } from "./gradesRange.js";
 
 // Remembered for the life of the page so leaving the tab and coming back keeps the same pitcher.
 let OV_LAST_PITCHER = null;
@@ -560,12 +561,12 @@ function gradeStory(mk, mlab, v, ref, n, who, about) {
     : `About ${Math.abs(runs).toFixed(1)} runs per 100 pitches ${runs > 0 ? "better" : "worse"} than the average ${who} (${ref[0]}).`;
   return `${mlab} ${v}: ${word} for a ${who}, ${ord(pct)} percentile.\n${worth}${about ? `\n${GRADE_ABOUT[mk]}` : ""}${n != null ? `\n${n.toLocaleString()} pitches.` : ""}`;
 }
-function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV, seasonOnly }) {
+function GradesCard({ gr, mix, year, hand, getPitchColor, PITCH_ABBREV, seasonOnly, short }) {
   const lg = OV_GRADES_LG[year]?.[hand] || {}, SK = ["a", "L", "R"], types = mix ? mix.types.filter(t => gr?.t?.[t.type]) : [];
   return (
     <div className="ov-card">
-      <div className="ov-head"><div className="ov-ct">Grades</div>{seasonOnly && <span className="ov-stag" title="Model grades are computed for the full season; the date range does not apply to them.">Full season</span>}</div>
-      {!gr?.a || !types.length ? <div className="ov-note">No {year} pitch grades for this pitcher.</div> : (
+      <div className="ov-head"><div className="ov-ct">Grades</div>{seasonOnly && <span className="ov-stag" title="Showing the full-season grades while the date-range grades load.">Full season</span>}</div>
+      {!gr?.a || !types.length ? <div className="ov-note">{short ? `Fewer than ${GRADE_MIN_PITCHES} graded pitches in this date range.` : `No ${year} pitch grades for this pitcher.`}</div> : (
         <div className="ov-mix">
           <div className="ov-mrow" style={{ "--n": types.length }}><span />
             {types.map(t => { const u = gr.u?.includes(t.type); return <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={u ? `${t.name} · unique shape: few close matches among other pitchers, so this Stuff+ may be well off` : t.name}>{PITCH_ABBREV[t.name] || t.type}{u && <span className="fl"><FlagIcon color="#fff" /></span>}</div>; })}
@@ -1026,7 +1027,22 @@ export default function OverviewPage({ C, helpers }) {
   const vars = themeVars(C);
   const base = OV_STAT_BASE[year]?.[hand], hp = `${hand}HP`;
   const busy = year === "2026" ? loading26 : loading25;
-  const gr = pitcher ? OV_GRADES[year]?.[pitcher.id] || null : null;
+  const grSeason = pitcher ? OV_GRADES[year]?.[pitcher.id] || null : null;
+  // Under a date range the grades are rebuilt from his per-game building blocks (loaded the first time a range is set).
+  // Until they arrive the season grades show dimmed; a range with fewer than 25 graded pitches has no grades.
+  const [gradeCells, setGradeCells] = useState(null), cellKey = pitcher ? `${pitcher.id}|${year}` : "";
+  useEffect(() => {
+    if (!ranged || !grSeason || (gradeCells && gradeCells.key === cellKey)) return undefined;
+    let alive = true; const key = cellKey;
+    loadGradeCells(year, pitcher.id).then(flat => { if (alive) setGradeCells({ key, flat }); }).catch(() => { if (alive) setGradeCells({ key, flat: null }); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ranged, cellKey, grSeason]);
+  const grRange = useMemo(() => {
+    if (!ranged || !grSeason || !gradeCells || gradeCells.key !== cellKey || !gradeCells.flat) return null;
+    const g = gradeRange(gradeCells.flat, year, range.s, range.e); return g ? { ...g, f: grSeason.f, u: grSeason.u } : null;
+  }, [ranged, grSeason, gradeCells, cellKey, year, range]);
+  const gr = ranged && grRange ? grRange : grSeason, grStale = ranged && !grRange;   // stale = still showing the season's grades under a range
 
   return (
     <div className="ov" style={vars} ref={rootRef}>
@@ -1058,7 +1074,7 @@ export default function OverviewPage({ C, helpers }) {
             {gr?.a && GRADE_ROWS.map(([mk, mi, mlab]) => {
               const L = OV_GRADES_LG[year]?.[hand]?.all || {}, who = hand === "L" ? "left-hander" : "right-hander";
               return (
-                <div key={mk} className={`ov-grp${ranged ? " ov-seas" : ""}`} data-seas={ranged ? "Full season" : undefined}>
+                <div key={mk} className={`ov-grp${grStale ? " ov-seas" : ""}`} data-seas={grStale ? "Full season" : undefined}>
                   <div className="ov-st big" {...gradeTone(gr.a[mi], L.a?.[mk], "", gr.a[3])} title={gradeStory(mk, mlab, gr.a[mi], L.a?.[mk], gr.a[3], who, true)}><div className="k">{mlab}</div><div className="v">{gr.a[mi]}</div></div>
                   <div className="ov-sp">
                     <div {...gradeTone(gr.L?.[mi], L.L?.[mk], "", gr.L?.[3])} title={gr.L ? gradeStory(mk, `${mlab} vs LHH`, gr.L[mi], L.L?.[mk], gr.L[3], `${who} facing lefties`) : undefined}><span>vs L</span><b>{gr.L ? gr.L[mi] : "—"}</b></div>
@@ -1067,7 +1083,7 @@ export default function OverviewPage({ C, helpers }) {
                 </div>
               );
             })}
-            {gr?.r && (ranged ? <div className="ov-seas" data-seas="Full season">{resultsTile(gr)}</div> : resultsTile(gr))}
+            {gr?.r && (grStale ? <div className="ov-seas" data-seas="Full season">{resultsTile(gr)}</div> : resultsTile(gr))}
             <div className="ov-grp run">
               {[["ERA", line.era, "era", OV_STAT_BASE[year]?.era, `${year} MLB`], ["FIP", line.fip, "fip", base?.all?.fip, `${year} ${hp}`], ["xFIP", line.xfip, "xfip", base?.all?.xfip, `${year} ${hp}`], ["IP", line.ip]].map(([k, v, key, b, lab]) => (
                 <div key={k} className="ov-st" {...(key ? tone(key, v, b, lab) : {})}><div className="k">{k}</div><div className="v">{v}</div></div>
@@ -1104,7 +1120,7 @@ export default function OverviewPage({ C, helpers }) {
           <StatCard side={side} setSide={setSide} hand={hand} cur={busy ? null : cur} line={line} box={ranged ? null : year === "2026" ? box26 : box25} year={year} computeSummaryStats={computeSummaryStats} />
         </div>
         <div className="ov-row ov-row3">
-          <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} seasonOnly={ranged} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} seasonOnly={grStale} short={ranged && !!grRange && !grRange.a} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
           <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitcherId={pitcher.id} ranged={ranged} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}
