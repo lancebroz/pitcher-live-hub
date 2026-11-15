@@ -5443,7 +5443,7 @@ const isPostseasonDate = (d) => {
 const POSTSEASON_GOLD = "#d4af37";
 
 // Stable helpers handed to the Hitters tab (stat definitions live here; the page lives in Overview.jsx).
-const HITTER_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_AB_CONTACT_OUTS, endsPaAsK: _endsPaAsK, getPitchColor, PITCH_ABBREV, pitchRunValue, normalizeLivePitch, normAndFilter, isPostseasonDate, DatePickerWithHighlights };
+const HITTER_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_AB_CONTACT_OUTS, endsPaAsK: _endsPaAsK, getPitchColor, PITCH_ABBREV, pitchRunValue, normalizeLivePitch, normAndFilter, isPostseasonDate, DatePickerWithHighlights, GaussianHeatmapCanvas, pitchMatchesCount };
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).

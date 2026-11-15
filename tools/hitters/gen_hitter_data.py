@@ -11,7 +11,7 @@ def pool(o,minpa):
     q=o[o.pa>=minpa]; P={'n':int(len(q))}
     for k in KEYS: P[k]=qs(q[k].where(q.bbe>=25) if k in('ev','maxev','barrel','hardhit','hhla','gb','fb') else q[k],k)
     return P
-POOLS={};REF={};KK={}
+POOLS={};REF={};KK={};USE={}
 for y in (2025,2026):
     d=pd.read_parquet(f'/home/claude/hit/h{str(y)[2:]}x.parquet'); d=d[d.stand.isin(['L','R'])&d.pitcher_hand.isin(['L','R'])].copy()
     P={'all':pool(hlib.agg(d,['batter_id']),100),'split':{}}          # "All" ranks against every hitter, whatever side he bats from
@@ -19,6 +19,19 @@ for y in (2025,2026):
         P['split'][st]={ph:pool(hlib.agg(d[(d.stand==st)&(d.pitcher_hand==ph)],['batter_id']),50) for ph in 'LR'}
     POOLS[str(y)]=P
     print(y,'pool sizes: all',P['all']['n'],'| split',{st+'v'+ph:P['split'][st][ph]['n'] for st in 'LR' for ph in 'LR'},'| median xwOBA',P['all']['xwoba'][10],'chase',P['all']['chase'][10],'EV',P['all']['ev'][10])
+    # pitch usage against hitters: league share of each pitch type by batter side x pitcher hand x count bucket, and how far
+    # hitters truly differ from it (spread of hitter shares with the binomial noise taken out), in percentage points
+    u=d[d.pitch_type.notna()&(d.pitch_type!='')].copy(); u['bk']=np.where(pd.to_numeric(u.strikes,errors='coerce')==2,'two','pre'); U={}
+    for (st,ph),g in u.groupby(['stand','pitcher_hand']):
+        big=g.pitch_type.value_counts(); big=list(big[big>=1500].index); U.setdefault(st,{})[ph]={}
+        for bk,gb in (('all',g),('pre',g[g.bk=='pre']),('two',g[g.bk=='two'])):
+            tot=gb.groupby('batter_id').size(); tot=tot[tot>=200]; o={}
+            for pt in big:
+                lg=float((gb.pitch_type==pt).mean()); c=gb[gb.pitch_type==pt].groupby('batter_id').size().reindex(tot.index).fillna(0); sh=c/tot
+                var=np.average((sh-lg)**2,weights=tot)-np.average(lg*(1-lg)/tot,weights=tot)
+                o[pt]=[round(100*lg,2),round(100*float(np.sqrt(max(var,1e-8))),2)]
+            U[st][ph][bk]=o
+    USE[str(y)]=U; print('   usage ref (RHB vs RHP, overall):',U['R']['R']['all'])
     # run value by pitch type, batter view (+ = good for the hitter)
     v=ref.savant_values(d.assign(game_date=d.game_date.astype(str)), own=(d.dre if 'dre' in d.columns else None)); d=pd.concat([d,v],axis=1); d=d[d.nv.notna()&d.pitch_type.notna()&(d.pitch_type!='')].copy()
     d['bk']=np.where(pd.to_numeric(d.strikes,errors='coerce')==2,'two','pre')
@@ -55,7 +68,10 @@ export const HIT_POOLS = %s;
 // HIT_VALUE_K[year][nv|nx|lv|lx][all|pre|two] = [spread of true talent among hitters (runs per 100), pitches for half weight] (colour only).
 export const HIT_VALUE_REF = %s;
 export const HIT_VALUE_K = %s;
+// Pitch usage against hitters, by season. HIT_USAGE_REF[year][batter side][pitcher hand][all|pre|two][pitch type] =
+// [league share of pitches (%%), spread of true hitter-to-hitter differences in that share (points)].
+export const HIT_USAGE_REF = %s;
 // Hitters with 300+ PA in 2026, for the random first load: [id, name, team, bats].
 export const HIT_RANDOM_POOL = %s;
-""" % (json.dumps(XB['G'],separators=(',',':')),XB['lg'],json.dumps(POOLS,separators=(',',':')),json.dumps(REF,separators=(',',':')),json.dumps(KK,separators=(',',':')),json.dumps(RP,separators=(',',':'),ensure_ascii=False))
+""" % (json.dumps(XB['G'],separators=(',',':')),XB['lg'],json.dumps(POOLS,separators=(',',':')),json.dumps(REF,separators=(',',':')),json.dumps(KK,separators=(',',':')),json.dumps(USE,separators=(',',':')),json.dumps(RP,separators=(',',':'),ensure_ascii=False))
 open('/home/claude/pitcher-live-hub/frontend/src/hitterData.js','w').write(js); print(len(js),'bytes')

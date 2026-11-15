@@ -1,4 +1,4 @@
-# Hitters tab: header line, Results and Value containers
+# Hitters tab: header line, Results, Value and Location containers
 
 `frontend/src/hitterStats.js` holds the stat definitions the app uses; `hlib.py` mirrors them in Python to build
 the league references in `frontend/src/hitterData.js`. Keep the two in sync.
@@ -44,3 +44,16 @@ exit velocity about 0.7 mph above a count that includes them.
 Savant-style per-pitch run values (see `tools/run-value`), from the hitter's side, no park term. League
 references are by batter side x pitcher hand x pitch type x count bucket; colour is the gap to that reference,
 shrunk for sample size (a hitter needs roughly 1,500 pitches of one type for half weight).
+
+The top of the container shows how he is pitched: each pitch type's share of the pitches he saw from that
+pitcher hand, overall / before two strikes / with two strikes. A cell is outlined when his share sits 1.5+
+standard deviations from the league share for the same batter side, pitcher hand and count bucket (and at least
+3 points away), where the deviation combines the true hitter-to-hitter spread (`HIT_USAGE_REF`) with the
+sampling noise of his own pitch count.
+
+## Location (heatmaps)
+
+The pitcher Overview's canvas (pitcher's view) with pitches grouped as Fastballs (FF, SI, FC), Offspeed (CH, FS,
+FO, SC) and Breaking (SL, ST, SV, CU, KC, CS). Success = his expected run value on a pitch minus the league's
+for that pitch type, pitcher hand, batter side and location (`successValue.js`), so green is where he beats
+the league. Frequency, Whiffs and Damage are the same maps the pitcher tab draws.

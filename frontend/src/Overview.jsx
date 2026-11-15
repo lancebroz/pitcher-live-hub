@@ -8,7 +8,7 @@ import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
 import { leagueRunValue } from "./successValue.js";
-import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_RANDOM_POOL } from "./hitterData.js";
+import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_USAGE_REF, HIT_RANDOM_POOL } from "./hitterData.js";
 import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
@@ -184,11 +184,14 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-hm .hd span{font-size:10px;color:#888;font-weight:500;font-variant-numeric:tabular-nums}
 .ov-hm .cv{width:100%;aspect-ratio:1/1;border-radius:4px;overflow:hidden}
 .ov-hm .cv canvas{display:block;width:100%;height:100%}
-.ov-foot{display:flex;align-items:center;gap:8px;margin-top:auto;font-size:11px;color:var(--dim)}
+.ov-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto;font-size:11px;color:var(--dim)}
 .ov-skey{margin-left:auto;font-size:10px;white-space:nowrap}.ov-skey i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 4px 0 8px}
 .ov-foot select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;font-weight:600;font-family:inherit}
 .ov-hr{height:1px;background:var(--border);margin:8px 0 6px}
 .ov-hrow{align-items:flex-start;justify-content:flex-start}
+.ov-vsec{align-self:center;font-size:9.5px;letter-spacing:.9px;text-transform:uppercase;font-weight:700;color:var(--muted)}
+.ov-vbrk{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.ov-grow{grid-template-columns:repeat(var(--n),minmax(0,1fr))}
 .ov-tg3{margin-left:auto;display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px}
 .ov-tg3 button{background:transparent;border:0;color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer}
 .ov-tg3 button[aria-pressed=true]{background:var(--surfaceAlt);color:var(--text)}
@@ -1109,10 +1112,13 @@ function standOf(ps) {
   return sh >= 0.9 ? "L" : sh <= 0.1 ? "R" : "S";
 }
 
+function PitcherHandToggle({ side, setSide }) {
+  return <div className="ov-tg3">{[["all", "All"], ["L", "vs LHP"], ["R", "vs RHP"]].map(([k, l]) => <button key={k} aria-pressed={side === k} onClick={() => setSide(k)}>{l}</button>)}</div>;
+}
+
 // Results: percentile sliders. "All" ranks him against every hitter; a pitcher-hand split ranks him against hitters
 // batting from the same side against that hand.
-function HitterResultsCard({ pitches, h, year }) {
-  const [side, setSide] = useState("all");   // pitcher hand: all | L | R
+function HitterResultsCard({ pitches, h, year, side, setSide }) {
   const sub = useMemo(() => (side === "all" ? pitches : pitches.filter(p => p.p_throws === side)), [pitches, side]);
   const vals = useMemo(() => hitterResults(sub, h), [sub, h]);
   const st = useMemo(() => (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R"), [sub]);
@@ -1122,7 +1128,7 @@ function HitterResultsCard({ pitches, h, year }) {
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Results</div>
-        <div className="ov-tg3">{[["all", "All"], ["L", "vs LHP"], ["R", "vs RHP"]].map(([k, l]) => <button key={k} aria-pressed={side === k} onClick={() => setSide(k)}>{l}</button>)}</div>
+        <PitcherHandToggle side={side} setSide={setSide} />
       </div>
       <div className="ov-body">
         {!vals || !vals.pa ? <div className="ov-note">No plate appearances{side === "all" ? "" : ` vs ${side}HP`} in this range.</div> : (<>
@@ -1145,47 +1151,66 @@ function HitterResultsCard({ pitches, h, year }) {
   );
 }
 
-// Value: run value by pitch type seen, split overall / before two strikes / two strikes, against one pitcher hand.
-const HV_KEYS = ["nv", "nx", "lv", "lx"];
+// Value: against one pitcher hand, how he is pitched (usage by pitch type) and what he does with it (run value by
+// pitch type), each split overall / before two strikes / two strikes.
+const HV_KEYS = ["nv", "nx", "lv", "lx"], HV_ROWS = [["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]];
 function HitterValueCard({ pitches, h, year }) {
   const [ph, setPh] = useState("R"), [mode, setMode] = useState("a"), [ctx, setCtx] = useState("n");
   const { getPitchColor, PITCH_ABBREV, pitchRunValue } = h;
   const sub = useMemo(() => pitches.filter(p => p.p_throws === ph && p.pitch_type), [pitches, ph]);
   // Savant-style per-pitch values when nearly every pitch carries its base/out state; linear weights otherwise (neutral only)
   const savant = useMemo(() => { let n = 0; for (const p of sub) if (p._sv) n++; return sub.length > 0 && n >= 0.98 * sub.length; }, [sub]);
-  const { types, A } = useMemo(() => {
-    const A = {}, cnt = {}, names = {};
+  const { types, A, tot } = useMemo(() => {
+    const A = {}, cnt = {}, names = {}, tot = { all: 0, pre: 0, two: 0 };
     for (const p of sub) {
       const bk = p.strikes === 2 ? "two" : p.strikes != null && p.strikes < 2 ? "pre" : null, q = savant ? p._sv : null;
       const a = q ? q.nv : pitchRunValue(p, false), x = q ? q.nx : pitchRunValue(p, true);
       cnt[p.pitch_type] = (cnt[p.pitch_type] || 0) + 1; if (!names[p.pitch_type]) names[p.pitch_type] = p.pitch_name || p.pitch_type;
       for (const k of bk ? ["all", bk] : ["all"]) {
         const c = A[`${p.pitch_type}|${k}`] || (A[`${p.pitch_type}|${k}`] = [0, 0, 0, 0, 0]);
-        c[0] += a; c[1] += x; c[2] += q ? q.lv : a; c[3] += q ? q.lx : x; c[4]++;
+        c[0] += a; c[1] += x; c[2] += q ? q.lv : a; c[3] += q ? q.lx : x; c[4]++; tot[k]++;
       }
     }
     const types = Object.keys(cnt).filter(t => cnt[t] >= 15).sort((a, b) => cnt[b] - cnt[a]).slice(0, 8).map(t => ({ type: t, name: names[t], n: cnt[t] }));
-    return { types, A };
+    return { types, A, tot };
   }, [sub, savant, pitchRunValue]);
   const st = useMemo(() => (sub.filter(p => p.batter_hand === "L").length * 2 >= sub.length ? "L" : "R"), [sub]);
-  const lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1), lg = HIT_VALUE_REF[year]?.[st]?.[ph] || {}, KS = HIT_VALUE_K[year] || {};
+  const lev = ctx === "l" && savant, mi = (lev ? 2 : 0) + (mode === "a" ? 0 : 1), lg = HIT_VALUE_REF[year]?.[st]?.[ph] || {}, KS = HIT_VALUE_K[year] || {}, ulg = HIT_USAGE_REF[year]?.[st]?.[ph] || {};
   const what = `${lev ? "Leveraged: weighted by the base/out situation." : "Context-neutral: base/out situation ignored."} ${mode === "a" ? "Actual results." : "Expected: balls in play valued by exit velocity and launch angle."}`;
   const tg = (cur, set, opts) => <div className="ov-tg3" style={{ marginLeft: 0 }}>{opts.map(([k, l, tip, off]) => <button key={k} aria-pressed={cur === k} disabled={off} style={off ? { opacity: 0.4, cursor: "default" } : undefined} onClick={() => set(k)} title={tip}>{l}</button>)}</div>;
+  const matchup = `${st}HB vs ${ph}HP`;
   return (
     <div className="ov-card">
       <div className="ov-head"><div className="ov-ct">Value</div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          {tg(ph, setPh, [["R", "vs RHP"], ["L", "vs LHP"]])}
-          {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", savant ? "Leveraged: plays count for more in bigger base/out situations" : "Leveraged needs base/out data, which these pitches do not carry", !savant]])}
-          {tg(mode, setMode, [["a", "RV", "Run value from actual results"], ["x", "xRV", "Expected run value: balls in play valued by exit velocity and launch angle"]])}
-        </div>
+        <div style={{ marginLeft: "auto" }}>{tg(ph, setPh, [["R", "vs RHP"], ["L", "vs LHP"]])}</div>
       </div>
       {!types.length ? <div className="ov-note">Not enough pitches vs {ph}HP in this range.</div> : (
         <div className="ov-mix">
-          <div className="ov-mrow" style={{ "--n": types.length }}><span />
+          <div className="ov-mrow" style={{ "--n": types.length }}><span className="ov-vsec">Usage</span>
             {types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type) }} title={`${t.name}: ${t.n.toLocaleString()} seen vs ${ph}HP`}>{PITCH_ABBREV[t.name] || t.type}<small>{t.n.toLocaleString()}</small></div>)}
           </div>
-          {[["all", "Overall"], ["pre", "Pre-2K"], ["two", "2K"]].map(([rk, rl]) => (
+          {HV_ROWS.map(([rk, rl]) => (
+            <div key={rk} className={`ov-mrow${rk === "all" ? " ov-all" : ""}`} style={{ "--n": types.length }}>
+              <div className="ov-mlab">{rl}<small>{tot[rk].toLocaleString()}</small></div>
+              {types.map(t => {
+                const n = tot[rk], c = A[`${t.type}|${rk}`];
+                if (n < 15) return <div key={t.type} className="ov-mcell z">—</div>;
+                const v = 100 * (c ? c[4] : 0) / n, r = ulg[rk]?.[t.type];
+                // marked only when he sees the pitch clearly more or less than hitters in the same matchup and count do
+                const z = r ? (v - r[0]) / Math.sqrt(r[1] * r[1] + r[0] * (100 - r[0]) / n) : 0, hi = z >= 1.5 && v - r[0] >= 3, lo = z <= -1.5 && r[0] - v >= 3;
+                return <div key={t.type} className={`ov-mcell${hi ? " hi" : lo ? " lo" : ""}${Math.round(v) === 0 ? " z" : ""}`}
+                  title={`${t.name} vs ${ph}HP · ${rl}\n${v.toFixed(1)}% of the ${n.toLocaleString()} pitches he saw${r ? `\nLeague ${matchup}: ${r[0].toFixed(1)}%` : ""}`}>{Math.round(v)}<small>%</small></div>;
+              })}
+            </div>
+          ))}
+          <div className="ov-mkey"><i />Sees it well above league<i />Well below</div>
+          <div className="ov-vbrk"><span className="ov-vsec">Run value</span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", savant ? "Leveraged: plays count for more in bigger base/out situations" : "Leveraged needs base/out data, which these pitches do not carry", !savant]])}
+              {tg(mode, setMode, [["a", "RV", "Run value from actual results"], ["x", "xRV", "Expected run value: balls in play valued by exit velocity and launch angle"]])}
+            </div>
+          </div>
+          {HV_ROWS.map(([rk, rl]) => (
             <div key={rk} className={`ov-mrow${rk === "all" ? " ov-all" : ""}`} style={{ "--n": types.length }}>
               <div className="ov-mlab">{rl}</div>
               {types.map(t => {
@@ -1195,13 +1220,64 @@ function HitterValueCard({ pitches, h, year }) {
                 const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
                 const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
                 return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
-                  title={`${t.name} vs ${ph}HP · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${st}HB vs ${ph}HP: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${what} Color accounts for sample size.`}>{sg(v)}</div>;
+                  title={`${t.name} vs ${ph}HP · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${matchup}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${what} Color accounts for sample size.`}>{sg(v)}</div>;
               })}
             </div>
           ))}
           <div className="ov-cnote">Runs per 100 pitches · + is good for the hitter<br />{lev ? "Leveraged by base/out" : "Context-neutral"} · {mode === "a" ? "actual results" : "contact valued by exit velocity and launch angle"} · color is vs the league for that matchup, adjusted for sample</div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Location: the pitcher Overview's heatmaps from the hitter's side, by pitch group. Success = runs per pitch above what
+// the league's hitters do against that pitch type from that pitcher hand at that spot (+ = good for him).
+const HIT_GROUPS = [["fb", "Fastballs", "FF", new Set(["FF", "SI", "FC", "FA", "FT"]), "Four-seamers, sinkers, cutters"],
+  ["os", "Offspeed", "CH", new Set(["CH", "FS", "FO", "SC"]), "Changeups, splitters, forkballs, screwballs"],
+  ["br", "Breaking", "SL", new Set(["SL", "ST", "SV", "CU", "KC", "CS"]), "Sliders, sweepers, slurves, curveballs"]];
+function HitterLocationCard({ pitches, h, side, setSide }) {
+  const { GaussianHeatmapCanvas, pitchMatchesCount, pitchRunValue, getPitchColor } = h;
+  const [grp, setGrp] = useState("fb"), [count, setCount] = useState("all"), [slide, setSlide] = useState(0);
+  const by = useMemo(() => {
+    const o = { fb: [], os: [], br: [] };
+    for (const p of pitches) {
+      if ((side !== "all" && p.p_throws !== side) || p.plate_x == null || p.plate_z == null || !pitchMatchesCount(p, count)) continue;
+      const g = HIT_GROUPS.find(x => x[3].has(p.pitch_type)); if (g) o[g[0]].push(p);
+    }
+    return o;
+  }, [pitches, side, count, pitchMatchesCount]);
+  const base = by[grp];
+  const sets = useMemo(() => ({ success: base, frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) }), [base]);
+  const successFn = useMemo(() => (p) => pitchRunValue(p, true) - leagueRunValue(p, p.p_throws === "L" ? "L" : "R"), [pitchRunValue]);
+  const stand = useMemo(() => { const s = standOf(base); return s === "S" ? "all" : s; }, [base]);   // which batter silhouette(s) to draw
+  const [mode, label] = HEAT_SLIDES[slide], step = (d) => setSlide(i => (i + d + HEAT_SLIDES.length) % HEAT_SLIDES.length);
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Location</div><PitcherHandToggle side={side} setSide={setSide} /></div>
+      <div className="ov-body">
+        <div className="ov-mrow ov-grow" style={{ "--n": HIT_GROUPS.length }}>
+          {HIT_GROUPS.map(([k, l, col, , tip]) => <button key={k} className="ov-chip" aria-pressed={k === grp} style={{ background: getPitchColor(col) }} onClick={() => setGrp(k)} title={tip}>{l}<small>{by[k].length.toLocaleString()}</small></button>)}
+        </div>
+        <div className="ov-car">
+          <button className="ov-arrow" aria-label="Previous map" onClick={() => step(-1)}>‹</button>
+          <div className="ov-hm">
+            <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={stand} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} />
+          </div>
+          <button className="ov-arrow" aria-label="Next map" onClick={() => step(1)}>›</button>
+        </div>
+        <div className="ov-tabs">
+          {HEAT_SLIDES.map(([k, l], i) => <button key={k} aria-pressed={i === slide} onClick={() => setSlide(i)}>{l}</button>)}
+        </div>
+        <div className="ov-foot">
+          <span>Count</span>
+          <select value={count} onChange={e => setCount(e.target.value)} aria-label="Count situation">
+            <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
+            <option value="behind">Hitter Ahead</option><option value="ahead">Hitter Behind</option><option value="leverage">Leverage</option>
+          </select>
+          {mode === "success" && <span className="ov-skey"><i style={{ background: "#22c55e" }} />Better than league there<i style={{ background: "#ef4444" }} />Worse</span>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1218,6 +1294,7 @@ export function HittersPage({ C, helpers }) {
   const [data, setData] = useState({}), [loading, setLoading] = useState({});   // by season
   const [range, setRange] = useState({ s: "", e: "" }), [official, setOfficial] = useState(null), endRef = useRef(null);
   const setYear = (y) => { setRange({ s: "", e: "" }); setYearRaw(y); };
+  const [side, setSide] = useState("all");   // pitcher hand shared by the Results and Location containers
   const [rootRef, tipEl] = useTapTips();
   const searchRef = useRef(null), seqRef = useRef(0);
 
@@ -1346,8 +1423,9 @@ export function HittersPage({ C, helpers }) {
       </div>
       {batter && !busy && cur && cur.length > 0 && (
         <div className="ov-row ov-hrow">
-          <HitterResultsCard pitches={cur} h={helpers} year={year} />
+          <HitterResultsCard pitches={cur} h={helpers} year={year} side={side} setSide={setSide} />
           <HitterValueCard pitches={cur} h={helpers} year={year} />
+          <HitterLocationCard pitches={cur} h={helpers} side={side} setSide={setSide} />
         </div>
       )}
     </div>
