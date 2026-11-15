@@ -192,6 +192,14 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-vsec{align-self:center;font-size:9.5px;letter-spacing:.9px;text-transform:uppercase;font-weight:700;color:var(--muted)}
 .ov-vbrk{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .ov-grow{grid-template-columns:repeat(var(--n),minmax(0,1fr))}
+.ov-card.ov-wide{flex:1 1 100%;max-width:1588px}
+.ov-prow{display:flex;gap:16px;align-items:stretch;flex-wrap:wrap}
+.ov-ptiles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-content:center;flex:0 0 250px}
+.ov-ptiles .big{grid-column:1/-1}.ov-ptiles .big .v{font-size:34px}.ov-ptiles .ov-st{min-width:0;padding-left:9px;padding-right:9px;cursor:help}
+.ov-pn{grid-column:1/-1;font-size:10.5px;color:var(--dim);text-align:center}
+.ov-pchart{flex:1 1 420px;min-width:0}.ov-pchart svg{display:block;width:100%;height:auto;touch-action:pan-y}
+.ov-pread{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;font-size:11.5px;color:var(--muted);padding:0 0 4px 34px;font-variant-numeric:tabular-nums}
+.ov-pread b{color:var(--text)}.ov-pread i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .ov-tg3{margin-left:auto;display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px}
 .ov-tg3 button{background:transparent;border:0;color:var(--dim);font-size:10.5px;font-weight:600;padding:4px 8px;border-radius:5px;cursor:pointer}
 .ov-tg3 button[aria-pressed=true]{background:var(--surfaceAlt);color:var(--text)}
@@ -1287,6 +1295,105 @@ function HitterLocationCard({ pitches, h, side, setSide }) {
   );
 }
 
+// Process: Process+ and its three parts (decisions, contact, power), each measured against what the league does
+// with the same pitches, plus the rolling 400-pitch chart. The models load the first time the container is shown.
+let PROC_MOD = null;
+const PROC_PARTS = [["d", "Decisions", "#8b5cf6", "Swing decisions: swinging at pitches worth swinging at and taking the rest, against how often the league swings at the same pitch."],
+  ["c", "Contact", "#f59e0b", "Contact on swings (foul or in play), against how often the league makes contact with the same pitch."],
+  ["w", "Power", "#14b8a6", "Quality of contact (exit velocity and launch angle) on balls in play, against what the league does with the same pitch."]];
+const psgn = (v, d = 0) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(d)}`;
+const mdLabel = (iso) => `${parseInt(iso.slice(5, 7), 10)}/${parseInt(iso.slice(8, 10), 10)}`;
+
+function ProcessChart({ pts, range }) {
+  const [hover, setHover] = useState(null), ref = useRef(null), boxRef = useRef(null), [W, setW] = useState(900);
+  // drawn at the container's real width so labels stay the same size on a phone as on a desktop
+  useEffect(() => {
+    if (!boxRef.current) return undefined;
+    const ro = new ResizeObserver(e => setW(Math.max(300, Math.round(e[0].contentRect.width)))); ro.observe(boxRef.current); return () => ro.disconnect();
+  }, []);
+  const H = Math.round(Math.max(230, Math.min(320, W * 0.36))), m = { l: 34, r: 10, t: 10, b: 24 };
+  const geo = useMemo(() => {
+    if (!pts.length) return null;
+    const day = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5;
+    const d0 = day(pts[0].date), d1 = Math.max(day(pts[pts.length - 1].date), d0 + 20);
+    let lo = 80, hi = 120;
+    for (const p of pts) { let up = 100, dn = 100; for (const k of ["d", "c", "w"]) { if (p[k] > 0) up += p[k]; else dn += p[k]; } lo = Math.min(lo, dn, p.t); hi = Math.max(hi, up, p.t); }
+    lo = Math.floor((lo - 3) / 25) * 25; hi = Math.ceil((hi + 3) / 25) * 25;
+    const x = (iso) => m.l + (W - m.l - m.r) * (day(iso) - d0) / (d1 - d0), y = (v) => m.t + (H - m.t - m.b) * (hi - v) / (hi - lo);
+    const ticks = []; for (let v = lo; v <= hi; v += 25) ticks.push(v);
+    const months = []; const yr = +pts[0].date.slice(0, 4);
+    for (let mo = 1; mo <= 12; mo++) { const iso = `${yr}-${String(mo).padStart(2, "0")}-01`; if (day(iso) >= d0 - 3 && day(iso) <= d1) months.push(iso); }
+    const bw = Math.max(1.6, Math.min(5, (W - m.l - m.r) / (d1 - d0) * 0.62));
+    return { x, y, ticks, months, bw, lo, hi };
+  }, [pts, W, H]);
+  if (!geo) return null;
+  const { x, y, ticks, months, bw } = geo;
+  const move = (e) => {
+    const r = ref.current.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * W; let best = 0, bd = 1e9;
+    pts.forEach((p, i) => { const dd = Math.abs(x(p.date) - px); if (dd < bd) { bd = dd; best = i; } }); setHover(best);
+  };
+  const cur = pts[hover != null && hover < pts.length ? hover : pts.length - 1];
+  return (
+    <div className="ov-pchart" ref={boxRef}>
+      <div className="ov-pread" data-date={cur.date}>
+        <b>{mdLabel(cur.date)}</b><span>last {cur.n.toLocaleString()} pitches</span><span className="t">Process+ <b>{Math.round(cur.t)}</b></span>
+        {PROC_PARTS.map(([k, l, col]) => <span key={k}><i style={{ background: col }} />{l} <b>{psgn(cur[k])}</b></span>)}
+      </div>
+      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Rolling Process+ chart" onPointerMove={move} onPointerDown={move} onPointerLeave={() => setHover(null)}>
+        {range && (range.s || range.e) && <rect x={range.s ? Math.max(m.l, x(range.s)) : m.l} y={m.t} width={Math.max(0, (range.e ? Math.min(W - m.r, x(range.e)) : W - m.r) - (range.s ? Math.max(m.l, x(range.s)) : m.l))} height={H - m.t - m.b} fill="var(--accent)" opacity="0.07" />}
+        {ticks.map(v => <g key={v}><line x1={m.l} x2={W - m.r} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth={v === 100 ? 0 : 1} /><text x={m.l - 6} y={y(v) + 3.5} textAnchor="end" fontSize="10.5" fill="var(--dim)">{v}</text></g>)}
+        {months.map(iso => <text key={iso} x={x(iso)} y={H - 7} textAnchor="middle" fontSize="10.5" fill="var(--dim)">{mdLabel(iso)}</text>)}
+        {pts.map((p, i) => {
+          let up = 100, dn = 100; const full = p.n >= PROC_MOD.PROC_WINDOW;
+          return <g key={p.date} opacity={full ? 1 : 0.4} data-day={p.date} data-n={p.n} data-t={p.t.toFixed(2)} data-d={p.d.toFixed(2)} data-c={p.c.toFixed(2)} data-w={p.w.toFixed(2)}>
+            {PROC_PARTS.map(([k, , col]) => { const v = p[k]; if (!v) return null; const a = v > 0 ? up : dn, b = a + v; if (v > 0) up = b; else dn = b; return <rect key={k} x={x(p.date) - bw / 2} width={bw} y={y(Math.max(a, b))} height={Math.abs(y(a) - y(b))} fill={col} opacity={i === hover ? 1 : 0.85} />; })}
+          </g>;
+        })}
+        <line x1={m.l} x2={W - m.r} y1={y(100)} y2={y(100)} stroke="var(--text)" strokeWidth="1.2" opacity="0.55" />
+        <polyline fill="none" stroke="var(--text)" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={pts.map(p => `${x(p.date).toFixed(1)},${y(p.t).toFixed(1)}`).join(" ")} />
+        {hover != null && hover < pts.length && <g><line x1={x(pts[hover].date)} x2={x(pts[hover].date)} y1={m.t} y2={H - m.b} stroke="var(--text)" strokeWidth="1" opacity="0.35" /><circle cx={x(pts[hover].date)} cy={y(pts[hover].t)} r="4" fill="var(--surface)" stroke="var(--text)" strokeWidth="2" /></g>}
+      </svg>
+    </div>
+  );
+}
+
+function HitterProcessCard({ season, pitches, h, year, range }) {
+  const [ver, setVer] = useState("full"), [ready, setReady] = useState(!!PROC_MOD);
+  useEffect(() => { if (PROC_MOD) return undefined; let alive = true; import("./processModel.js").then(mod => { PROC_MOD = mod; if (alive) setReady(true); }).catch(() => {}); return () => { alive = false; }; }, []);
+  // score the season once; the tiles follow the date range, the chart always shows the season's rolling line
+  const scored = useMemo(() => (ready ? PROC_MOD.scoreAll(season, h.xwobaconLookup) : null), [ready, season, h]);
+  const inRange = useMemo(() => { if (!scored) return null; if (pitches === season) return scored; const keep = new Set(pitches); return scored.filter(p => keep.has(p)); }, [scored, pitches, season]);
+  const line = useMemo(() => (inRange ? PROC_MOD.processLine(inRange, year, ver) : null), [inRange, year, ver]);
+  const roll = useMemo(() => (scored ? PROC_MOD.processRolling(scored, year, ver).filter(p => p.n >= 200) : []), [scored, year, ver]);
+  const pool = ready ? (PROC_MOD.PROC_POOLS[year] || {})[ver] : null;
+  const tile = (key, lab, v, shown, about) => {
+    const pct = line && line.n >= 200 ? pctFromQ(pool?.[key], v) : null, mag = pct == null ? 0 : Math.max(0, Math.min(1, (Math.abs(pct - 50) - 16) / 33)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+    const col = pct == null || Math.abs(pct - 50) < 16 ? null : pct > 50 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+    return <div key={key} className={`ov-st${key === "t" ? " big" : ""}`} data-k={key} style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
+      title={`${about}\n${pct != null ? `${ordinal(pct)} percentile among ${pool.n} hitters with 400+ pitches in ${year}` : "Too few pitches to rank"}`}><div className="k">{lab}</div><div className="v">{shown}</div></div>;
+  };
+  return (
+    <div className="ov-card ov-wide">
+      <div className="ov-head"><div className="ov-ct">Process</div>
+        <div className="ov-tg3">{[["basic", "Basic", "League expectation from pitch group, location, count and handedness"], ["full", "Full", "Adds the pitch's velocity and movement to the league expectation"]].map(([k, l, tip]) => <button key={k} aria-pressed={ver === k} onClick={() => setVer(k)} title={tip}>{l}</button>)}</div>
+      </div>
+      <div className="ov-body">
+        {!ready ? <div className="ov-note">Loading models…</div> : !line ? <div className="ov-note">No scoreable pitches in this range.</div> : (<>
+          <div className="ov-prow">
+            <div className="ov-ptiles">
+              {tile("t", "Process+", line.t, Math.round(line.t), "Process+: 100 is league average, and each point is 1% of league run scoring per pitch, the way wRC+ is built. It is the sum of the three parts.")}
+              {PROC_PARTS.map(([k, l, , about]) => tile(k, l, line[k], psgn(line[k]), `${about}\nPoints of Process+ it adds or costs.`))}
+              <div className="ov-pn">{line.n.toLocaleString()} pitches</div>
+            </div>
+            {roll.length > 1 ? <ProcessChart pts={roll} range={range} /> : <div className="ov-note" style={{ flex: 1 }}>The rolling chart starts once he has seen 200 pitches.</div>}
+          </div>
+          <div className="ov-cnote">Rolling {PROC_MOD.PROC_WINDOW} pitches, one bar per game day (faded until the window is full) · bars are what each part adds or costs, the line is Process+ · {ver === "full" ? "league expectation uses location, count, handedness, velocity and movement" : "league expectation uses pitch group, location, count and handedness"}</div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"}`;
 const fmt3 = (v) => (v == null || isNaN(v) ? "—" : v.toFixed(3).replace(/^0(?=\.)/, ""));
 const HIT_SEASON = { 2025: ["2025-03-27", "2025-09-28"] };   // past seasons come from Savant by date range
@@ -1434,6 +1541,7 @@ export function HittersPage({ C, helpers }) {
           <HitterResultsCard pitches={cur} h={helpers} year={year} side={side} setSide={setSide} />
           <HitterValueCard pitches={cur} h={helpers} year={year} />
           <HitterLocationCard pitches={cur} h={helpers} side={side} setSide={setSide} />
+          <HitterProcessCard season={season} pitches={cur} h={helpers} year={year} range={ranged ? range : null} />
         </div>
       )}
     </div>

@@ -1051,6 +1051,11 @@ async def _savant_pitches(player_type: str, player_id: int, start_date: str, end
             "swing_length": safe_float("swing_length"),
             "is_bunt_des": "bunt" in str(row.get("des") or "").lower(),
         })
+        if player_type == "batter":
+            # Zone heights for Process+ on the Hitters tab. Left off pitcher rows so the pitcher pages keep
+            # computing zone-edge stats for past seasons exactly as they have been.
+            pitches[-1]["sz_top"] = safe_float("sz_top")
+            pitches[-1]["sz_bot"] = safe_float("sz_bot")
 
     # Fill in missing pitch_type from pitch_name (Savant sometimes returns blank codes)
     PITCH_NAME_MAP = {

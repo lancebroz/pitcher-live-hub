@@ -2060,7 +2060,7 @@ const normalizeLivePitch = (p) => {
     pitch_number: p.pitch_number,
     pitch_type: _derivedPt,
     pitch_name: (_rawPn || _rawPt || "").replace("Four-Seam", "4-Seam"),
-    release_speed: p.release_speed,
+    release_speed: p.release_speed != null ? p.release_speed : (p.start_speed != null ? p.start_speed : null),   // batter rows from the feed call it start_speed
     release_spin_rate: p.release_spin_rate || p.spin_rate,
     spin_efficiency: p.spin_efficiency || null,
     pfx_z: pfx_z_inches,
@@ -2154,6 +2154,7 @@ const normalizeLivePitch = (p) => {
     on_2b: p.on_2b == null ? null : !!p.on_2b,
     on_3b: p.on_3b == null ? null : !!p.on_3b,
     _savant: p.movement_source === "savant",
+    _nodec: desc.includes("bunt") || desc.includes("pitchout"),   // bunt attempts and pitchouts are not swing decisions (Process+)
   };
   // Savant-style run value (neutral / leveraged, actual / expected) when base/out is known; Savant's own
   // per-pitch value is kept as the neutral value on rows that came from Savant.
@@ -5443,7 +5444,7 @@ const isPostseasonDate = (d) => {
 const POSTSEASON_GOLD = "#d4af37";
 
 // Stable helpers handed to the Hitters tab (stat definitions live here; the page lives in Overview.jsx).
-const HITTER_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_AB_CONTACT_OUTS, endsPaAsK: _endsPaAsK, getPitchColor, PITCH_ABBREV, pitchRunValue, normalizeLivePitch, normAndFilter, isPostseasonDate, DatePickerWithHighlights, GaussianHeatmapCanvas, pitchMatchesCount };
+const HITTER_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_AB_CONTACT_OUTS, endsPaAsK: _endsPaAsK, getPitchColor, PITCH_ABBREV, pitchRunValue, normalizeLivePitch, normAndFilter, isPostseasonDate, DatePickerWithHighlights, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup };
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
