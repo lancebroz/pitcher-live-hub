@@ -1538,10 +1538,10 @@ export function HittersPage({ C, helpers }) {
       </div>
       {batter && !busy && cur && cur.length > 0 && (
         <div className="ov-row ov-hrow">
+          <HitterProcessCard season={season} pitches={cur} h={helpers} year={year} range={ranged ? range : null} />
           <HitterResultsCard pitches={cur} h={helpers} year={year} side={side} setSide={setSide} />
           <HitterValueCard pitches={cur} h={helpers} year={year} />
           <HitterLocationCard pitches={cur} h={helpers} side={side} setSide={setSide} />
-          <HitterProcessCard season={season} pitches={cur} h={helpers} year={year} range={ranged ? range : null} />
         </div>
       )}
     </div>
