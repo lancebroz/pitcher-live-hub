@@ -142,7 +142,7 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-cnote{font-size:10.5px;color:var(--dim);text-align:center;margin-top:auto;padding-top:8px;line-height:1.45}
 .ov-row3{margin-top:14px;justify-content:flex-start}
 .ov-rt{gap:4px}.ov-rt .ov-mcell{min-height:30px;font-size:13px}.ov-rt .ov-mrow{gap:4px}.ov-rt .ov-mlab{font-size:11px}
-.ov-rt .ov-mrow.brk{margin-top:5px}
+.ov-rt .ov-mrow.brk{margin-top:6px;padding-top:10px;border-top:1px solid var(--border)}
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
 .ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
 .ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #ef4444}
@@ -446,7 +446,7 @@ const SV_KEYS = ["nv", "nx", "lv", "lx"];
 function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
   const [mode, setMode] = useState("a");   // a = run value, x = expected run value
   const [ctx, setCtx] = useState("n");     // n = context-neutral, l = leveraged by base/out situation
-  const [unit, setUnit] = useState("r");   // r = runs per 100 pitches, t = total runs
+  const [unit, setUnit] = useState("t");   // t = total runs (default), r = runs per 100 pitches
   const [sv, setSv] = useState(SV_CACHE[year]);   // undefined = loading, null = no file for this season
   useEffect(() => {
     if (SV_CACHE[year] !== undefined) { setSv(SV_CACHE[year]); return undefined; }
@@ -544,7 +544,7 @@ const RATE_ROWS = [
   ["gbRate", "GB", "Ground balls per ball in play", "balls in play"], ["fbRate", "FB", "Fly balls per ball in play", "balls in play"],
   ["barrelRate", "Barrel", "Barrels per batted ball", "batted balls"], ["slg", "SLG", "Slugging allowed on at-bats ending on the pitch", "at-bats"],
 ];
-const RATE_BREAK = new Set(["swStrRate", "gbRate"]);   // a little air before the swing rows and the contact rows
+const RATE_BREAK = new Set(["swStrRate", "gbRate"]);   // a rule after Called and after Z-Whiff
 function RatesCard({ mix, year, hand, pitchRateCounts, pitchMatchesCount, STAT_GOOD_DIR, getPitchColor, PITCH_ABBREV }) {
   const [side, setSide] = useState("A");    // A = all batters, L / R
   const [bk, setBk] = useState("all");      // all = overall, pre = before two strikes, two = two strikes
