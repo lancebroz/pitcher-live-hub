@@ -12,6 +12,7 @@ import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_USAGE_REF, HIT_LINE_POOLS, H
 import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
 import { OV_SV_REF, OV_SV_K } from "./overviewValueSvRef.js";
+import { OV_RATE_STATS, OV_RATE_REF, OV_RATE_K } from "./overviewRatesRef.js";
 import { OV_GRADES, OV_GRADES_LG, OV_RANDOM_POOL } from "./overviewGrades.js";
 import { loadGradeCells, gradeRange, GRADE_MIN_PITCHES } from "./gradesRange.js";
 import { armAngleFor } from "./armAngle.js";
@@ -140,6 +141,8 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-cnote .fl svg{width:8px;height:9px;vertical-align:-1px;margin-right:3px}
 .ov-cnote{font-size:10.5px;color:var(--dim);text-align:center;margin-top:auto;padding-top:8px;line-height:1.45}
 .ov-row3{margin-top:14px;justify-content:flex-start}
+.ov-rt{gap:4px}.ov-rt .ov-mcell{min-height:30px;font-size:13px}.ov-rt .ov-mrow{gap:4px}.ov-rt .ov-mlab{font-size:11px}
+.ov-rt .ov-mrow.brk{margin-top:5px}
 .ov-mkey{font-size:10.5px;color:var(--dim);text-align:center;margin-top:6px}
 .ov-mkey i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin:0 5px 0 12px}
 .ov-mkey i:first-child{margin-left:0;box-shadow:inset 0 0 0 2px #22c55e}.ov-mkey i:last-of-type{box-shadow:inset 0 0 0 2px #ef4444}
@@ -443,6 +446,7 @@ const SV_KEYS = ["nv", "nx", "lv", "lx"];
 function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitchColor, PITCH_ABBREV }) {
   const [mode, setMode] = useState("a");   // a = run value, x = expected run value
   const [ctx, setCtx] = useState("n");     // n = context-neutral, l = leveraged by base/out situation
+  const [unit, setUnit] = useState("r");   // r = runs per 100 pitches, t = total runs
   const [sv, setSv] = useState(SV_CACHE[year]);   // undefined = loading, null = no file for this season
   useEffect(() => {
     if (SV_CACHE[year] !== undefined) { setSv(SV_CACHE[year]); return undefined; }
@@ -495,6 +499,7 @@ function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitch
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           {tg(lev ? "l" : "n", setCtx, [["n", "Neutral", "Context-neutral: the base/out situation is ignored"], ["l", "Leveraged", savant || sv === undefined ? "Leveraged: plays count for more in bigger base/out situations" : "Leveraged needs base/out data, which these pitches do not carry", sv !== undefined && !savant]])}
           {tg(mode, setMode, [["a", "RV", "Run value from actual results"], ["x", "xRV", "Expected run value: balls in play valued by exit velocity and launch angle"]])}
+          {tg(unit, setUnit, [["r", "/100", "Runs per 100 pitches"], ["t", "Total", "Total runs over the pitches thrown"]])}
         </div>
       </div>
       {!mix ? <div className="ov-note">No {year} MLB pitches.</div> : !agg ? <div className="ov-note">Loading…</div> : (
@@ -515,13 +520,82 @@ function ValueCard({ mix, year, hand, pitcherId, ranged, pitchRunValue, getPitch
                     const z = ref == null ? 0 : ((v - ref) * n / (n + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
                     const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`, sg = (q, d = 1) => `${q > 0 ? "+" : q < 0 ? "−" : ""}${Math.abs(q).toFixed(d)}`;
                     return <div key={t.type} className="ov-mcell ov-vcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
-                      title={`${t.name} ${lab} · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${hand}HP ${PITCH_ABBREV[t.name] || t.type}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${what} Color accounts for sample size.`}>{sg(v)}</div>;
+                      title={`${t.name} ${lab} · ${rl}\n${sg(v)} runs per 100 pitches${ref != null ? ` (league ${hand}HP ${PITCH_ABBREV[t.name] || t.type}: ${sg(ref)})` : ""}\n${sg(c[mi])} runs in total over ${n.toLocaleString()} pitches\n${what} Color is the per-100 rate vs the league, adjusted for sample.`}>{sg(unit === "t" ? c[mi] : v)}</div>;
                   })}
                 </div>
               ))}
             </div>
           ))}
-          <div className="ov-cnote">Runs saved per 100 pitches · + is good for the pitcher<br />{lev ? "Leveraged by base/out" : "Context-neutral"} · {mode === "a" ? "actual results" : "contact valued by exit velocity and launch angle"} · color is vs the league, adjusted for sample</div>
+          <div className="ov-cnote">{unit === "t" ? "Total runs saved" : "Runs saved per 100 pitches"} · + is good for the pitcher<br />{lev ? "Leveraged by base/out" : "Context-neutral"} · {mode === "a" ? "actual results" : "contact valued by exit velocity and launch angle"} · color is vs the league, adjusted for sample</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Rates: per-pitch-type results (the Compare table's rates, same definitions via pitchRateCounts). ───
+// Colour is vs the league's rate for that exact subset (season, pitcher hand, pitch type, batter side, count), with the
+// pitcher's own number weighted by its sample: z = (value − league) · n/(n + K1) / K0, where n is the stat's own denominator.
+const RATE_ROWS = [
+  ["strikeRate", "Strike", "Swings and called strikes per pitch", "pitches"], ["zoneRate", "Zone", "Pitches in the strike zone", "pitches"],
+  ["cswRate", "CSW", "Called strikes plus whiffs per pitch", "pitches"], ["calledStrikeRate", "Called", "Called strikes per pitch", "pitches"],
+  ["swStrRate", "SwStr", "Whiffs per pitch", "pitches"], ["whiffRate", "Whiff", "Whiffs per swing", "swings"],
+  ["chaseRate", "Chase", "Swings at pitches out of the zone", "pitches out of the zone"], ["zoneWhiffRate", "Z-Whiff", "Whiffs per swing in the zone", "swings in the zone"],
+  ["gbRate", "GB", "Ground balls per ball in play", "balls in play"], ["fbRate", "FB", "Fly balls per ball in play", "balls in play"],
+  ["barrelRate", "Barrel", "Barrels per batted ball", "batted balls"], ["slg", "SLG", "Slugging allowed on at-bats ending on the pitch", "at-bats"],
+];
+const RATE_BREAK = new Set(["swStrRate", "gbRate"]);   // a little air before the swing rows and the contact rows
+function RatesCard({ mix, year, hand, pitchRateCounts, pitchMatchesCount, STAT_GOOD_DIR, getPitchColor, PITCH_ABBREV }) {
+  const [side, setSide] = useState("A");    // A = all batters, L / R
+  const [bk, setBk] = useState("all");      // all = overall, pre = before two strikes, two = two strikes
+  const cells = useMemo(() => {
+    if (!mix) return null;
+    const by = {}, cf = bk === "pre" ? "pre2k" : bk === "two" ? "two_strikes" : "all";
+    for (const p of mix.valid) {
+      if (side !== "A" && p.batter_hand !== side) continue;
+      if (!pitchMatchesCount(p, cf)) continue;
+      (by[p.pitch_type] || (by[p.pitch_type] = [])).push(p);
+    }
+    const out = {}; for (const t of Object.keys(by)) out[t] = { n: by[t].length, k: pitchRateCounts(by[t]) };
+    return out;
+  }, [mix, side, bk, pitchRateCounts, pitchMatchesCount]);
+  const refYear = OV_RATE_REF[year] ? year : Object.keys(OV_RATE_REF).sort().pop();   // a season with no table yet borrows the latest one
+  const lg = OV_RATE_REF[refYear]?.[hand] || {};
+  const sideLab = side === "A" ? "all batters" : `vs ${side}HH`, bkLab = bk === "all" ? "Overall" : bk === "pre" ? "Pre-2K" : "2K";
+  const tg = (cur, set, opts) => <div className="ov-tg3" style={{ marginLeft: 0 }}>{opts.map(([k, l, tip]) => <button key={k} aria-pressed={cur === k} onClick={() => set(k)} title={tip}>{l}</button>)}</div>;
+  return (
+    <div className="ov-card">
+      <div className="ov-head"><div className="ov-ct">Rates</div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {tg(side, setSide, [["A", "All", "All batters"], ["L", "LHH", "Left-handed batters"], ["R", "RHH", "Right-handed batters"]])}
+          {tg(bk, setBk, [["all", "Overall", "Every count"], ["pre", "Pre-2K", "Counts with fewer than two strikes"], ["two", "2K", "Two-strike counts"]])}
+        </div>
+      </div>
+      {!mix || !cells ? <div className="ov-note">No {year} MLB pitches.</div> : (
+        <div className="ov-mix ov-rt">
+          <div className="ov-mrow" style={{ "--n": mix.types.length }}><span />
+            {mix.types.map(t => <div key={t.type} className="ov-chip" style={{ background: getPitchColor(t.type), padding: "7px 0" }} title={`${t.name}${cells[t.type] ? ` · ${cells[t.type].n.toLocaleString()} pitches` : ""}`}>{PITCH_ABBREV[t.name] || t.type}</div>)}
+          </div>
+          {RATE_ROWS.map(([key, lab, desc, unit]) => {
+            const si = OV_RATE_STATS.indexOf(key), isSlg = key === "slg", K = OV_RATE_K[key]?.[bk], dir = isSlg ? -1 : (STAT_GOOD_DIR[key] || 0);
+            const show = (v) => (isSlg ? v.toFixed(3).replace(/^0/, "") : `${v.toFixed(1)}%`);
+            return (
+              <div key={key} className={`ov-mrow${RATE_BREAK.has(key) ? " brk" : ""}`} style={{ "--n": mix.types.length }}>
+                <div className="ov-mlab" title={desc}>{lab}</div>
+                {mix.types.map(t => {
+                  const c = cells[t.type], q = c?.k[key];
+                  if (!c || c.n < 15 || !q || !q[1]) return <div key={t.type} className="ov-mcell z" title={`${t.name} · ${sideLab} · ${bkLab}\n${lab}: ${c && c.n >= 15 ? `no ${unit}` : `only ${c ? c.n : 0} pitches`}`}>—</div>;
+                  const v = (isSlg ? 1 : 100) * q[0] / q[1], ref = lg[t.type]?.[side]?.[bk]?.[si];
+                  const z = ref == null || !K || !dir ? 0 : dir * ((v - ref) * q[1] / (q[1] + K[1])) / K[0], mag = Math.max(0, Math.min(1, (Math.abs(z) - 0.4) / 1.6)), alpha = (0.07 + 0.36 * mag).toFixed(3);
+                  const col = Math.abs(z) < 0.4 ? null : z > 0 ? `rgba(34,197,94,${alpha})` : `rgba(239,68,68,${alpha})`;
+                  return <div key={t.type} className="ov-mcell" style={col ? { backgroundImage: `linear-gradient(${col},${col})` } : undefined}
+                    title={`${t.name} · ${sideLab} · ${bkLab}\n${desc}: ${show(v)} (${q[0].toLocaleString()} of ${q[1].toLocaleString()} ${unit})${ref != null ? `\nLeague ${hand}HP ${PITCH_ABBREV[t.name] || t.type}, same split: ${show(ref)}` : ""}\nColor is vs the league, adjusted for sample.`}>
+                    {isSlg ? show(v) : <>{Math.round(v)}<small>%</small></>}</div>;
+                })}
+              </div>
+            );
+          })}
+          <div className="ov-cnote">Color is vs the league for the same pitch, hands and count, adjusted for sample</div>
         </div>
       )}
     </div>
@@ -1149,6 +1223,7 @@ export default function OverviewPage({ C, helpers }) {
         </div>
         <div className="ov-row ov-row3">
           <GradesCard gr={gr} mix={busy ? null : mix} year={year} hand={hand} seasonOnly={grStale} short={ranged && !!grRange && !grRange.a} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
+          <RatesCard mix={busy ? null : mix} year={year} hand={hand} pitchRateCounts={helpers.pitchRateCounts} pitchMatchesCount={pitchMatchesCount} STAT_GOOD_DIR={helpers.STAT_GOOD_DIR} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
           <ValueCard mix={busy ? null : mix} year={year} hand={hand} pitcherId={pitcher.id} ranged={ranged} pitchRunValue={helpers.pitchRunValue} getPitchColor={getPitchColor} PITCH_ABBREV={PITCH_ABBREV} />
         </div>
       </>)}

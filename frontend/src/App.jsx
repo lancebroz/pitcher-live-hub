@@ -291,7 +291,7 @@ const SLG_AB_CONTACT_OUTS = new Set(["field_out", "force_out", "grounded_into_do
 // whiff/called strike for strikeouts. Works identically on both data paths.
 // (Edge not covered: 2-strike foul-bunt strikeouts — a handful per season league-wide.)
 const _endsPaAsK = (p) => (p.is_whiff || p.is_called_strike) && Number(p.strikes) === 2;
-const computeSlg = (pts) => {
+const slgCounts = (pts) => {
   let tb = 0, ab = 0;
   for (const p of pts) {
     const ev = p.events;
@@ -303,7 +303,27 @@ const computeSlg = (pts) => {
     }
     // walk / HBP / sacrifices / catcher_interf / baserunning events: not at-bats.
   }
-  return ab > 0 ? (tb / ab).toFixed(3) : "—";
+  return [tb, ab];
+};
+const computeSlg = (pts) => { const [tb, ab] = slgCounts(pts); return ab > 0 ? (tb / ab).toFixed(3) : "—"; };
+// [numerator, denominator] of every rate in the pitch-type table. computeMetrics formats these and the Overview's Rates
+// container reads them raw, so the two cannot drift apart.
+const pitchRateCounts = (pts) => {
+  let c = 0, sw = 0, wh = 0, iz = 0, cs = 0, st = 0, ip = 0, gb = 0, fb = 0, ba = 0, bbe = 0, ozs = 0, ozt = 0, izw = 0, izs = 0;
+  for (const p of pts) {
+    c++;
+    if (p.is_swing) sw++;
+    if (p.is_whiff) wh++;
+    if (p.is_called_strike) cs++;
+    if (p.is_swing || p.is_called_strike) st++;
+    if (p.is_in_zone) { iz++; if (p.is_swing) izs++; if (p.is_whiff) izw++; } else { ozt++; if (p.is_swing) ozs++; }
+    if (p.is_in_play) { ip++; if (!p.is_bunt) bbe++; }   // Savant's batted-ball events leave out bunts
+    if (p.is_ground_ball) gb++;
+    if (p.is_fly_ball) fb++;
+    if (p.is_barrel) ba++;
+  }
+  return { strikeRate: [st, c], zoneRate: [iz, c], cswRate: [cs + wh, c], calledStrikeRate: [cs, c], swStrRate: [wh, c], whiffRate: [wh, sw],
+    chaseRate: [ozs, ozt], zoneWhiffRate: [izw, izs], gbRate: [gb, ip], fbRate: [fb, ip], barrelRate: [ba, bbe], slg: slgCounts(pts) };
 };
 // xSLG per Savant: expected outcomes of batted balls accumulated WITH actual strikeouts
 // (each K is a 0-value AB in the denominator). Averaging estimated_slg over batted balls
@@ -353,16 +373,7 @@ const computeMetrics = (pitches, hf) => {
   const bt = {};
   f.forEach(p => { if (!bt[p.pitch_name]) bt[p.pitch_name] = []; bt[p.pitch_name].push(p); });
   const ptm = Object.entries(bt).map(([n, pts]) => {
-    const c = pts.length, sw = pts.filter(p => p.is_swing).length, wh = pts.filter(p => p.is_whiff).length,
-      iz = pts.filter(p => p.is_in_zone).length, cs = pts.filter(p => p.is_called_strike).length,
-      st = pts.filter(p => p.is_swing || p.is_called_strike).length,
-      ip = pts.filter(p => p.is_in_play).length, gb = pts.filter(p => p.is_ground_ball).length,
-      fb = pts.filter(p => p.is_fly_ball).length, ba = pts.filter(p => p.is_barrel).length,
-      bbe = pts.filter(p => p.is_in_play && !p.is_bunt).length, // Savant BBE excludes bunts
-      ozs = pts.filter(p => !p.is_in_zone && p.is_swing).length,
-      ozt = pts.filter(p => !p.is_in_zone).length,
-      izw = pts.filter(p => p.is_in_zone && p.is_whiff).length,
-      izs = pts.filter(p => p.is_in_zone && p.is_swing).length;
+    const c = pts.length, k = pitchRateCounts(pts), ip = k.gbRate[1];
     return {
       name: n, code: pts[0].pitch_type, color: getPitchColor(n), count: c,
       avgVelo: avg1(pts.map(p => p.release_speed)),
@@ -373,10 +384,10 @@ const computeMetrics = (pitches, hf) => {
       avgRelH: avg1(pts.map(p => p.release_pos_z)), avgRelS: avg1(pts.map(p => p.release_pos_x)),
       avgExt: avg1(pts.map(p => p.release_extension)), avgVAA: avg1(pts.map(p => p.vaa)),
       avgAVAA: avgAVAA(pts),
-      strikeRate: pct(st, c), zoneRate: pct(iz, c), cswRate: pct(cs + wh, c),
-      calledStrikeRate: pct(cs, c), swStrRate: pct(wh, c), whiffRate: pct(wh, sw),
-      chaseRate: pct(ozs, ozt), zoneWhiffRate: pct(izw, izs),
-      gbRate: pct(gb, ip), fbRate: pct(fb, ip), barrelRate: pct(ba, bbe),
+      strikeRate: pct(...k.strikeRate), zoneRate: pct(...k.zoneRate), cswRate: pct(...k.cswRate),
+      calledStrikeRate: pct(...k.calledStrikeRate), swStrRate: pct(...k.swStrRate), whiffRate: pct(...k.whiffRate),
+      chaseRate: pct(...k.chaseRate), zoneWhiffRate: pct(...k.zoneWhiffRate),
+      gbRate: pct(...k.gbRate), fbRate: pct(...k.fbRate), barrelRate: pct(...k.barrelRate),
       ncRate: pct(pts.filter(isNonCompetitive).length, pts.length),
       ...(() => {
         const cm = pts.map(p => p.cmd_miss_in).filter(v => v != null).sort((a, b) => a - b);
@@ -385,7 +396,7 @@ const computeMetrics = (pitches, hf) => {
         return { cmdMiss: med.toFixed(1), cmdRate: Math.round(cm.filter(v => v <= 6).length / cm.length * 100) + "%" };
       })(),
       bipCount: ip,
-      slg: computeSlg(pts),
+      slg: k.slg[1] > 0 ? (k.slg[0] / k.slg[1]).toFixed(3) : "—",
       xSLG: computeXslg(pts),
       xwOBACON: avg3(pts.filter(p => p.estimated_woba_using_speedangle != null).map(p => p.estimated_woba_using_speedangle)),
       xwOBA: avg3(pts.filter(p => p.woba_value != null).map(p => p.woba_value)),
@@ -400,16 +411,7 @@ const computeMetrics = (pitches, hf) => {
 
   // Compute "All" summary row across all pitches
   const allPts = f;
-  const ac = allPts.length, asw = allPts.filter(p => p.is_swing).length, awh = allPts.filter(p => p.is_whiff).length,
-    aiz = allPts.filter(p => p.is_in_zone).length, acs = allPts.filter(p => p.is_called_strike).length,
-    ast = allPts.filter(p => p.is_swing || p.is_called_strike).length,
-    aip = allPts.filter(p => p.is_in_play).length, agb = allPts.filter(p => p.is_ground_ball).length,
-    afb = allPts.filter(p => p.is_fly_ball).length, aba = allPts.filter(p => p.is_barrel).length,
-    abbe = allPts.filter(p => p.is_in_play && !p.is_bunt).length,
-    aozs = allPts.filter(p => !p.is_in_zone && p.is_swing).length,
-    aozt = allPts.filter(p => !p.is_in_zone).length,
-    aizw = allPts.filter(p => p.is_in_zone && p.is_whiff).length,
-    aizs = allPts.filter(p => p.is_in_zone && p.is_swing).length;
+  const ac = allPts.length, ak = pitchRateCounts(allPts), aip = ak.gbRate[1];
   const allRow = {
     name: "All", code: "", color: C => C.accent, isAllRow: true, count: ac,
     avgVelo: avg1(allPts.map(p => p.release_speed)),
@@ -420,10 +422,10 @@ const computeMetrics = (pitches, hf) => {
     avgExt: avg1(allPts.map(p => p.release_extension)),
     avgVAA: avg1(allPts.map(p => p.vaa)),
     avgAVAA: "—",
-    strikeRate: pct(ast, ac), zoneRate: pct(aiz, ac), cswRate: pct(acs + awh, ac),
-    calledStrikeRate: pct(acs, ac), swStrRate: pct(awh, ac), whiffRate: pct(awh, asw),
-    chaseRate: pct(aozs, aozt), zoneWhiffRate: pct(aizw, aizs),
-    gbRate: pct(agb, aip), fbRate: pct(afb, aip), barrelRate: pct(aba, abbe),
+    strikeRate: pct(...ak.strikeRate), zoneRate: pct(...ak.zoneRate), cswRate: pct(...ak.cswRate),
+    calledStrikeRate: pct(...ak.calledStrikeRate), swStrRate: pct(...ak.swStrRate), whiffRate: pct(...ak.whiffRate),
+    chaseRate: pct(...ak.chaseRate), zoneWhiffRate: pct(...ak.zoneWhiffRate),
+    gbRate: pct(...ak.gbRate), fbRate: pct(...ak.fbRate), barrelRate: pct(...ak.barrelRate),
     ncRate: pct(allPts.filter(isNonCompetitive).length, allPts.length),
     ...(() => {
       const cm = allPts.map(p => p.cmd_miss_in).filter(v => v != null).sort((a, b) => a - b);
@@ -5460,7 +5462,7 @@ const HITTER_HELPERS = { xwobaParts, xslgconLookup: _xslgconLookup, SLG_TB, SLG_
 
 // Shared with the Overview tab so it normalises pitches and computes season stats
 // exactly the way the Compare tab does (stable identity → safe in hook deps).
-const OVERVIEW_HELPERS = { fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, pitchRunValue, DatePickerWithHighlights };
+const OVERVIEW_HELPERS = { pitchRateCounts, STAT_GOOD_DIR, fipConstsFor, normAndFilter, computeSummaryStats, isPostseasonDate, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount, xwobaconLookup: _xwobaconLookup, pitchRunValue, DatePickerWithHighlights };
 
 export default function PitcherTracker() {
   const [theme, setTheme] = useState("light");
