@@ -2,7 +2,7 @@
 // Search a pitcher → season line + three containers: 3D release model, pitch mix, pitch movement.
 // Pitch data comes from the same endpoints and the same normaliser as the Compare tool
 // (passed in through `helpers`), so the numbers reconcile across tabs.
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcherEra, getPitcherInfo, getPitcherArmAngle, searchBatters, getBatterCachedSeason, getBatterStatcast, getBatterLine } from "./api.js";
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
@@ -1284,8 +1284,8 @@ const HV_KEYS = ["nv", "nx", "lv", "lx"], HV_ROWS = [["all", "Overall"], ["pre",
 // Columns run in Baseball Savant's pitch order (fastballs, offspeed, curveballs, sliders, knuckleball).
 const SAVANT_ORDER = ["FF", "SI", "FC", "CH", "FS", "FO", "SC", "CU", "KC", "CS", "SL", "ST", "SV", "KN"];
 const HV_MIN_N = 25, HV_MIN_SHARE = 0.02, HV_MAX_COLS = 8;   // a pitch type shows once he has seen 25 of them and they are 2% of what that hand threw him
-function HitterValueCard({ pitches, h, year }) {
-  const [ph, setPh] = useState("R"), [mode, setMode] = useState("a"), [ctx, setCtx] = useState("n");
+function HitterValueCard({ pitches, h, year, ph, setPh }) {
+  const [mode, setMode] = useState("a"), [ctx, setCtx] = useState("n");
   const { getPitchColor, PITCH_ABBREV, pitchRunValue } = h;
   const sub = useMemo(() => pitches.filter(p => p.p_throws === ph && p.pitch_type), [pitches, ph]);
   // Savant-style per-pitch values when nearly every pitch carries its base/out state; linear weights otherwise (neutral only)
@@ -1526,6 +1526,9 @@ export function HittersPage({ C, helpers }) {
   const [range, setRange] = useState({ s: "", e: "" }), [official, setOfficial] = useState(null), endRef = useRef(null);
   const setYear = (y) => { setRange({ s: "", e: "" }); setYearRaw(y); };
   const [side, setSide] = useState("all");   // pitcher hand shared by the Results and Location containers
+  // One pitcher-hand choice for the whole page. Value has no "All" (its league numbers are per matchup), so it keeps the last hand picked.
+  const [vhand, setVhand] = useState("R");
+  const pickSide = useCallback((k) => { setSide(k); if (k !== "all") setVhand(k); }, []);
   const [rootRef, tipEl] = useTapTips();
   const searchRef = useRef(null), seqRef = useRef(0);
 
@@ -1658,9 +1661,9 @@ export function HittersPage({ C, helpers }) {
       {batter && !busy && cur && cur.length > 0 && (
         <div className="ov-row ov-hrow">
           <HitterProcessCard season={season} pitches={cur} h={helpers} year={year} range={ranged ? range : null} />
-          <HitterResultsCard pitches={cur} h={helpers} year={year} side={side} setSide={setSide} />
-          <HitterValueCard pitches={cur} h={helpers} year={year} />
-          <HitterLocationCard pitches={cur} h={helpers} side={side} setSide={setSide} />
+          <HitterResultsCard pitches={cur} h={helpers} year={year} side={side} setSide={pickSide} />
+          <HitterValueCard pitches={cur} h={helpers} year={year} ph={vhand} setPh={pickSide} />
+          <HitterLocationCard pitches={cur} h={helpers} side={side} setSide={pickSide} />
         </div>
       )}
     </div>
