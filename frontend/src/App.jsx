@@ -5,7 +5,7 @@ import { PITCH_BASELINES } from "./pitchBaselines.js";
 import { USAGE_2025 } from "./usageData2025.js";
 import { savantRunValue } from "./rvSavant.js";
 import { usesSavantValue, pitcherValue } from "./pitcherValue.js";
-import { leagueRunValue } from "./successValue.js";
+import { successWeight, SUCCESS_VIEWS, SUCCESS_LEGEND, SUCCESS_CAPTION } from "./successValue.js";
 
 // Overview tab is code-split so its 3D library only downloads when the tab is opened.
 const OverviewPage = lazy(() => import("./Overview.jsx"));
@@ -1156,10 +1156,11 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, weightFn = 
     const grid = new Float32Array(gridW * gridH);
     const sigma = mode === "damage" ? 0.20 : mode === "success" ? 0.24 : 0.17;
     const bw2 = sigma * sigma;
-    // "success" mode (Overview tab): weightFn returns a signed value per pitch (+ = good for the
-    // pitcher). `grid` holds the kernel-weighted sum of those values and `den` the kernel-weighted
-    // pitch count, so sum / count is the local average and count drives how strongly it shows.
+    // "success" mode: weightFn returns a signed run value per pitch (+ = good for the subject). `grid` holds the
+    // kernel-weighted sum of those values, `den` the kernel-weighted pitch count and `den2` the sum of squared
+    // kernel weights, so sum / (SD * sqrt(den2)) is how many standard errors the area's total sits from zero.
     const den = mode === "success" ? new Float32Array(gridW * gridH) : null;
+    const den2 = den ? new Float32Array(gridW * gridH) : null;
 
     // Stamp each pitch onto the grid (negate plate_x for pitcher POV)
     for (const p of pitches) {
@@ -1180,7 +1181,7 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, weightFn = 
           const dy = (1 - gy / gridH) * 5 - p.plate_z;
           const kern = Math.exp(-(dx * dx + dy * dy) / (2 * bw2));
           grid[gy * gridW + gx] += weight * kern;
-          if (den) den[gy * gridW + gx] += kern;
+          if (den) { den[gy * gridW + gx] += kern; den2[gy * gridW + gx] += kern * kern; }
         }
       }
     }
@@ -1189,6 +1190,18 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, weightFn = 
     const maxSrc = den || grid;
     for (let i = 0; i < maxSrc.length; i++) if (maxSrc[i] > maxVal) maxVal = maxSrc[i];
     if (maxVal === 0) return;
+
+    // Success scale. Colour is the area's total against the baseline divided by the noise expected from that many
+    // pitches (SUCCESS_SD runs per pitch), so the same edge shows stronger the more pitches are behind it. Full colour
+    // sits at 2.4 standard errors, or at the map's own strongest spot when that is lower (never under 1), so a small
+    // sample still shows its shape; its ceiling is a little softer the weaker that strongest spot is.
+    const SUCCESS_SD = 0.17, zAt = (sum, d2) => sum / (SUCCESS_SD * Math.sqrt(d2 + 2));
+    let zFull = 1, zFrom = 0, zCap = 1;
+    if (den) {
+      let peak = 0;
+      for (let i = 0; i < grid.length; i++) if (den[i] > 0.15 * maxVal) { const a = Math.abs(zAt(grid[i], den2[i])); if (a > peak) peak = a; }
+      zFull = Math.max(1, Math.min(2.4, peak)); zFrom = zFull / 8; zCap = 0.8 + 0.2 * (zFull - 1) / 1.4;
+    }
 
     // Color ramps
     const freqRamp = (t) => {
@@ -1222,9 +1235,9 @@ const GaussianHeatmapCanvas = ({ pitches, width, height, mode, hand, weightFn = 
         const raw = grid[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + grid[gy0 * gridW + gx1] * fx * (1 - fy) + grid[gy1 * gridW + gx0] * (1 - fx) * fy + grid[gy1 * gridW + gx1] * fx * fy;
         if (den) {
           const d = den[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + den[gy0 * gridW + gx1] * fx * (1 - fy) + den[gy1 * gridW + gx0] * (1 - fx) * fy + den[gy1 * gridW + gx1] * fx * fy;
-          // Local average, shrunk toward neutral until a spot has ~8 pitches behind it; full colour at ±0.035 runs/pitch
-          const sv = Math.max(-1, Math.min(1, (raw / (d + 8)) / 0.035));
-          const m = Math.pow(Math.abs(sv), 0.7), aS = Math.min(1, (d / maxVal) * 3.6);
+          const d2 = den2[gy0 * gridW + gx0] * (1 - fx) * (1 - fy) + den2[gy0 * gridW + gx1] * fx * (1 - fy) + den2[gy1 * gridW + gx0] * (1 - fx) * fy + den2[gy1 * gridW + gx1] * fx * fy;
+          const sv = zAt(raw, d2);
+          const m = zCap * Math.pow(Math.max(0, Math.min(1, (Math.abs(sv) - zFrom) / (zFull - zFrom))), 0.6), aS = Math.min(1, (d / maxVal) * 3.6);
           const c = sv >= 0 ? [34, 197, 94] : [239, 68, 68];
           const sIdx = (py * w + px) * 4;
           imgData.data[sIdx] = Math.round(10 * (1 - aS) + (17 + (c[0] - 17) * m) * aS);
@@ -4010,6 +4023,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
   // time periods always reflect the same count context (mirrors the Compare tool).
   const [countFilter, setCountFilter] = useState("all");
   const [hmMode, setHmMode] = useState("success"); // "success" | "frequency" | "whiffs" | "damage"
+  const [hmView, setHmView] = useState("value");   // Success baseline: "value" (location earns credit) | "spot" (vs the league at that spot)
   const [pitchData, setPitchData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState("");
@@ -4473,6 +4487,21 @@ const HeatmapsPage = ({ C, isMobile }) => {
             ))}
           </div>
 
+          {/* Success baseline */}
+          {hmMode === "success" && (
+            <div style={{ display: "flex", gap: "4px" }}>
+              {SUCCESS_VIEWS.map(([k, l, tip]) => (
+                <button key={k} onClick={() => setHmView(k)} title={tip} style={{
+                  background: hmView === k ? C.accentGlow : "transparent",
+                  border: `1px solid ${hmView === k ? C.accent : C.border}`,
+                  borderRadius: "4px", padding: "6px 12px",
+                  color: hmView === k ? C.accent : C.textDim,
+                  fontSize: "11px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}>{l}</button>
+              ))}
+            </div>
+          )}
+
           {/* Date pickers (single-view 2026 only) */}
           {!compareMode && year === "2026" && (
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -4567,7 +4596,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {!compareLoading && compareGroups && compareGroups.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
               {compareGroups.map(row => (
-                <CompareRow key={row.name} row={row} C={C} hmMode={hmMode} hand={hand} throws={pitcher?.throws} isMobile={isMobile} />
+                <CompareRow key={row.name} row={row} C={C} hmMode={hmMode} hmView={hmView} hand={hand} throws={pitcher?.throws} isMobile={isMobile} />
               ))}
             </div>
           )}
@@ -4579,7 +4608,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {/* Legend (shared) */}
           {compareGroups && compareGroups.length > 0 && (
             <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-              <HeatmapLegend hmMode={hmMode} C={C} />
+              <HeatmapLegend hmMode={hmMode} hmView={hmView} C={C} />
             </div>
           )}
         </div>
@@ -4599,7 +4628,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {filteredGroups && filteredGroups.length > 0 && (
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "20px" }}>
               {filteredGroups.map(g => (
-                <HeatmapTile key={g.name} group={g} C={C} hmMode={hmMode} hand={hand} throws={pitcher?.throws} />
+                <HeatmapTile key={g.name} group={g} C={C} hmMode={hmMode} hmView={hmView} hand={hand} throws={pitcher?.throws} />
               ))}
             </div>
           )}
@@ -4607,7 +4636,7 @@ const HeatmapsPage = ({ C, isMobile }) => {
           {/* Legend */}
           {filteredGroups && filteredGroups.length > 0 && (
             <div style={{ marginTop: "20px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
-              <HeatmapLegend hmMode={hmMode} C={C} />
+              <HeatmapLegend hmMode={hmMode} hmView={hmView} C={C} />
             </div>
           )}
         </>
@@ -4616,18 +4645,16 @@ const HeatmapsPage = ({ C, isMobile }) => {
   );
 };
 
-// Success map: runs saved per pitch vs. the league average for that pitch type, pitcher hand, batter side
-// and location (+ = good for the pitcher). Same definition as the Overview tab's Location card.
-// The pitcher's hand comes from the pitch row, or from the selected pitcher when the row does not carry it.
-const mkSuccessWeight = (fallback) => (p) => leagueRunValue(p, p.p_throws === "L" || p.p_throws === "R" ? p.p_throws : fallback) - pitchRunValue(p, true);
-const SUCCESS_WEIGHT = { R: mkSuccessWeight("R"), L: mkSuccessWeight("L") };
+// Success map (+ = good for the pitcher), in either view; same definition as the Overview tab's Location card
+// (successValue.js). The pitcher's hand comes from the pitch row, or from the selected pitcher when the row lacks it.
+const SUCCESS_WEIGHT = Object.fromEntries(SUCCESS_VIEWS.map(([v]) => [v, { R: successWeight(v, false, pitchRunValue, "R"), L: successWeight(v, false, pitchRunValue, "L") }]));
 
-const HeatmapLegend = ({ hmMode, C }) => (hmMode === "success" ? (
+const HeatmapLegend = ({ hmMode, hmView, C }) => (hmMode === "success" ? (
   <>
-    <span style={{ fontSize: "10px", fontWeight: 600, color: C.textDim, letterSpacing: "1px", textTransform: "uppercase" }}>Success vs league at that spot</span>
-    <span style={{ fontSize: "10px", color: C.textDim }}>Worse</span>
-    <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #ef4444, #0a0a12, #22c55e)" }} />
-    <span style={{ fontSize: "10px", color: C.textDim }}>Better</span>
+    <span style={{ fontSize: "10px", color: C.textDim }}>{SUCCESS_LEGEND.pitcher[hmView][0]}</span>
+    <div style={{ width: "180px", height: "10px", borderRadius: "3px", background: "linear-gradient(to right, #ef4444, #111827, #22c55e)" }} />
+    <span style={{ fontSize: "10px", color: C.textDim }}>{SUCCESS_LEGEND.pitcher[hmView][1]}</span>
+    <span style={{ fontSize: "10px", color: C.textDim, flexBasis: "100%", textAlign: "center" }}>{SUCCESS_CAPTION}</span>
   </>
 ) : (
   <>
@@ -4645,7 +4672,7 @@ const HeatmapLegend = ({ hmMode, C }) => (hmMode === "success" ? (
   </>
 ));
 
-const HeatmapTile = ({ group, C, hmMode, hand, throws }) => {
+const HeatmapTile = ({ group, C, hmMode, hmView, hand, throws }) => {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ w: 220, h: 220 });
   useEffect(() => {
@@ -4667,7 +4694,7 @@ const HeatmapTile = ({ group, C, hmMode, hand, throws }) => {
         <span style={{ fontSize: "10px", color: "#888", fontVariantNumeric: "tabular-nums" }}>{group.pitches.length}</span>
       </div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
-        <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[throws === "L" ? "L" : "R"] : null} />
+        <GaussianHeatmapCanvas pitches={group.pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[hmView][throws === "L" ? "L" : "R"] : null} />
       </div>
     </div>
   );
@@ -4676,7 +4703,7 @@ const HeatmapTile = ({ group, C, hmMode, hand, throws }) => {
 // ─── CompareRow: a single row in the side-by-side comparison view ───
 // Layout: [left tile] [pitch type name + color dot] [right tile]
 // Each tile is rendered with the same Gaussian canvas the single-view uses.
-const CompareRow = ({ row, C, hmMode, hand, throws, isMobile }) => {
+const CompareRow = ({ row, C, hmMode, hmView, hand, throws, isMobile }) => {
   const leftRef = useRef(null);
   const rightRef = useRef(null);
   const [leftSize, setLeftSize] = useState({ w: 220, h: 220 });
@@ -4707,7 +4734,7 @@ const CompareRow = ({ row, C, hmMode, hand, throws, isMobile }) => {
       <div style={{ fontSize: "10px", color: "#888", marginBottom: "6px", textAlign: "right" }}>{pitches.length} pitches</div>
       <div ref={containerRef} style={{ width: "100%", aspectRatio: "1/1", borderRadius: "4px", overflow: "hidden" }}>
         {pitches.length > 0
-          ? <GaussianHeatmapCanvas pitches={pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[throws === "L" ? "L" : "R"] : null} />
+          ? <GaussianHeatmapCanvas pitches={pitches} width={size.w} height={size.h} mode={hmMode} hand={hand} weightFn={hmMode === "success" ? SUCCESS_WEIGHT[hmView][throws === "L" ? "L" : "R"] : null} />
           : <div style={{ width: "100%", height: "100%", background: "#0a0a12", display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: "11px" }}>No data</div>
         }
       </div>

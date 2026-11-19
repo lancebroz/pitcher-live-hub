@@ -7,7 +7,7 @@ import { searchPitchers, getCachedSeason, getSeasonData, getStatcast, getPitcher
 import { OV_PITCHERS, OV_LEAGUE, OV_AVG_HEIGHT_IN, OV_STAT_BASE, OV_POOLS } from "./overviewData.js";
 import { solvePose } from "./releaseSolver.js";
 import { createReleaseScene, RELEASE_COLORS as COL } from "./releaseScene.js";
-import { leagueRunValue } from "./successValue.js";
+import { successWeight, SUCCESS_VIEWS, SUCCESS_LEGEND, SUCCESS_CAPTION } from "./successValue.js";
 import { HIT_POOLS, HIT_VALUE_REF, HIT_VALUE_K, HIT_USAGE_REF, HIT_LINE_POOLS, HIT_RANDOM_POOL } from "./hitterData.js";
 import { HITTER_RESULT_ROWS, hitterResults, hitterLine } from "./hitterStats.js";
 import { OV_VALUE_REF, OV_VALUE_K } from "./overviewValueRef.js";
@@ -191,7 +191,9 @@ button.ov-chip{cursor:pointer;opacity:.38}button.ov-chip[aria-pressed=true]{opac
 .ov-hm .cv{width:100%;aspect-ratio:1/1;border-radius:4px;overflow:hidden}
 .ov-hm .cv canvas{display:block;width:100%;height:100%}
 .ov-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto;font-size:11px;color:var(--dim)}
-.ov-skey{margin-left:auto;font-size:10px;white-space:nowrap}.ov-skey i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 4px 0 8px}
+.ov-hm .lg{display:flex;align-items:center;gap:8px;margin-top:7px;font-size:9.5px;font-weight:600;white-space:nowrap}.ov-hm .lg i{flex:1;height:6px;border-radius:3px;background:linear-gradient(to right,#ef4444,#111827,#22c55e)}
+.ov-hm .lg .lo{color:#fca5a5}.ov-hm .lg .hi{color:#86efac}.ov-hm .lgc{margin-top:3px;text-align:center;font-size:9px;color:#8a8a93}
+.ov-foot .ov-tg3{margin-left:auto}
 .ov-foot select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;font-weight:600;font-family:inherit}
 .ov-hr{height:1px;background:var(--border);margin:8px 0 6px}
 .ov-hrow{align-items:flex-start;justify-content:flex-start}
@@ -840,7 +842,7 @@ function SideToggle({ side, setSide }) {
 }
 
 // ─── Row 2, middle: location heatmaps (the Heatmaps tab's Gaussian granular canvas) ───
-function HeatTile({ label, pitches, mode, Canvas, weightFn, side }) {
+function HeatTile({ label, pitches, mode, Canvas, weightFn, side, legend }) {
   const ref = useRef(null), [w, setW] = useState(0);
   useEffect(() => {
     if (!ref.current) return undefined;
@@ -850,20 +852,25 @@ function HeatTile({ label, pitches, mode, Canvas, weightFn, side }) {
     <div className="tile">
       <div className="hd">{label}<span>{pitches.length.toLocaleString()}</span></div>
       <div className="cv" ref={ref}>{w > 0 && <Canvas pitches={pitches} width={w} height={w} mode={mode} hand={side || "all"} weightFn={weightFn || null} />}</div>
+      {legend && <><div className="lg"><span className="lo">{legend[0]}</span><i /><span className="hi">{legend[1]}</span></div><div className="lgc">{SUCCESS_CAPTION}</div></>}
     </div>
   );
 }
 const HEAT_SLIDES = [["success", "Success"], ["frequency", "Frequency"], ["whiffs", "Whiffs"], ["damage", "Damage"]];
+// Success baseline toggle (successValue.js): Value = location earns credit, Vs League = against the league at that spot
+function SuccessViewToggle({ view, setView }) {
+  return <div className="ov-tg3">{SUCCESS_VIEWS.map(([k, l, tip]) => <button key={k} aria-pressed={view === k} onClick={() => setView(k)} title={tip}>{l}</button>)}</div>;
+}
 function HeatCard({ mix, year, hand, side, setSide, rvHelpers, getPitchColor, PITCH_ABBREV, GaussianHeatmapCanvas, pitchMatchesCount }) {
-  const [sel, setSel] = useState(null), [count, setCount] = useState("all"), [slide, setSlide] = useState(0);
+  const [sel, setSel] = useState(null), [count, setCount] = useState("all"), [slide, setSlide] = useState(0), [view, setView] = useState("value");
   const types = mix ? mix.types : [], cur = types.find(t => t.type === sel) || types[0];
   const sets = useMemo(() => {
     if (!mix || !cur) return null;
     const base = mix.valid.filter(p => p.pitch_type === cur.type && (side === "all" || p.batter_hand === side) && p.plate_x != null && p.plate_z != null && pitchMatchesCount(p, count));
     return { success: base, frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) };
   }, [mix, cur, count, side, pitchMatchesCount]);
-  // Success = runs saved per pitch vs. the league average for that pitch type at that spot (+ = good for him)
-  const successFn = useMemo(() => (p) => leagueRunValue(p, hand) - rvHelpers.pitchRunValue(p, true), [hand, rvHelpers]);
+  // Success (+ = good for him): where his runs came from, or how each spot played against the league at that spot
+  const successFn = useMemo(() => successWeight(view, false, rvHelpers.pitchRunValue, hand), [view, hand, rvHelpers]);
   const [mode, label] = HEAT_SLIDES[slide], step = (d) => setSlide(i => (i + d + HEAT_SLIDES.length) % HEAT_SLIDES.length);
   return (
     <div className="ov-card">
@@ -876,7 +883,7 @@ function HeatCard({ mix, year, hand, side, setSide, rvHelpers, getPitchColor, PI
           <div className="ov-car">
             <button className="ov-arrow" aria-label="Previous map" onClick={() => step(-1)}>‹</button>
             <div className="ov-hm">
-              <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={side} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} />
+              <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={side} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} legend={mode === "success" ? SUCCESS_LEGEND.pitcher[view] : null} />
             </div>
             <button className="ov-arrow" aria-label="Next map" onClick={() => step(1)}>›</button>
           </div>
@@ -889,7 +896,7 @@ function HeatCard({ mix, year, hand, side, setSide, rvHelpers, getPitchColor, PI
               <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
               <option value="ahead">Pitcher Ahead</option><option value="behind">Pitcher Behind</option><option value="leverage">Leverage</option>
             </select>
-            {mode === "success" && <span className="ov-skey"><i style={{ background: "#22c55e" }} />Better than league there<i style={{ background: "#ef4444" }} />Worse</span>}
+            {mode === "success" && <SuccessViewToggle view={view} setView={setView} />}
           </div>
         </>)}
       </div>
@@ -1363,14 +1370,15 @@ function HitterValueCard({ pitches, h, year, ph, setPh }) {
   );
 }
 
-// Location: the pitcher Overview's heatmaps from the hitter's side, by pitch group. Success = runs per pitch above what
-// the league's hitters do against that pitch type from that pitcher hand at that spot (+ = good for him).
+// Location: the pitcher Overview's heatmaps from the hitter's side, by pitch group. Success (+ = good for him) opens on
+// "Vs League" (against what the league's hitters do with that pitch type from that pitcher hand at that spot): a hitter
+// does not choose where the pitch goes, so the "Value" view mostly credits him for pitches thrown off the plate.
 const HIT_GROUPS = [["fb", "Fastballs", "FF", new Set(["FF", "SI", "FC", "FA", "FT"]), "Four-seamers, sinkers, cutters"],
   ["br", "Breaking", "SL", new Set(["SL", "ST", "SV", "CU", "KC", "CS"]), "Sliders, sweepers, slurves, curveballs"],
   ["os", "Offspeed", "CH", new Set(["CH", "FS", "FO", "SC"]), "Changeups, splitters, forkballs, screwballs"]];
 function HitterLocationCard({ pitches, h, side, setSide }) {
   const { GaussianHeatmapCanvas, pitchMatchesCount, pitchRunValue, getPitchColor } = h;
-  const [grp, setGrp] = useState("fb"), [count, setCount] = useState("all"), [slide, setSlide] = useState(0);
+  const [grp, setGrp] = useState("fb"), [count, setCount] = useState("all"), [slide, setSlide] = useState(0), [view, setView] = useState("spot");
   const by = useMemo(() => {
     const o = { fb: [], os: [], br: [] };
     for (const p of pitches) {
@@ -1381,7 +1389,7 @@ function HitterLocationCard({ pitches, h, side, setSide }) {
   }, [pitches, side, count, pitchMatchesCount]);
   const base = by[grp];
   const sets = useMemo(() => ({ success: base, frequency: base, whiffs: base.filter(p => p.is_whiff), damage: base.filter(p => p.is_in_play) }), [base]);
-  const successFn = useMemo(() => (p) => pitchRunValue(p, true) - leagueRunValue(p, p.p_throws === "L" ? "L" : "R"), [pitchRunValue]);
+  const successFn = useMemo(() => successWeight(view, true, pitchRunValue, "R"), [view, pitchRunValue]);
   const stand = useMemo(() => { const s = standOf(base); return s === "S" ? "all" : s; }, [base]);   // which batter silhouette(s) to draw
   const [mode, label] = HEAT_SLIDES[slide], step = (d) => setSlide(i => (i + d + HEAT_SLIDES.length) % HEAT_SLIDES.length);
   return (
@@ -1394,7 +1402,7 @@ function HitterLocationCard({ pitches, h, side, setSide }) {
         <div className="ov-car">
           <button className="ov-arrow" aria-label="Previous map" onClick={() => step(-1)}>‹</button>
           <div className="ov-hm">
-            <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={stand} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} />
+            <HeatTile key={mode} label={label} pitches={sets[mode]} mode={mode} side={stand} Canvas={GaussianHeatmapCanvas} weightFn={mode === "success" ? successFn : null} legend={mode === "success" ? SUCCESS_LEGEND.hitter[view] : null} />
           </div>
           <button className="ov-arrow" aria-label="Next map" onClick={() => step(1)}>›</button>
         </div>
@@ -1407,7 +1415,7 @@ function HitterLocationCard({ pitches, h, side, setSide }) {
             <option value="all">All Counts</option><option value="pre2k">Pre-Two-Strike</option><option value="two_strikes">Two Strikes</option>
             <option value="behind">Hitter Ahead</option><option value="ahead">Hitter Behind</option><option value="leverage">Leverage</option>
           </select>
-          {mode === "success" && <span className="ov-skey"><i style={{ background: "#22c55e" }} />Better than league there<i style={{ background: "#ef4444" }} />Worse</span>}
+          {mode === "success" && <SuccessViewToggle view={view} setView={setView} />}
         </div>
       </div>
     </div>
