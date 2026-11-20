@@ -90,17 +90,21 @@ function solvePose(inp) {
   var kL = ik2(best.hipL, best.ankL, seg.thigh, seg.shank, [-s * 0.15, 0.1, 1]);
   var toeL = V.add(best.ankL, [-s * 0.03 * H, -seg.ankle * 0.55, seg.foot * 0.72]);
   var heelL = V.add(best.ankL, [0, -seg.ankle * 0.55, -seg.foot * 0.25]);
-  // Trail leg: toe dragging off the rubber
-  var tz = P[2] - 0.31 * H, tx = best.hipT[0] + s * 0.07 * H;
-  var ankT = [tx, moundH(tx, tz) + 0.11 * H, tz];
-  var kT = ik2(best.hipT, ankT, seg.thigh, seg.shank, [-s * 0.2, -1, 0.45]);
+  // Trail leg at release, measured from a four-camera capture and three 1,000 fps clips: the leg trails
+  // almost straight behind the pelvis (ankle ~0.37 H back, close to the body's midline, ~0.07 H off the dirt, knee bent
+  // about 40°), toe turned down and dragging behind the ankle.
+  var tz = P[2] - 0.37 * H, tx = P[0] + s * 0.02 * H;
+  var ankT = [tx, moundH(tx, tz) + 0.07 * H, tz];
+  var kT = ik2(best.hipT, ankT, seg.thigh, seg.shank, [s * 0.15, -1, 0.55]);
   ankT = kT.end; ankT[1] = Math.max(ankT[1], moundH(ankT[0], ankT[2]) + 0.05 * H);
   var kneeT = kT.mid; kneeT[1] = Math.max(kneeT[1], moundH(kneeT[0], kneeT[2]) + 0.045 * H);
-  var toeT = [ankT[0] + s * 0.01 * H, moundH(ankT[0], ankT[2] + 0.07 * H) + 0.012 * H, ankT[2] + 0.07 * H];
+  var toeZ = ankT[2] - 0.085 * H, toeT = [ankT[0], moundH(ankT[0], toeZ) + 0.012 * H, toeZ];
   var eT = ik2(S, B, upperA, lowerA, [0, -0.45, -1]);
   var wrist = V.add(eT.mid, V.mul(V.norm(V.sub(B, eT.mid)), seg.fore * armScale));
-  var gloveTarget = V.add(V.add(G, V.mul(t, -0.17 * H)), V.add(V.mul(n, 0.11 * H), V.mul(u, 0.03 * H)));
-  var eG = ik2(G, gloveTarget, seg.upper, seg.fore, V.add(V.add(V.mul(t, -0.8), V.mul(u, -0.7)), V.mul(n, -0.25)));
+  // Glove at release (same sources): tucked in front of the chest — wrist ~0.12 H down the spine from the glove
+  // shoulder and ~0.14 H out in front — with the elbow hanging at the side rather than winged out.
+  var gloveTarget = V.add(G, V.add(V.mul(t, -0.12 * H), V.mul(n, 0.14 * H)));
+  var eG = ik2(G, gloveTarget, seg.upper, seg.fore, V.add(V.add(V.mul(t, -0.9), V.mul(u, -0.4)), V.mul(n, -0.25)));
   var hd = V.norm(V.add(V.mul(t, 0.55), [0, 0.45, 0.05]));
   var head = V.add(N, V.mul(hd, seg.neck + seg.headR));
   return {
